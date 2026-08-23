@@ -1,0 +1,190 @@
+# CareerForge configuration.
+#
+# Copy to config/config.toml (gitignored) or let /setup generate it.
+# Everything here is yours to change; nothing in the framework hardcodes it.
+
+# Language used for status labels and board headings ("en", "ru", or any key
+# you add to the [statuses.labels] tables below).
+locale = "en"
+
+# Language you want cover letters written in. "posting" matches the language
+# of each job posting, which is usually what you want.
+cover_letter_language = "posting"
+
+
+[documents]
+# {slug} is replaced with your name slug, e.g. cv_jane_doe.md
+cv_filename    = "cv_{slug}.md"
+cover_filename = "cover_letter_{slug}.md"
+name_slug      = "candidate"
+
+cv_max_pages    = 2
+cover_max_pages = 1
+
+# docx -> pdf converter: "auto" prefers MS Word, falls back to LibreOffice.
+# Force one with "word" or "libreoffice".
+engine = "auto"
+
+
+[tracker]
+# Days of silence after which /triage proposes freezing an application.
+stale_after_days = 30
+
+
+[notion]
+# Optional mirror. Everything works without it.
+# Run:  python tools/notion_sync.py provision
+# to create the databases and write config/notion.json.
+enabled = false
+
+
+[salary]
+# Company-name normalisation for salary_lookup.py. Extend for your market.
+strip_legal_forms = [
+  "a/s", "aps", "i/s", "p/s", "k/s", "ivs", "amba",
+  "gmbh", "mbh", "ag", "kg", "ug",
+  "ltd", "limited", "plc", "llp", "inc", "incorporated", "corp", "corporation",
+  "llc", "co", "company",
+  "bv", "nv", "sa", "sas", "sarl", "srl", "spa", "ab", "as", "oy", "sp z oo",
+  "lda", "unipessoal", "sl", "sll", "pte", "pty",
+]
+# Geographic suffixes that are noise in company names, e.g. "Acme Nordic".
+strip_regions = [
+  "europe", "emea", "nordic", "nordics", "scandinavia", "international", "global",
+]
+
+
+# ---------------------------------------------------------------------------
+# Application statuses. Order here is the funnel order and the board's column
+# order. `stage` decides which folder an application's documents live in.
+# Valid stages: applications | processing | rejected
+# ---------------------------------------------------------------------------
+
+[[statuses]]
+id = "draft"
+stage = "applications"
+labels = { en = "Draft", ru = "📝 Подготовка" }
+
+[[statuses]]
+id = "applied"
+stage = "applications"
+labels = { en = "Applied", ru = "📤 Откликнулся" }
+
+[[statuses]]
+id = "waiting"
+stage = "applications"
+labels = { en = "Waiting", ru = "⏳ Жду ответа" }
+
+[[statuses]]
+id = "screening"
+stage = "processing"
+labels = { en = "Screening", ru = "📞 Скрининг" }
+
+[[statuses]]
+id = "assignment"
+stage = "processing"
+labels = { en = "Take-home", ru = "🧪 Тестовое" }
+
+[[statuses]]
+id = "interview"
+stage = "processing"
+labels = { en = "Interview", ru = "💻 Интервью" }
+
+[[statuses]]
+id = "final"
+stage = "processing"
+labels = { en = "Final round", ru = "🏁 Финал" }
+
+[[statuses]]
+id = "offer"
+stage = "processing"
+labels = { en = "Offer", ru = "🎉 Оффер" }
+
+[[statuses]]
+id = "rejected"
+stage = "rejected"
+terminal = true
+labels = { en = "Rejected", ru = "❌ Отказ" }
+
+[[statuses]]
+id = "frozen"
+stage = "rejected"
+terminal = true
+labels = { en = "Frozen", ru = "🧊 Заморозка" }
+
+[[statuses]]
+id = "withdrawn"
+stage = "rejected"
+terminal = true
+labels = { en = "Withdrawn", ru = "🚫 Отозвал" }
+
+
+# ---------------------------------------------------------------------------
+# Work modes
+# ---------------------------------------------------------------------------
+
+[[work_modes]]
+id = "remote"
+labels = { en = "Remote", ru = "🏠 Удалёнка" }
+
+[[work_modes]]
+id = "hybrid"
+labels = { en = "Hybrid", ru = "🔀 Гибрид" }
+
+[[work_modes]]
+id = "onsite"
+labels = { en = "On-site", ru = "🏢 Офис" }
+
+
+# ---------------------------------------------------------------------------
+# Event types (one row per stage you actually went through)
+# ---------------------------------------------------------------------------
+
+[[event_types]]
+id = "applied"
+labels = { en = "Application sent", ru = "📤 Отклик отправлен" }
+
+[[event_types]]
+id = "screening"
+labels = { en = "HR screening", ru = "📞 HR-скрининг" }
+
+[[event_types]]
+id = "assignment"
+labels = { en = "Take-home task", ru = "🧪 Тестовое" }
+
+[[event_types]]
+id = "tech_interview"
+labels = { en = "Technical interview", ru = "💻 Тех. интервью" }
+
+[[event_types]]
+id = "manager"
+labels = { en = "Interview with manager", ru = "👔 С руководителем" }
+
+[[event_types]]
+id = "final"
+labels = { en = "Final round", ru = "🏁 Финальное" }
+
+[[event_types]]
+id = "offer"
+labels = { en = "Offer / negotiation", ru = "💰 Оффер/переговоры" }
+
+[[event_types]]
+id = "other"
+labels = { en = "Other", ru = "📆 Другое" }
+
+
+# ---------------------------------------------------------------------------
+# Event outcomes
+# ---------------------------------------------------------------------------
+
+[[outcomes]]
+id = "passed"
+labels = { en = "Passed", ru = "✅ Пройдено" }
+
+[[outcomes]]
+id = "pending"
+labels = { en = "Pending", ru = "⏳ Ожидание" }
+
+[[outcomes]]
+id = "failed"
+labels = { en = "Failed", ru = "❌ Провалено" }

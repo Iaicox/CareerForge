@@ -1,0 +1,21 @@
+* text=auto eol=lf
+
+# PowerShell must keep CRLF: Windows PowerShell 5.1 mis-parses some LF scripts.
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Shell scripts must keep LF even when checked out on Windows.
+*.sh text eol=lf
+
+# Binary assets: never touch line endings, never diff as text.
+*.docx binary
+*.pdf  binary
+*.ttf  binary
+*.otf  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.xlsx binary

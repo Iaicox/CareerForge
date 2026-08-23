@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CareerForge board</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #16181d;
+    --muted: #6b7280;
+    --line: #e2e5ea;
+    --accent: #3b6ef5;
+    --danger: #c0392b;
+    --ok: #1e7f4f;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --panel: #1c1f25;
+      --ink: #e8eaed;
+      --muted: #9aa1ac;
+      --line: #2b2f37;
+      --accent: #6d93ff;
+      --danger: #ff6b5b;
+      --ok: #4cc38a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 14px;
+    padding: 14px 18px; border-bottom: 1px solid var(--line);
+    background: var(--panel); position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .01em; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  header button {
+    margin-left: auto; font: inherit; padding: 5px 11px; cursor: pointer;
+    background: transparent; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 7px;
+  }
+  header button:hover { border-color: var(--accent); color: var(--accent); }
+
+  #board {
+    display: flex; gap: 12px; padding: 16px; align-items: flex-start;
+    overflow-x: auto; min-height: calc(100vh - 60px);
+  }
+  .col {
+    flex: 0 0 260px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: var(--radius);
+    display: flex; flex-direction: column; max-height: calc(100vh - 96px);
+  }
+  .col.drop { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59,110,245,.18); }
+  .col > h2 {
+    margin: 0; padding: 10px 12px; font-size: 12px; font-weight: 650;
+    text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+    border-bottom: 1px solid var(--line); display: flex; gap: 6px;
+  }
+  .col > h2 .n { margin-left: auto; font-weight: 500; }
+  .col .cards { padding: 8px; overflow-y: auto; display: grid; gap: 8px; }
+  .col.terminal > h2 { color: var(--danger); }
+
+  .card {
+    background: var(--bg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 9px 10px; cursor: grab;
+  }
+  .card:hover { border-color: var(--accent); }
+  .card.dragging { opacity: .45; }
+  .card .co { font-weight: 620; }
+  .card .role { color: var(--muted); font-size: 12.5px; margin-top: 1px; }
+  .card .foot {
+    margin-top: 6px; display: flex; gap: 8px; align-items: center;
+    font-size: 11.5px; color: var(--muted);
+  }
+  .badge {
+    font-size: 10.5px; padding: 1px 6px; border-radius: 999px;
+    border: 1px solid currentColor;
+  }
+  .badge.warn { color: var(--danger); }
+
+  #panel {
+    position: fixed; top: 0; right: 0; width: min(430px, 100%); height: 100%;
+    background: var(--panel); border-left: 1px solid var(--line);
+    padding: 18px 20px; overflow-y: auto; z-index: 10;
+    transform: translateX(100%); transition: transform .16s ease;
+  }
+  #panel.open { transform: none; }
+  #panel h2 { margin: 0 0 2px; font-size: 16px; }
+  #panel .sub { color: var(--muted); margin-bottom: 14px; }
+  #panel dl { display: grid; grid-template-columns: 88px 1fr; gap: 4px 10px; margin: 0 0 16px; }
+  #panel dt { color: var(--muted); font-size: 12px; }
+  #panel dd { margin: 0; word-break: break-word; }
+  #panel h3 {
+    font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); margin: 16px 0 6px;
+  }
+  #panel .close { position: absolute; top: 14px; right: 16px; }
+  #panel ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+  #panel li { font-size: 13px; }
+  #panel li .when { color: var(--muted); }
+  input, select, textarea, button { font: inherit; color: inherit; }
+  input, select, textarea {
+    width: 100%; padding: 6px 8px; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  .row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .row > * { flex: 1; }
+  button.go {
+    background: var(--accent); color: #fff; border: 0;
+    border-radius: 6px; padding: 7px 12px; cursor: pointer;
+  }
+  button.plain {
+    background: transparent; border: 1px solid var(--line);
+    border-radius: 6px; padding: 7px 12px; cursor: pointer;
+  }
+  #toast {
+    position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+    max-width: 620px; padding: 10px 14px; border-radius: 8px;
+    background: var(--panel); border: 1px solid var(--danger); color: var(--danger);
+    box-shadow: 0 6px 22px rgba(0,0,0,.18); z-index: 20; display: none;
+  }
+  #toast.ok { border-color: var(--ok); color: var(--ok); }
+  .empty { color: var(--muted); padding: 40px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>CareerForge</h1>
+  <span class="meta" id="meta"></span>
+  <button id="refresh">Refresh</button>
+</header>
+
+<div id="board"><p class="empty">Loading&hellip;</p></div>
+
+<aside id="panel" hidden>
+  <button class="plain close" id="panelClose">Close</button>
+  <div id="panelBody"></div>
+</aside>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+const boardEl = document.getElementById("board");
+const metaEl  = document.getElementById("meta");
+const panel   = document.getElementById("panel");
+const panelBody = document.getElementById("panelBody");
+const toastEl = document.getElementById("toast");
+
+let state = null;
+let openCardId = null;
+let toastTimer = null;
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function toast(message, ok = false) {
+  toastEl.textContent = message;
+  toastEl.classList.toggle("ok", ok);
+  toastEl.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastEl.style.display = "none"; }, ok ? 3200 : 8000);
+}
+
+async function api(path, body) {
+  const res = await fetch(path, body ? {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  } : undefined);
+  const data = await res.json().catch(() => ({ error: res.statusText }));
+  if (!res.ok) throw new Error(data.error || "request failed");
+  return data;
+}
+
+async function load() {
+  try {
+    state = await api("/api/board");
+    render();
+  } catch (err) {
+    boardEl.innerHTML = `<p class="empty">${esc(err.message)}</p>`;
+  }
+}
+
+function cardById(id) {
+  for (const col of state.columns) {
+    const hit = col.cards.find((c) => c.id === id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function render() {
+  metaEl.textContent = `${state.total} application${state.total === 1 ? "" : "s"}`;
+  boardEl.innerHTML = "";
+  for (const col of state.columns) {
+    const el = document.createElement("section");
+    el.className = "col" + (col.terminal ? " terminal" : "");
+    el.dataset.status = col.id;
+    el.innerHTML =
+      `<h2>${esc(col.label)}<span class="n">${col.cards.length}</span></h2>` +
+      `<div class="cards"></div>`;
+    const cards = el.querySelector(".cards");
+    for (const card of col.cards) cards.appendChild(renderCard(card));
+
+    el.addEventListener("dragover", (e) => { e.preventDefault(); el.classList.add("drop"); });
+    el.addEventListener("dragleave", () => el.classList.remove("drop"));
+    el.addEventListener("drop", (e) => {
+      e.preventDefault();
+      el.classList.remove("drop");
+      const id = Number(e.dataTransfer.getData("text/plain"));
+      if (id) move(id, col.id);
+    });
+    boardEl.appendChild(el);
+  }
+  if (state.orphans && state.orphans.length) {
+    const el = document.createElement("section");
+    el.className = "col";
+    el.innerHTML = `<h2>Unknown status<span class="n">${state.orphans.length}</span></h2>
+      <div class="cards"></div>`;
+    const cards = el.querySelector(".cards");
+    for (const card of state.orphans) cards.appendChild(renderCard(card));
+    boardEl.appendChild(el);
+  }
+  if (openCardId !== null) openPanel(openCardId, false);
+}
+
+function renderCard(card) {
+  const el = document.createElement("article");
+  el.className = "card";
+  el.draggable = true;
+  el.dataset.id = card.id;
+  const when = (card.last_event_date || card.created_at || "").slice(0, 10);
+  const warn = card.folder_in_sync === false
+    ? `<span class="badge warn">folder in ${esc(card.folder_stage)}/</span>` : "";
+  el.innerHTML =
+    `<div class="co">${esc(card.company_name)}</div>` +
+    `<div class="role">${esc(card.role)}</div>` +
+    `<div class="foot"><span>${esc(when)}</span>${warn}</div>`;
+  el.addEventListener("dragstart", (e) => {
+    e.dataTransfer.setData("text/plain", String(card.id));
+    e.dataTransfer.effectAllowed = "move";
+    el.classList.add("dragging");
+  });
+  el.addEventListener("dragend", () => el.classList.remove("dragging"));
+  el.addEventListener("click", () => openPanel(card.id, true));
+  return el;
+}
+
+async function move(id, status) {
+  const card = cardById(id);
+  if (!card || card.status === status) return;
+  try {
+    const res = await api("/api/status", { id, status, updated_at: card.updated_at });
+    state = res.board;
+    render();
+    toast(res.folder || `Moved to ${status}`, true);
+  } catch (err) {
+    toast(err.message);
+    load();  // the server refused; show the truth rather than our stale copy
+  }
+}
+
+function openPanel(id, focus) {
+  const card = cardById(id);
+  if (!card) { closePanel(); return; }
+  openCardId = id;
+  panel.hidden = false;
+  requestAnimationFrame(() => panel.classList.add("open"));
+
+  const eventOptions = state.event_types
+    .map((t) => `<option value="${esc(t.id)}">${esc(t.label)}</option>`).join("");
+  const outcomeOptions = ['<option value="">outcome…</option>']
+    .concat(state.outcomes.map((o) => `<option value="${esc(o.id)}">${esc(o.label)}</option>`))
+    .join("");
+
+  panelBody.innerHTML = `
+    <h2>${esc(card.company_name)}</h2>
+    <div class="sub">${esc(card.role)}</div>
+    <dl>
+      <dt>Status</dt><dd>${esc(card.status_label)}</dd>
+      <dt>Posting</dt><dd>${card.url
+        ? `<a href="${esc(card.url)}" target="_blank" rel="noreferrer">${esc(card.url)}</a>`
+        : "&mdash;"}</dd>
+      <dt>Folder</dt><dd>${esc(card.folder || "not created yet")}</dd>
+      <dt>Work mode</dt><dd>${esc(card.work_mode_label || "—")}</dd>
+      <dt>Contact</dt><dd>${esc(card.hr_name || "—")}${
+        card.hr_email ? ` &lt;${esc(card.hr_email)}&gt;` : ""}</dd>
+    </dl>
+
+    <h3>Add event</h3>
+    <div class="row">
+      <select id="evType">${eventOptions}</select>
+      <input id="evDate" type="date" value="${new Date().toISOString().slice(0, 10)}">
+    </div>
+    <div class="row">
+      <select id="evOutcome">${outcomeOptions}</select>
+      <button class="go" id="evAdd">Add</button>
+    </div>
+
+    <h3>Notes</h3>
+    <textarea id="noteText" rows="5">${esc(card.notes || "")}</textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="go" id="noteSave">Save notes</button>
+    </div>
+  `;
+
+  panelBody.querySelector("#evAdd").addEventListener("click", async () => {
+    try {
+      const res = await api("/api/event", {
+        id,
+        type: panelBody.querySelector("#evType").value,
+        date: panelBody.querySelector("#evDate").value,
+        outcome: panelBody.querySelector("#evOutcome").value,
+      });
+      state = res.board;
+      render();
+      toast("Event added", true);
+    } catch (err) { toast(err.message); }
+  });
+
+  panelBody.querySelector("#noteSave").addEventListener("click", async () => {
+    try {
+      const res = await api("/api/note", {
+        id, text: panelBody.querySelector("#noteText").value,
+      });
+      state = res.board;
+      render();
+      toast("Notes saved", true);
+    } catch (err) { toast(err.message); }
+  });
+
+  if (focus) panel.scrollTop = 0;
+}
+
+function closePanel() {
+  openCardId = null;
+  panel.classList.remove("open");
+  setTimeout(() => { panel.hidden = true; }, 160);
+}
+
+document.getElementById("panelClose").addEventListener("click", closePanel);
+document.getElementById("refresh").addEventListener("click", load);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePanel(); });
+// The agent may change the tracker while this tab sits in the background.
+window.addEventListener("focus", load);
+
+load();
+</script>
+</body>
+</html>
