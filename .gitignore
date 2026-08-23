@@ -29,9 +29,6 @@
 /job_scraper/*
 !/job_scraper/.gitkeep
 
-# Pre-CareerForge documents, kept locally only.
-/archive/
-
 # Secrets
 .notion_token
 .env
