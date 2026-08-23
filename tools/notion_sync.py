@@ -411,6 +411,9 @@ def do_import(dry_run: bool, with_bodies: bool) -> int:
             continue
 
         if dry_run:
+            # Register the page anyway, so the event pass below can tell how
+            # many events would come across rather than reporting zero.
+            by_notion_id[page["id"]] = -1
             imported += 1
             continue
 
