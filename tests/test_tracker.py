@@ -168,6 +168,84 @@ class TrackerTestCase(unittest.TestCase):
         self.assertEqual(tracker.slugify("  Acme   Corp!  "), "acme-corp")
         self.assertEqual(tracker.slugify("***"), "unnamed")
 
+    # -- deadlines, location, fit ------------------------------------------
+
+    def test_deadline_parsing_keeps_only_real_dates(self):
+        for raw, expected in [
+            ("2026-09-01", "2026-09-01"),
+            ("01.09.2026", "2026-09-01"),
+            ("1 September 2026", "2026-09-01"),
+            ("Deadline: 2026-09-15 (or until filled)", "2026-09-15"),
+            # Free text must not be stored: it would make the column unsortable
+            # and every deadline comparison a lie.
+            ("ASAP", None),
+            ("rolling", None),
+            ("until filled", None),
+            ("", None),
+            (None, None),
+        ]:
+            with self.subTest(raw=raw):
+                self.assertEqual(tracker.parse_deadline(raw), expected)
+
+    def test_expired_filter_ignores_closed_applications(self):
+        live = self.add(company="Acme", deadline="2000-01-01")
+        closed = self.add(company="Globex", deadline="2000-01-01")
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, closed["slug"], "rejected")
+
+        expired = tracker.list_applications(self.conn, self.cfg, expired=True)
+        self.assertEqual([r["slug"] for r in expired], [live["slug"]])
+
+    def test_future_deadline_is_not_expired(self):
+        row = self.add(deadline="2099-01-01")
+        self.assertEqual(
+            tracker.list_applications(self.conn, self.cfg, expired=True), []
+        )
+        self.assertEqual(tracker.resolve(self.conn, row["slug"])["is_expired"], 0)
+
+    def test_unknown_location_verdict_is_refused(self):
+        with self.assertRaises(TrackerError):
+            self.add(location_verdict="maybe")
+
+    def test_fit_strengths_and_gaps_round_trip_as_lists(self):
+        row = self.add(
+            fit_score=72,
+            fit_strengths=["Vue 3", "design systems"],
+            fit_gaps=["no Kubernetes"],
+        )
+        d = tracker.enrich(dict(tracker.resolve(self.conn, row["slug"])), self.cfg)
+        self.assertEqual(d["fit_score"], 72)
+        self.assertEqual(d["fit_strengths"], ["Vue 3", "design systems"])
+        self.assertEqual(d["fit_gaps"], ["no Kubernetes"])
+
+    def test_empty_fit_lists_store_as_nothing(self):
+        row = self.add(fit_strengths=[], fit_gaps=["  "])
+        d = tracker.enrich(dict(tracker.resolve(self.conn, row["slug"])), self.cfg)
+        self.assertEqual(d["fit_strengths"], [])
+        self.assertEqual(d["fit_gaps"], [])
+
+    # -- migrations --------------------------------------------------------
+
+    def test_fresh_database_records_migrations_without_running_them(self):
+        # setUp built this database from schema.sql, which already contains
+        # everything the migrations would add. Replaying them would fail on
+        # duplicate columns, so they must be recorded as a baseline instead.
+        recorded = {r["name"] for r in self.conn.execute("SELECT name FROM migrations")}
+        on_disk = {p.name for p in tracker.MIGRATIONS_DIR.glob("*.sql")}
+        self.assertEqual(recorded, on_disk)
+
+    def test_init_is_idempotent(self):
+        before = self.add()
+        tracker.init_db()
+        tracker.init_db()
+        after = tracker.resolve(self.conn, before["slug"])
+        self.assertEqual(after["id"], before["id"])
+        self.assertIn(
+            "is_expired",
+            [d[0] for d in self.conn.execute(
+                "SELECT * FROM applications_view LIMIT 1").description],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

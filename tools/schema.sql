@@ -9,12 +9,22 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS migrations (
+    name       TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS companies (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL,
     slug        TEXT NOT NULL UNIQUE,
     description TEXT,
     website     TEXT,
+    -- Company research cache, shared by /apply's reviewer and /interview so the
+    -- same company is not researched twice. Leads only: the verification
+    -- checklist still applies before any of it reaches a document.
+    research_json TEXT,
+    researched_at TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -26,7 +36,20 @@ CREATE TABLE IF NOT EXISTS applications (
     url                TEXT,
     status             TEXT NOT NULL,
     work_mode          TEXT,
+    -- The place as the posting states it, kept separate from the verdict about
+    -- it: the place is a fact, the verdict is a judgement, and merging them
+    -- loses the fact.
+    location           TEXT,
+    location_verdict   TEXT,      -- pass | fail | flag
     office_address     TEXT,
+    -- ISO date, or NULL. "ASAP", "rolling" and free text store as NULL rather
+    -- than corrupting the column with unsortable values.
+    deadline           TEXT,
+    source             TEXT,      -- which board or channel it came from
+    -- The /apply evaluation, kept instead of scrolling away with the session.
+    fit_score          INTEGER,
+    fit_strengths      TEXT,      -- JSON array
+    fit_gaps           TEXT,      -- JSON array
     hr_name            TEXT,
     hr_email           TEXT,
     other_contacts     TEXT,
@@ -73,6 +96,9 @@ SELECT
     c.slug AS company_slug,
     c.website AS company_website,
     (SELECT MAX(e.date) FROM events e WHERE e.application_id = a.id) AS last_event_date,
-    (SELECT COUNT(*)    FROM events e WHERE e.application_id = a.id) AS event_count
+    (SELECT COUNT(*)    FROM events e WHERE e.application_id = a.id) AS event_count,
+    -- Evaluated per query, so it stays true as the day rolls over.
+    CASE WHEN a.deadline IS NOT NULL AND a.deadline < date('now')
+         THEN 1 ELSE 0 END AS is_expired
 FROM applications a
 JOIN companies c ON c.id = a.company_id;

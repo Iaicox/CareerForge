@@ -32,7 +32,8 @@ from typing import Any, Iterable
 REPO = Path(__file__).resolve().parent.parent
 DB_PATH = REPO / "tracker" / "careerforge.db"
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-SCHEMA_VERSION = "1"
+MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+SCHEMA_VERSION = "2"
 STAGES = ("applications", "processing", "rejected")
 
 
@@ -162,18 +163,49 @@ def connect(create: bool = False) -> sqlite3.Connection:
     return conn
 
 
-def init_db() -> str:
-    existed = DB_PATH.exists()
+def init_db() -> tuple[str, list[str]]:
+    """Create or upgrade the database. Returns (what happened, migrations run).
+
+    schema.sql describes the current shape and is all a fresh database needs.
+    An older database gets there through tools/migrations/*.sql, applied in
+    filename order and recorded so they run exactly once.
+    """
+    fresh = not DB_PATH.exists()
     conn = connect(create=True)
-    with conn:
-        conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
-        conn.execute(
-            "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (SCHEMA_VERSION,),
-        )
-    conn.close()
-    return "updated" if existed else "created"
+    try:
+        with conn:
+            # Views are derived, so recreating them is free -- and it is the only
+            # way a schema.sql change to a view reaches an existing database,
+            # since CREATE VIEW IF NOT EXISTS leaves the old definition alone.
+            conn.execute("DROP VIEW IF EXISTS applications_view")
+            conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (SCHEMA_VERSION,),
+            )
+        applied = apply_migrations(conn, baseline=fresh)
+    finally:
+        conn.close()
+    return ("created" if fresh else "updated"), applied
+
+
+def apply_migrations(conn: sqlite3.Connection, baseline: bool = False) -> list[str]:
+    """Run pending migrations. With baseline=True, record them without running.
+
+    A database just built from schema.sql already has everything the migrations
+    would add, so replaying them would fail on duplicate columns.
+    """
+    done = {r["name"] for r in conn.execute("SELECT name FROM migrations")}
+    pending = sorted(p for p in MIGRATIONS_DIR.glob("*.sql") if p.name not in done)
+    applied: list[str] = []
+    for path in pending:
+        with conn:
+            if not baseline:
+                conn.executescript(path.read_text(encoding="utf-8"))
+                applied.append(path.name)
+            conn.execute("INSERT INTO migrations(name) VALUES (?)", (path.name,))
+    return applied
 
 
 def rel(path: Path) -> str:
@@ -268,6 +300,41 @@ def find_applications(
     return []
 
 
+def parse_deadline(value: str | None) -> str | None:
+    """An ISO date, or nothing.
+
+    Postings say "ASAP", "rolling", "until filled" and worse. Storing those as
+    text would make the column unsortable and every deadline comparison a lie,
+    so anything that is not a real date becomes NULL. The wording, if it
+    matters, belongs in the notes.
+    """
+    if not value:
+        return None
+    text = value.strip()
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", text)
+    if m:
+        try:
+            return datetime.strptime(m.group(0), "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            return None
+    for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%m/%d/%Y", "%d %B %Y", "%B %d, %Y", "%d %b %Y"):
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def as_json_list(value) -> str | None:
+    """Store strengths/gaps as a JSON array, accepting a list or a string."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = [value] if value.strip() else []
+    items = [str(v).strip() for v in value if str(v).strip()]
+    return json.dumps(items, ensure_ascii=False) if items else None
+
+
 def unique_slug(conn: sqlite3.Connection, base: str) -> str:
     slug = base
     n = 2
@@ -291,6 +358,13 @@ def add_application(
     hr_name: str | None = None,
     hr_email: str | None = None,
     office_address: str | None = None,
+    location: str | None = None,
+    location_verdict: str | None = None,
+    deadline: str | None = None,
+    source: str | None = None,
+    fit_score: int | None = None,
+    fit_strengths=None,
+    fit_gaps=None,
     posting_text: str | None = None,
     cover_letter_text: str | None = None,
     notes: str | None = None,
@@ -298,6 +372,10 @@ def add_application(
 ) -> sqlite3.Row:
     cfg.status(status)
     cfg.validate(work_mode, "work_modes")
+    if location_verdict not in (None, "pass", "fail", "flag"):
+        raise TrackerError(
+            f"unknown location verdict {location_verdict!r}; expected pass, fail or flag"
+        )
 
     if not force:
         dupes = find_applications(conn, url=url, company=company, role=role)
@@ -326,8 +404,10 @@ def add_application(
     cur = conn.execute(
         """INSERT INTO applications
            (company_id, role, slug, url, status, work_mode, office_address,
+            location, location_verdict, deadline, source,
+            fit_score, fit_strengths, fit_gaps,
             hr_name, hr_email, posting_text, cover_letter_text, notes)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             company_id,
             role,
@@ -336,6 +416,13 @@ def add_application(
             status,
             work_mode,
             office_address,
+            location,
+            location_verdict,
+            parse_deadline(deadline),
+            source,
+            fit_score,
+            as_json_list(fit_strengths),
+            as_json_list(fit_gaps),
             hr_name,
             hr_email,
             posting_text,
@@ -484,6 +571,7 @@ def list_applications(
     stage: str | None = None,
     company: str | None = None,
     stale: bool = False,
+    expired: bool = False,
 ) -> list[dict]:
     sql = "SELECT * FROM applications_view"
     where: list[str] = []
@@ -520,12 +608,22 @@ def list_applications(
             if r["stage"] == "applications"
             and (r["last_event_date"] or r["created_at"])[:10] < cutoff
         ]
+    if expired:
+        # Only worth surfacing while the application is still open; a deadline
+        # that passed after a rejection is not news.
+        rows = [r for r in rows if r["is_expired"] and r["stage"] != "rejected"]
     return rows
 
 
 def enrich(row: dict, cfg: Config) -> dict:
     row["status_label"] = cfg.label("statuses", row.get("status"))
     row["work_mode_label"] = cfg.label("work_modes", row.get("work_mode"))
+    for key in ("fit_strengths", "fit_gaps"):
+        raw = row.get(key)
+        try:
+            row[key] = json.loads(raw) if raw else []
+        except (TypeError, ValueError):
+            row[key] = [raw] if raw else []
     try:
         row["stage"] = cfg.stage_of(row["status"]) if row.get("status") else None
     except TrackerError:
@@ -676,6 +774,14 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--url")
     a.add_argument("--status", default="draft")
     a.add_argument("--work-mode", dest="work_mode")
+    a.add_argument("--location", help="the place as the posting states it")
+    a.add_argument("--location-verdict", dest="location_verdict",
+                   choices=["pass", "fail", "flag"])
+    a.add_argument("--deadline", help="ISO date; free text like 'ASAP' is stored as none")
+    a.add_argument("--source", help="which board or channel this came from")
+    a.add_argument("--fit-score", dest="fit_score", type=int)
+    a.add_argument("--fit-strengths", dest="fit_strengths", nargs="*")
+    a.add_argument("--fit-gaps", dest="fit_gaps", nargs="*")
     a.add_argument("--slug", help="folder name; defaults to the company slug")
     a.add_argument("--website")
     a.add_argument("--company-description", dest="company_description")
@@ -698,6 +804,9 @@ def build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--company")
     ls.add_argument(
         "--stale", action="store_true", help="open and silent past the configured cutoff"
+    )
+    ls.add_argument(
+        "--expired", action="store_true", help="deadline has passed and the status is still open"
     )
 
     sh = with_json(sub.add_parser("show", help="full detail for one application"))
@@ -740,9 +849,11 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     if args.command == "init":
-        what = init_db()
+        what, migrations = init_db()
         cfg = load_config()
         print(f"tracker database {what}: {rel(DB_PATH)}")
+        for name in migrations:
+            print(f"  migration applied: {name}")
         print(
             f"configuration: {rel(cfg.source)} "
             f"(locale {cfg.locale}, {len(cfg.statuses)} statuses)"
@@ -778,6 +889,13 @@ def main(argv: list[str] | None = None) -> int:
                     hr_name=args.hr_name,
                     hr_email=args.hr_email,
                     office_address=args.office_address,
+                    location=args.location,
+                    location_verdict=args.location_verdict,
+                    deadline=args.deadline,
+                    source=args.source,
+                    fit_score=args.fit_score,
+                    fit_strengths=args.fit_strengths,
+                    fit_gaps=args.fit_gaps,
                     posting_text=posting,
                     cover_letter_text=cover,
                     notes=args.notes,
@@ -808,6 +926,7 @@ def main(argv: list[str] | None = None) -> int:
                 stage=args.stage,
                 company=args.company,
                 stale=args.stale,
+                expired=args.expired,
             )
             emit(args, rows, render_table(rows))
 
@@ -821,6 +940,21 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  url      {d['url'] or '-'}")
                 print(f"  folder   {d['folder'] or '-'}")
                 print(f"  mode     {d['work_mode_label'] or '-'}")
+                place = d["location"] or "-"
+                if d["location_verdict"]:
+                    place += f"  [{d['location_verdict']}]"
+                print(f"  location {place}")
+                if d["deadline"]:
+                    print(f"  deadline {d['deadline']}"
+                          + ("  (expired)" if d["is_expired"] else ""))
+                if d["source"]:
+                    print(f"  source   {d['source']}")
+                if d["fit_score"] is not None:
+                    print(f"  fit      {d['fit_score']}/100")
+                for item in d["fit_strengths"]:
+                    print(f"    + {item}")
+                for item in d["fit_gaps"]:
+                    print(f"    - {item}")
                 if d["events"]:
                     print("  events:")
                     for e in d["events"]:

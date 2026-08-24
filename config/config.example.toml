@@ -31,6 +31,35 @@ engine = "auto"
 stale_after_days = 30
 
 
+[gemini]
+# Optional. Delegates bulk gathering and compression to the Gemini CLI so it
+# does not spend Claude's context. Judgement about what is honest to claim
+# never moves -- that stays with Claude, against profile/ and CLAUDE.md.
+#
+# Needs `npm install -g @google/gemini-cli` and one authentication, either by
+# running `gemini` once and signing in, or by setting GEMINI_API_KEY.
+# Check with: python tools/gemini.py check
+enabled = false
+model = "gemini-2.5-flash"
+timeout_seconds = 120
+
+# How long a cached company research result stays fresh.
+cache_days = 30
+
+# Which jobs to delegate. Drop one from the list to take it back without
+# losing the others -- if ranking quality disappoints, remove "rank" and keep
+# the research cache.
+#   research   company facts and news, with sources
+#   extract    job posting text or HTML into structured fields
+#   rank       batch-scoring scraped postings
+#   summarize  long pages (handbooks, review sites)
+tasks = ["research", "extract", "rank", "summarize"]
+
+# Record every prompt sent to Google under tracker/gemini-log/, so what left
+# this machine stays inspectable.
+log = true
+
+
 [notion]
 # Optional mirror. Everything works without it.
 # Run:  python tools/notion_sync.py provision

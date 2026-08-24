@@ -243,6 +243,45 @@ def check_notion() -> Check:
                  "python tools/notion_sync.py provision", required=False)
 
 
+def check_gemini() -> Check:
+    """Optional: bulk gathering delegated off Claude's context."""
+    cfg_path = REPO / "config" / "config.toml"
+    enabled = False
+    if cfg_path.exists():
+        try:
+            import tomllib
+            with cfg_path.open("rb") as fh:
+                enabled = bool(tomllib.load(fh).get("gemini", {}).get("enabled"))
+        except Exception:
+            enabled = False
+    if not enabled:
+        return Check("Gemini delegation", OK, "disabled (optional)", required=False)
+
+    if not shutil.which("gemini"):
+        return Check("Gemini delegation", WARN, "enabled, but the CLI is not on PATH",
+                     "npm install -g @google/gemini-cli", required=False)
+    try:
+        probe = subprocess.run(
+            [sys.executable, str(REPO / "tools" / "gemini.py"), "check"],
+            capture_output=True, text=True, timeout=90,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return Check("Gemini delegation", WARN, f"probe failed: {exc}",
+                     "python tools/gemini.py check", required=False)
+    if probe.returncode == 0:
+        return Check("Gemini delegation", OK, "installed and authenticated", required=False)
+    reason = ""
+    for line in (probe.stdout or "").splitlines():
+        if "NOT USABLE" in line:
+            reason = line.split("NOT USABLE:", 1)[-1].strip()[:80]
+    return Check(
+        "Gemini delegation", WARN, reason or "enabled but not usable",
+        "run `gemini` once and sign in, or set GEMINI_API_KEY; "
+        "work falls back to Claude meanwhile",
+        required=False,
+    )
+
+
 def run_checks() -> list[Check]:
     word = check_word()
     libre = check_libreoffice()
@@ -258,6 +297,7 @@ def run_checks() -> list[Check]:
         check_pagecount(),
         check_templates(),
         check_fonts(),
+        check_gemini(),
         check_notion(),
     ]
 

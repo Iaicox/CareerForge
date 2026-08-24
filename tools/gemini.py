@@ -1,0 +1,468 @@
+#!/usr/bin/env python3
+"""Delegate token-heavy, judgement-light work to the Gemini CLI.
+
+    python tools/gemini.py check
+    python tools/gemini.py research-company --name "Acme" --url https://acme.example
+    python tools/gemini.py extract-posting --file applications/acme/raw.html
+    python tools/gemini.py rank --input job_scraper/seen_jobs.json --criteria profile/evaluation.md
+    python tools/gemini.py summarize --file long.html --question "What is their tech stack?"
+
+Gemini gathers and compresses. It never decides what is honest to claim about
+the candidate -- that judgement stays in one place, with Claude, against
+profile/ and the rules in CLAUDE.md.
+
+**Failure is never fatal.** Every subcommand exits 3 when Gemini is unusable,
+so the caller can do the work itself instead. A job search must not stop
+because a side tool is down.
+
+Exit codes:
+    0  success
+    1  usage or unexpected error
+    3  Gemini unavailable (not installed, not authenticated, or disabled)
+    4  timed out
+    5  Gemini answered, but not with anything parseable
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from tracker import REPO, TrackerError, load_config, rel  # noqa: E402
+
+LOG_DIR = REPO / "tracker" / "gemini-log"
+
+EXIT_OK, EXIT_ERROR, EXIT_UNAVAILABLE, EXIT_TIMEOUT, EXIT_BAD_OUTPUT = 0, 1, 3, 4, 5
+
+
+class GeminiUnavailable(Exception):
+    """Gemini cannot be used right now. The caller should do the work itself."""
+
+    exit_code = EXIT_UNAVAILABLE
+
+
+class GeminiTimeout(GeminiUnavailable):
+    exit_code = EXIT_TIMEOUT
+
+
+class GeminiBadOutput(Exception):
+    exit_code = EXIT_BAD_OUTPUT
+
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
+
+def settings() -> dict:
+    try:
+        cfg = load_config().data.get("gemini", {})
+    except TrackerError:
+        cfg = {}
+    return {
+        "enabled": cfg.get("enabled", False),
+        "model": cfg.get("model", "gemini-2.5-flash"),
+        "timeout_seconds": int(cfg.get("timeout_seconds", 120)),
+        "cache_days": int(cfg.get("cache_days", 30)),
+        "tasks": list(cfg.get("tasks", ["research", "extract", "rank", "summarize"])),
+        "log": bool(cfg.get("log", True)),
+    }
+
+
+def task_enabled(task: str) -> bool:
+    s = settings()
+    return bool(s["enabled"]) and task in s["tasks"]
+
+
+def binary() -> str:
+    exe = shutil.which("gemini")
+    if not exe:
+        raise GeminiUnavailable(
+            "the gemini CLI is not on PATH (npm install -g @google/gemini-cli)"
+        )
+    return exe
+
+
+# ---------------------------------------------------------------------------
+# Calling
+# ---------------------------------------------------------------------------
+
+
+def log_call(kind: str, prompt: str, result: dict) -> None:
+    """Record what was sent to Google, so that stays inspectable."""
+    if not settings()["log"]:
+        return
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc)
+        entry = {
+            "at": stamp.isoformat(timespec="seconds"),
+            "kind": kind,
+            "prompt_chars": len(prompt),
+            "prompt": prompt,
+            "response_chars": len(str(result.get("response", ""))),
+            "stats": result.get("stats"),
+            "error": result.get("error"),
+        }
+        path = LOG_DIR / f"{stamp:%Y-%m-%d}.jsonl"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+    except OSError:
+        pass  # logging must never be the reason a call fails
+
+
+def call(prompt: str, *, kind: str = "call", model: str | None = None,
+         timeout: int | None = None) -> str:
+    """Run one headless Gemini prompt and return its text response."""
+    s = settings()
+    if not s["enabled"]:
+        raise GeminiUnavailable("gemini is disabled in config/config.toml ([gemini] enabled)")
+
+    cmd = [
+        binary(),
+        "-p", prompt,
+        "-o", "json",
+        "-m", model or s["model"],
+        # Read-only: this is a summariser, not an agent let loose in the repo.
+        "--approval-mode", "plan",
+        # Without this the approval mode is silently downgraded in an untrusted
+        # folder, which would quietly hand it write tools.
+        "--skip-trust",
+    ]
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout or s["timeout_seconds"], env=env,
+        )
+    except subprocess.TimeoutExpired:
+        raise GeminiTimeout(f"gemini timed out after {timeout or s['timeout_seconds']}s")
+    except OSError as exc:
+        raise GeminiUnavailable(f"could not run gemini: {exc}")
+
+    # The JSON envelope lands on stdout on the happy path, but an auth failure
+    # writes it to stderr instead, so both have to be considered.
+    payload = extract_json(proc.stdout)
+    if not isinstance(payload, dict) or ("response" not in payload and "error" not in payload):
+        from_stderr = extract_json(proc.stderr)
+        if isinstance(from_stderr, dict):
+            payload = from_stderr
+    if not isinstance(payload, dict):
+        payload = {}
+    log_call(kind, prompt, payload)
+
+    # Exit codes are not reliable here either: the same failure has been seen
+    # exiting 0 and exiting 41, reporting itself only inside the JSON. The
+    # error key is what counts.
+    if payload.get("error"):
+        err = payload["error"]
+        message = err.get("message", "unknown error") if isinstance(err, dict) else str(err)
+        if re.search(r"auth|api[_ ]key|credential|sign ?in|login|GEMINI_API_KEY", message, re.I):
+            raise GeminiUnavailable(f"not authenticated: {message}")
+        raise GeminiUnavailable(f"gemini error: {message}")
+
+    if "response" not in payload:
+        detail = (proc.stderr or proc.stdout or "").strip()[:300]
+        raise GeminiUnavailable(f"gemini returned nothing usable: {detail}")
+
+    return str(payload["response"])
+
+
+def extract_json(text: str) -> Any:
+    """Parse JSON that may arrive bare, fenced, or wrapped in prose."""
+    if not text:
+        return None
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    fenced = re.search(r"```(?:json)?\s*(.+?)\s*```", text, re.S)
+    if fenced:
+        try:
+            return json.loads(fenced.group(1))
+        except ValueError:
+            pass
+    # Fall back to the outermost brace or bracket span.
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start, end = text.find(opener), text.rfind(closer)
+        if 0 <= start < end:
+            try:
+                return json.loads(text[start : end + 1])
+            except ValueError:
+                continue
+    return None
+
+
+def call_json(prompt: str, *, kind: str, model: str | None = None,
+              timeout: int | None = None) -> Any:
+    raw = call(prompt, kind=kind, model=model, timeout=timeout)
+    data = extract_json(raw)
+    if data is None:
+        raise GeminiBadOutput(
+            f"expected JSON from gemini, got: {raw.strip()[:300]}"
+        )
+    return data
+
+
+JSON_ONLY = (
+    "Return ONLY a JSON object. No prose before or after it, no markdown fence. "
+    "Use null for anything you do not know -- never guess, and never invent a "
+    "fact to fill a field."
+)
+
+
+# ---------------------------------------------------------------------------
+# Tasks
+# ---------------------------------------------------------------------------
+
+
+def research_company(name: str, url: str | None = None) -> dict:
+    prompt = f"""Research the company "{name}"{f' (website: {url})' if url else ''} \
+for a candidate preparing a job application.
+
+Use web search. Every factual claim must carry the source URL you found it at, \
+and a date where the source gives one. Recency matters: a "recent" launch from \
+three years ago is not recent.
+
+{JSON_ONLY}
+
+Schema:
+{{
+  "name": string,
+  "website": string|null,
+  "what_they_do": string,          // one or two sentences: product and market
+  "size": string|null,             // headcount or band, if stated anywhere
+  "locations": [string],
+  "recent_news": [
+    {{"headline": string, "date": "YYYY-MM-DD"|null, "source_url": string}}
+  ],
+  "tech_stack": [string],          // only if publicly stated
+  "culture_signals": [
+    {{"signal": string, "source_url": string}}
+  ],
+  "red_flags": [
+    {{"concern": string, "source_url": string}}   // layoffs, lawsuits, churn
+  ],
+  "unverified": [string]           // things you believe but could not source
+}}"""
+    data = call_json(prompt, kind="research-company")
+    if not isinstance(data, dict):
+        raise GeminiBadOutput("research did not come back as an object")
+    data.setdefault("name", name)
+    data["fetched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return data
+
+
+def extract_posting(text: str) -> dict:
+    prompt = f"""Extract structured data from this job posting.
+
+Copy what the posting says. Do not infer, normalise or improve it: if the \
+salary is not stated, it is null, not an estimate.
+
+{JSON_ONLY}
+
+Schema:
+{{
+  "role": string,
+  "company": string,
+  "location": string|null,         // as written in the posting
+  "work_mode": "remote"|"hybrid"|"onsite"|null,
+  "employment_type": string|null,
+  "salary": string|null,           // verbatim, including currency and period
+  "deadline": "YYYY-MM-DD"|null,   // null for "ASAP", "rolling", "until filled"
+  "languages_required": [string],
+  "requirements": [string],
+  "nice_to_have": [string],
+  "tech_stack": [string],
+  "contact_name": string|null,
+  "contact_email": string|null,
+  "apply_url": string|null
+}}
+
+POSTING:
+{text[:60000]}"""
+    data = call_json(prompt, kind="extract-posting")
+    if not isinstance(data, dict):
+        raise GeminiBadOutput("extraction did not come back as an object")
+    return data
+
+
+def rank_postings(postings: list[dict], criteria: str) -> list[dict]:
+    slim = [
+        {
+            "id": p.get("id") or p.get("url"),
+            "title": p.get("title"),
+            "company": p.get("company"),
+            "location": p.get("location"),
+            "summary": (p.get("summary") or p.get("requirements") or "")[:1500],
+        }
+        for p in postings
+    ]
+    prompt = f"""Score each job posting against this candidate's criteria.
+
+CRITERIA:
+{criteria[:20000]}
+
+Judge honestly. A posting that fails a hard constraint -- location, or a \
+required language the candidate does not have -- scores as a fail regardless of \
+how well the rest matches. Do not inflate scores to be encouraging.
+
+{JSON_ONLY}
+
+Return {{"results": [
+  {{
+    "id": string,
+    "score": 0-100,
+    "verdict": "strong"|"good"|"moderate"|"weak"|"poor",
+    "strengths": [string],
+    "gaps": [string],
+    "location_verdict": "pass"|"fail"|"flag",
+    "language_verdict": "pass"|"fail"|"flag",
+    "reason": string          // one sentence
+  }}
+]}}
+
+POSTINGS:
+{json.dumps(slim, ensure_ascii=False)}"""
+    data = call_json(prompt, kind="rank")
+    if isinstance(data, dict):
+        data = data.get("results", [])
+    if not isinstance(data, list):
+        raise GeminiBadOutput("ranking did not come back as a list")
+    return data
+
+
+def summarize(text: str, question: str) -> str:
+    prompt = f"""{question}
+
+Answer from the text below only. If it does not answer the question, say so \
+plainly rather than filling the gap from general knowledge.
+
+TEXT:
+{text[:200000]}"""
+    return call(prompt, kind="summarize")
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def read_input(path: str | None, inline: str | None) -> str:
+    if inline:
+        return inline
+    if path == "-":
+        return sys.stdin.read()
+    if path:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    raise TrackerError("provide --file or --text")
+
+
+def cmd_check() -> int:
+    s = settings()
+    print(f"  enabled   {s['enabled']}")
+    print(f"  model     {s['model']}")
+    print(f"  tasks     {', '.join(s['tasks']) or '(none)'}")
+    exe = shutil.which("gemini")
+    print(f"  binary    {exe or 'NOT FOUND'}")
+    if not exe:
+        print("\n  install: npm install -g @google/gemini-cli")
+        return EXIT_UNAVAILABLE
+    if not s["enabled"]:
+        print("\n  set [gemini] enabled = true in config/config.toml to use it")
+        return EXIT_UNAVAILABLE
+    try:
+        reply = call("Reply with exactly: OK", kind="check", timeout=60)
+    except (GeminiUnavailable, GeminiBadOutput) as exc:
+        print(f"\n  NOT USABLE: {exc}")
+        if "not authenticated" in str(exc):
+            print("\n  Authenticate once, either way:")
+            print("    - run `gemini` interactively and sign in with a Google account, or")
+            print("    - set GEMINI_API_KEY from https://aistudio.google.com/apikey")
+        return getattr(exc, "exit_code", EXIT_UNAVAILABLE)
+    print(f"  live      yes ({reply.strip()[:40]})")
+    print(f"  log       {rel(LOG_DIR)}")
+    return EXIT_OK
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Delegate bulk work to the Gemini CLI")
+    sub = ap.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("check", help="is Gemini installed, configured and authenticated?")
+
+    rc = sub.add_parser("research-company", help="research a company, with sources")
+    rc.add_argument("--name", required=True)
+    rc.add_argument("--url")
+
+    ep = sub.add_parser("extract-posting", help="job posting text or HTML -> JSON")
+    ep.add_argument("--file")
+    ep.add_argument("--text")
+
+    rk = sub.add_parser("rank", help="score a batch of postings against criteria")
+    rk.add_argument("--input", required=True, help="JSON list, or seen_jobs.json")
+    rk.add_argument("--criteria", required=True, help="file describing what the candidate wants")
+
+    sm = sub.add_parser("summarize", help="answer a question from a long document")
+    sm.add_argument("--file")
+    sm.add_argument("--text")
+    sm.add_argument("--question", required=True)
+
+    args = ap.parse_args()
+
+    if args.command == "check":
+        return cmd_check()
+
+    try:
+        if args.command == "research-company":
+            print(json.dumps(research_company(args.name, args.url),
+                             ensure_ascii=False, indent=2))
+
+        elif args.command == "extract-posting":
+            print(json.dumps(extract_posting(read_input(args.file, args.text)),
+                             ensure_ascii=False, indent=2))
+
+        elif args.command == "rank":
+            raw = json.loads(Path(args.input).read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and "seen" in raw:
+                postings = [{**v, "id": k} for k, v in raw["seen"].items()]
+            elif isinstance(raw, dict):
+                postings = list(raw.values())
+            else:
+                postings = raw
+            criteria = Path(args.criteria).read_text(encoding="utf-8", errors="replace")
+            print(json.dumps(rank_postings(postings, criteria),
+                             ensure_ascii=False, indent=2))
+
+        elif args.command == "summarize":
+            print(summarize(read_input(args.file, args.text), args.question))
+
+    except (GeminiUnavailable, GeminiBadOutput) as exc:
+        print(f"gemini unavailable: {exc}", file=sys.stderr)
+        print("fall back to doing this in Claude.", file=sys.stderr)
+        return getattr(exc, "exit_code", EXIT_UNAVAILABLE)
+    except TrackerError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
