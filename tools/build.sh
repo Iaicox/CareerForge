@@ -66,8 +66,9 @@ fi
   echo "error: no cv_*.md or cover*.md in $TARGET (pass a file path to build other markdown)" >&2
   exit 1; }
 
-printf '%-34s %-26s %6s %6s  %s\n' Document Steps Pages Limit Status
+printf '%-34s %-26s %6s %6s  %-11s %s\n' Document Steps Pages Limit Status ATS
 over=0
+ats_findings=""
 
 for md in "${FILES[@]}"; do
   base="$(basename "$md")"
@@ -97,7 +98,22 @@ for md in "${FILES[@]}"; do
 
   pages="$("$PYTHON" "$SCRIPT_DIR/pagecount.py" "$pdf")"
   if [ "$pages" -le "$limit" ]; then status="OK"; else status="OVER LIMIT"; over=1; fi
-  printf '%-34s %-26s %6s %6s  %s\n' "$base" "$steps" "$pages" "$limit" "$status"
+
+  # ATS text layer: a PDF can look perfect and extract as mojibake, which stays
+  # invisible until an employer's parser reads nothing.
+  ats_output="$("$PYTHON" "$SCRIPT_DIR/atscheck.py" "$pdf" --source "$md" 2>&1)" && ats="OK" || {
+    case $? in
+      3) ats="no extractor" ;;
+      *) ats="see below"; ats_findings="${ats_findings}${ats_output}"$'\n' ;;
+    esac
+  }
+  printf '%-34s %-26s %6s %6s  %-11s %s\n' "$base" "$steps" "$pages" "$limit" "$status" "$ats"
 done
+
+if [ -n "${ats_findings:-}" ]; then
+  echo
+  echo "ATS findings (warnings - the documents still built):"
+  printf '%s' "$ats_findings" | sed 's/^/  /'
+fi
 
 exit $(( over ? 2 : 0 ))

@@ -127,6 +127,7 @@ if (Test-Path $target -PathType Container) {
 if (-not $mdFiles) { throw "no cv_*.md or cover*.md documents found in $target (pass a file path to build other markdown)" }
 
 $results = @()
+$atsDetails = @()
 $word = $null
 try {
     foreach ($md in $mdFiles) {
@@ -170,10 +171,21 @@ try {
             $engineUsed = 'libreoffice'
         }
 
+        # ATS text layer: a PDF can look perfect and extract as mojibake, which
+        # is invisible until an employer's parser reads nothing.
+        $atsOutput = & python (Join-Path $PSScriptRoot 'atscheck.py') $pdf --source $md.FullName 2>&1
+        $atsCode = $LASTEXITCODE
+        $ats = switch ($atsCode) {
+            0 { 'OK' }
+            3 { 'no extractor' }
+            default { 'see below' }
+        }
+        if ($atsCode -eq 2) { $atsDetails += $atsOutput }
+
         $ok = if ($pages -le $limit) { 'OK' } else { "OVER LIMIT ($limit)" }
         $results += [pscustomobject]@{
             Document = $md.Name; Steps = $step; Engine = $engineUsed
-            Pages = $pages; Limit = $limit; Status = $ok
+            Pages = $pages; Limit = $limit; Status = $ok; ATS = $ats
         }
     }
 }
@@ -182,4 +194,8 @@ finally {
 }
 
 $results | Format-Table -AutoSize
+if ($atsDetails) {
+    Write-Output 'ATS findings (warnings - the document still built):'
+    $atsDetails | ForEach-Object { Write-Output "  $_" }
+}
 if ($results | Where-Object { $_.Pages -gt $_.Limit }) { exit 2 }
