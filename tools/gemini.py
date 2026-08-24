@@ -197,6 +197,10 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
     if envelope.get("error"):
         err = envelope["error"]
         message = err.get("message", "unknown error") if isinstance(err, dict) else str(err)
+        if re.search(r"quota|rate.?limit|resource.?exhausted|429", message, re.I):
+            raise GeminiUnavailable(
+                "quota exhausted for this model today -- work falls back to Claude"
+            )
         if re.search(r"auth|api[_ ]key|credential|sign ?in|login|GEMINI_API_KEY", message, re.I):
             raise GeminiUnavailable(f"not authenticated: {message}")
         raise GeminiUnavailable(f"gemini error: {message}")
@@ -204,8 +208,16 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
     if "response" not in envelope:
         # Not every failure arrives in the JSON envelope -- some are emitted as
         # plain text on stderr -- so classify from the raw output too, or the
-        # user gets "nothing usable" when the real answer is "log in".
+        # user gets "nothing usable" when the real answer is "log in" or
+        # "come back tomorrow".
         combined = f"{proc.stderr or ''}\n{proc.stdout or ''}".strip()
+        if re.search(r"quota|rate.?limit|resource.?exhausted|429", combined, re.I):
+            raise GeminiUnavailable(
+                "quota exhausted for this model today. Wait for the daily reset, "
+                "switch [gemini] model to a lighter one, or sign in with a Google "
+                "account instead of an API key (run `gemini` interactively) -- "
+                "meanwhile the work falls back to Claude."
+            )
         if re.search(r"auth|api[_ ]key|credential|sign ?in|GEMINI_API_KEY", combined, re.I):
             raise GeminiUnavailable(f"not authenticated: {combined[:300]}")
         raise GeminiUnavailable(f"gemini returned nothing usable: {combined[:300]}")
