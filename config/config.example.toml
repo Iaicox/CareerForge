@@ -31,6 +31,26 @@ engine = "auto"
 stale_after_days = 30
 
 
+[mail]
+# Optional. Reads the mailbox you actually apply from -- which is often not the
+# one wired to a chat connector -- and matches employer replies to open
+# applications. Any IMAP provider; nothing is ever marked read, moved or
+# deleted.
+#
+# The password goes in MAIL_PASSWORD or a .mail_password file, never here.
+# Use an app password: Gmail requires one, and it can be revoked on its own.
+#   Gmail  imap.gmail.com   993   myaccount.google.com/apppasswords
+#   Outlook outlook.office365.com 993
+#   Fastmail imap.fastmail.com 993
+#
+# Check with: python tools/mailsync.py check
+# host = "imap.gmail.com"
+# port = 993
+# user = "applications@example.com"
+# mailbox = "INBOX"
+# ssl = true
+
+
 [gemini]
 # Optional. Delegates bulk gathering and compression to the Gemini CLI so it
 # does not spend Claude's context. Judgement about what is honest to claim

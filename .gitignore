@@ -25,12 +25,19 @@
 /rejected/*
 !/rejected/.gitkeep
 
+# Career materials you drop in for /setup and /expand to read:
+# CVs, certificates, reference letters, portfolio exports.
+/documents/*
+!/documents/.gitkeep
+!/documents/README.md
+
 # Job scraper state: seen postings and per-run shortlists.
 /job_scraper/*
 !/job_scraper/.gitkeep
 
 # Secrets
 .notion_token
+.mail_password
 .env
 
 # Salary benchmark data (you supply your own dataset)

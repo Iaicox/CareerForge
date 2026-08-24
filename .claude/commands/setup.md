@@ -34,13 +34,25 @@ plainly that documents cannot be built until they are installed.
 
 ## Step 1: choose a path
 
+First, look in `documents/`:
+
+```bash
+ls documents/
+```
+
+If it holds anything besides `README.md`, say what you found and start there —
+that is the cheapest good start available, and it beats asking the user to
+paste a CV into a chat window.
+
 > **Welcome to CareerForge.**
 >
 > I'll build your professional profile so I can evaluate postings, tailor CVs,
 > write cover letters and prep you for interviews.
 >
-> **Path A — import from a CV (recommended).** Share your CV (mention the file
-> with `@` or paste the text). I'll extract what I can and ask about the rest.
+> **Path A — read your documents (recommended).** Drop CVs, certificates,
+> reference letters and project write-ups into `documents/` and I'll read them.
+> Old CVs are especially useful: they usually describe work a later CV had to
+> cut for space. You can also share a file with `@` or paste text.
 >
 > **Path B — interview.** I'll walk you through it section by section.
 >
@@ -48,9 +60,19 @@ plainly that documents cannot be built until they are installed.
 
 ### Path A: import
 
-Read the document, extract identity, contact, education, experience, skills,
-projects, publications and awards. Show the user what you extracted and ask
-about the gaps — behavioural profile, career goals, deal-breakers, salary floor.
+Read everything available, and extract identity, contact, education,
+experience, skills, projects, publications and awards. Show the user what you
+extracted and ask about the gaps — behavioural profile, career goals,
+deal-breakers, salary floor.
+
+A long PDF is worth delegating rather than reading into context:
+
+```bash
+python tools/gemini.py summarize --file documents/<file> \
+  --question "List every role, project, technology and measurable outcome mentioned. Quote the wording used."
+```
+
+Exit code 3 means Gemini is unavailable — read it yourself.
 
 ### Path B: interview
 
@@ -154,9 +176,10 @@ Re-run `python tools/doctor.py` and show the result. Then:
 > **Setup complete.** Written: `profile/…`, `config/config.toml`,
 > `tracker/careerforge.db`.
 >
-> - `/scrape` — search job boards now
+> - `/scrape` — search job boards now, then `/rank` to score what it finds
 > - `/apply <url>` — run the full application workflow on a posting
 > - `/board` — open your pipeline as a kanban
+> - `/expand` — grow the profile as you add documents
 > - `/setup --section search` — re-tune your searches as priorities change
 
 Finally, confirm that nothing outside the ignored paths changed:
