@@ -14,15 +14,21 @@ message.
 
 ## 1. Research the company
 
-Use WebSearch and WebFetch to find:
+**You may be handed research already.** If so, start from it and only search
+for what it does not cover. It was gathered from the same sources you would
+use, and repeating the search wastes the turn.
+
+Treat handed-over research exactly as you would your own: each item carries a
+source URL and a date, and anything without one is `unverified` until you check
+it. Note the date of everything you cite — a "recent" launch from three years
+ago is not an angle worth using, and a cached one may be older still.
+
+Search for whatever is missing:
 
 - The company website, what it actually sells, and its stated mission
 - The specific department or team named in the posting
 - Recent news: funding, launches, layoffs, restructuring, acquisitions
 - Culture and values signals, including employee reviews
-
-Note the date of anything you cite. A "recent" launch from three years ago is
-not an angle worth using.
 
 ## 2. Read the reference material
 

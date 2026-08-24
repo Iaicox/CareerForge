@@ -149,6 +149,34 @@ Two scripts, one per platform, both reading their page limits from
 Both protect hand edits: if the `.docx` is newer than the `.md`, only the PDF is
 refreshed unless you force a rebuild.
 
+## Watching upstream
+
+CareerForge was forked from
+[MadsLorentzen/ai-job-search](https://github.com/MadsLorentzen/ai-job-search) at
+its initial release, and that project has kept moving. It is configured as a
+remote:
+
+```bash
+git fetch upstream
+git log --oneline HEAD..upstream/master
+```
+
+**Read it, do not merge it.** The structures have diverged past the point where
+a merge means anything: they track applications in a CSV and build documents
+with LaTeX, we use SQLite and pandoc. What is worth taking is ideas and bug
+reports.
+
+Some of the most useful traffic there is bug fixes to problems this code shares
+by descent. One example from the day this was written: they fixed dotted
+`A.M.B.A.` suffixes being missed in company-name matching, which is the same
+defect as the dotted `S.A.` case fixed here independently a day earlier. When
+the same code has two lineages, the other lineage's bug list is worth reading.
+
+The reverse also applies: features borrowed from them are re-implemented
+against our own model rather than copied. Their company-research cache is a
+directory of JSON files; here it is two columns on the `companies` table,
+because we already had that table and a second store would be a second truth.
+
 ## Notion is optional
 
 `notion_sync.py` mirrors the tracker for phone access. It is off by default, and

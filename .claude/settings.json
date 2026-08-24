@@ -2,21 +2,26 @@
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
+      "Skill(application-tracker)",
       "Skill(job-application-assistant)",
       "Skill(job-scraper)",
-      "Skill(application-tracker)",
-      "WebSearch",
-      "Bash(python tools/tracker.py:*)",
-      "Bash(python tools/doctor.py:*)",
-      "Bash(python tools/config_get.py:*)",
-      "Bash(python tools/pagecount.py:*)",
-      "Bash(python tools/board.py:*)",
-      "Bash(python salary_lookup.py:*)",
-      "Bash(tools/build.sh:*)",
-      "Bash(git status:*)",
       "Bash(git diff:*)",
+      "Bash(git status:*)",
+      "Bash(python salary_lookup.py:*)",
+      "Bash(python tools/atscheck.py:*)",
+      "Bash(python tools/board.py:*)",
+      "Bash(python tools/config_get.py:*)",
+      "Bash(python tools/doctor.py:*)",
+      "Bash(python tools/gemini.py:*)",
+      "Bash(python tools/mailsync.py:*)",
+      "Bash(python tools/pagecount.py:*)",
+      "Bash(python tools/research.py:*)",
+      "Bash(python tools/shortlist.py:*)",
+      "Bash(python tools/tracker.py:*)",
+      "Bash(tools/build.sh:*)",
       "PowerShell(powershell -NoProfile -ExecutionPolicy Bypass -File tools\\build.ps1 *)",
-      "PowerShell(powershell -NoProfile -ExecutionPolicy Bypass -File tools\\make_reference.ps1 *)"
+      "PowerShell(powershell -NoProfile -ExecutionPolicy Bypass -File tools\\make_reference.ps1 *)",
+      "WebSearch"
     ]
   },
   "hooks": {

@@ -98,7 +98,7 @@ def binary() -> str:
 # ---------------------------------------------------------------------------
 
 
-def log_call(kind: str, prompt: str, result: dict) -> None:
+def log_call(kind: str, prompt: str, result: dict, payload: str | None = None) -> None:
     """Record what was sent to Google, so that stays inspectable."""
     if not settings()["log"]:
         return
@@ -110,6 +110,10 @@ def log_call(kind: str, prompt: str, result: dict) -> None:
             "kind": kind,
             "prompt_chars": len(prompt),
             "prompt": prompt,
+            # The payload is what actually left the machine in bulk; record its
+            # size and opening so the log says what was sent, not just why.
+            "payload_chars": len(payload or ""),
+            "payload_head": (payload or "")[:2000],
             "response_chars": len(str(result.get("response", ""))),
             "stats": result.get("stats"),
             "error": result.get("error"),
@@ -122,8 +126,16 @@ def log_call(kind: str, prompt: str, result: dict) -> None:
 
 
 def call(prompt: str, *, kind: str = "call", model: str | None = None,
-         timeout: int | None = None) -> str:
-    """Run one headless Gemini prompt and return its text response."""
+         timeout: int | None = None, payload: str | None = None) -> str:
+    """Run one headless Gemini prompt and return its text response.
+
+    `prompt` is the instruction; `payload` is bulk input -- a posting, a
+    document, a transcript. The payload goes over stdin rather than in argv,
+    because a command line has a hard size limit (about 32 KB on Windows) and
+    a job posting can exceed it on its own. Gemini appends the -p prompt after
+    whatever arrives on stdin, so instructions must read as though they follow
+    the data.
+    """
     s = settings()
     if not s["enabled"]:
         raise GeminiUnavailable("gemini is disabled in config/config.toml ([gemini] enabled)")
@@ -142,36 +154,44 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cmd, input=payload, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             timeout=timeout or s["timeout_seconds"], env=env,
         )
     except subprocess.TimeoutExpired:
         raise GeminiTimeout(f"gemini timed out after {timeout or s['timeout_seconds']}s")
     except OSError as exc:
+        if getattr(exc, "winerror", None) == 206 or "too long" in str(exc).lower():
+            raise GeminiUnavailable(
+                "the prompt is too long for a command line -- pass bulk input as "
+                "`payload` so it goes over stdin instead"
+            )
         raise GeminiUnavailable(f"could not run gemini: {exc}")
 
     # The JSON envelope lands on stdout on the happy path, but an auth failure
     # writes it to stderr instead, so both have to be considered.
-    payload = extract_json(proc.stdout)
-    if not isinstance(payload, dict) or ("response" not in payload and "error" not in payload):
+    envelope = extract_json(proc.stdout)
+    if not isinstance(envelope, dict) or (
+        "response" not in envelope and "error" not in envelope
+    ):
         from_stderr = extract_json(proc.stderr)
         if isinstance(from_stderr, dict):
-            payload = from_stderr
-    if not isinstance(payload, dict):
-        payload = {}
-    log_call(kind, prompt, payload)
+            envelope = from_stderr
+    if not isinstance(envelope, dict):
+        envelope = {}
+    log_call(kind, prompt, envelope, payload)
 
     # Exit codes are not reliable here either: the same failure has been seen
     # exiting 0 and exiting 41, reporting itself only inside the JSON. The
     # error key is what counts.
-    if payload.get("error"):
-        err = payload["error"]
+    if envelope.get("error"):
+        err = envelope["error"]
         message = err.get("message", "unknown error") if isinstance(err, dict) else str(err)
         if re.search(r"auth|api[_ ]key|credential|sign ?in|login|GEMINI_API_KEY", message, re.I):
             raise GeminiUnavailable(f"not authenticated: {message}")
         raise GeminiUnavailable(f"gemini error: {message}")
 
-    if "response" not in payload:
+    if "response" not in envelope:
         # Not every failure arrives in the JSON envelope -- some are emitted as
         # plain text on stderr -- so classify from the raw output too, or the
         # user gets "nothing usable" when the real answer is "log in".
@@ -180,7 +200,7 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
             raise GeminiUnavailable(f"not authenticated: {combined[:300]}")
         raise GeminiUnavailable(f"gemini returned nothing usable: {combined[:300]}")
 
-    return str(payload["response"])
+    return str(envelope["response"])
 
 
 def extract_json(text: str) -> Any:
@@ -210,8 +230,8 @@ def extract_json(text: str) -> Any:
 
 
 def call_json(prompt: str, *, kind: str, model: str | None = None,
-              timeout: int | None = None) -> Any:
-    raw = call(prompt, kind=kind, model=model, timeout=timeout)
+              timeout: int | None = None, payload: str | None = None) -> Any:
+    raw = call(prompt, kind=kind, model=model, timeout=timeout, payload=payload)
     data = extract_json(raw)
     if data is None:
         raise GeminiBadOutput(
@@ -270,7 +290,7 @@ Schema:
 
 
 def extract_posting(text: str) -> dict:
-    prompt = f"""Extract structured data from this job posting.
+    prompt = f"""Extract structured data from the job posting above.
 
 Copy what the posting says. Do not infer, normalise or improve it: if the \
 salary is not stated, it is null, not an estimate.
@@ -293,11 +313,8 @@ Schema:
   "contact_name": string|null,
   "contact_email": string|null,
   "apply_url": string|null
-}}
-
-POSTING:
-{text[:60000]}"""
-    data = call_json(prompt, kind="extract-posting")
+}}"""
+    data = call_json(prompt, kind="extract-posting", payload=text[:200000])
     if not isinstance(data, dict):
         raise GeminiBadOutput("extraction did not come back as an object")
     return data
@@ -314,10 +331,8 @@ def rank_postings(postings: list[dict], criteria: str) -> list[dict]:
         }
         for p in postings
     ]
-    prompt = f"""Score each job posting against this candidate's criteria.
-
-CRITERIA:
-{criteria[:20000]}
+    prompt = f"""Above are a candidate's criteria followed by a JSON list of job \
+postings. Score each posting against those criteria.
 
 Judge honestly. A posting that fails a hard constraint -- location, or a \
 required language the candidate does not have -- scores as a fail regardless of \
@@ -336,11 +351,12 @@ Return {{"results": [
     "language_verdict": "pass"|"fail"|"flag",
     "reason": string          // one sentence
   }}
-]}}
-
-POSTINGS:
-{json.dumps(slim, ensure_ascii=False)}"""
-    data = call_json(prompt, kind="rank")
+]}}"""
+    payload = (
+        f"CRITERIA:\n{criteria[:40000]}\n\n"
+        f"POSTINGS:\n{json.dumps(slim, ensure_ascii=False)}"
+    )
+    data = call_json(prompt, kind="rank", payload=payload)
     if isinstance(data, dict):
         data = data.get("results", [])
     if not isinstance(data, list):
@@ -351,12 +367,9 @@ POSTINGS:
 def summarize(text: str, question: str) -> str:
     prompt = f"""{question}
 
-Answer from the text below only. If it does not answer the question, say so \
-plainly rather than filling the gap from general knowledge.
-
-TEXT:
-{text[:200000]}"""
-    return call(prompt, kind="summarize")
+Answer from the text above only. If it does not answer the question, say so \
+plainly rather than filling the gap from general knowledge."""
+    return call(prompt, kind="summarize", payload=text[:1000000])
 
 
 # ---------------------------------------------------------------------------

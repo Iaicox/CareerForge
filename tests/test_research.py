@@ -173,5 +173,75 @@ class ExtractJsonTest(unittest.TestCase):
         self.assertIsNone(gemini.extract_json(""))
 
 
+class BulkInputTest(unittest.TestCase):
+    """Bulk input must travel over stdin, not in the command line.
+
+    A command line has a hard size limit -- about 32 KB on Windows -- and a
+    single job posting can exceed it, so putting the payload in argv fails with
+    WinError 206 on exactly the inputs the tool exists for.
+    """
+
+    def setUp(self) -> None:
+        self.captured: dict = {}
+        self._real_run = gemini.subprocess.run
+        self._real_settings = gemini.settings
+        self._real_binary = gemini.binary
+        self._real_log = gemini.log_call
+
+        class Result:
+            returncode = 0
+            stdout = json.dumps({"response": "ok"})
+            stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            self.captured["cmd"] = cmd
+            self.captured["input"] = kwargs.get("input")
+            return Result()
+
+        gemini.subprocess.run = fake_run
+        gemini.binary = lambda: "gemini"
+        gemini.log_call = lambda *a, **k: None
+        gemini.settings = lambda: {
+            "enabled": True, "model": "m", "timeout_seconds": 10,
+            "cache_days": 30, "tasks": ["research"], "log": False,
+        }
+
+    def tearDown(self) -> None:
+        gemini.subprocess.run = self._real_run
+        gemini.settings = self._real_settings
+        gemini.binary = self._real_binary
+        gemini.log_call = self._real_log
+
+    def test_payload_goes_to_stdin_and_not_argv(self):
+        bulk = "x" * 200_000
+        gemini.call("instruction", payload=bulk)
+        self.assertEqual(self.captured["input"], bulk)
+        self.assertNotIn(bulk, self.captured["cmd"])
+
+    def test_the_instruction_still_travels_in_argv(self):
+        gemini.call("instruction", payload="data")
+        self.assertIn("instruction", self.captured["cmd"])
+
+    def test_read_only_mode_is_always_requested(self):
+        gemini.call("instruction")
+        cmd = self.captured["cmd"]
+        self.assertIn("--approval-mode", cmd)
+        self.assertEqual(cmd[cmd.index("--approval-mode") + 1], "plan")
+        # Without this the approval mode is silently downgraded in an untrusted
+        # folder, which would hand it write tools.
+        self.assertIn("--skip-trust", cmd)
+
+    def test_a_command_line_length_failure_is_explained(self):
+        def raise_206(cmd, **kwargs):
+            exc = OSError("[WinError 206] The filename or extension is too long")
+            exc.winerror = 206
+            raise exc
+
+        gemini.subprocess.run = raise_206
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+            gemini.call("instruction", payload="x")
+        self.assertIn("stdin", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

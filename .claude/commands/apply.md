@@ -99,13 +99,32 @@ the posting gives one.
 
 ---
 
-## Step 3: review
+## Step 3: research, then review
 
-Spawn the **`application-reviewer`** agent with the Agent tool. Give it:
+**First, get the company research.** It is cached, so a second application to
+the same company — or a later interview — costs nothing:
+
+```bash
+python tools/research.py get "<Company>" --url "<company site>"
+```
+
+Exit code 3 means nothing is cached and Gemini is unavailable. Research the
+company yourself, then store it so the next consumer gets it free:
+
+```bash
+python tools/research.py put "<Company>" --file <json>
+```
+
+Research is **leads, not evidence**. Everything in it still has to be verified
+before it reaches a document — a cached claim is not a checked one.
+
+**Then spawn the `application-reviewer`** agent with the Agent tool. Give it:
 
 - the company slug and the application folder path
 - the full job posting text
 - the paths of the drafted documents
+- **the research from above**, so it spends its turn on critique rather than
+  on repeating a search someone already paid for
 
 Its instructions live in `.claude/agents/application-reviewer.md` — do not
 restate them here.
