@@ -172,8 +172,13 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
         raise GeminiUnavailable(f"gemini error: {message}")
 
     if "response" not in payload:
-        detail = (proc.stderr or proc.stdout or "").strip()[:300]
-        raise GeminiUnavailable(f"gemini returned nothing usable: {detail}")
+        # Not every failure arrives in the JSON envelope -- some are emitted as
+        # plain text on stderr -- so classify from the raw output too, or the
+        # user gets "nothing usable" when the real answer is "log in".
+        combined = f"{proc.stderr or ''}\n{proc.stdout or ''}".strip()
+        if re.search(r"auth|api[_ ]key|credential|sign ?in|GEMINI_API_KEY", combined, re.I):
+            raise GeminiUnavailable(f"not authenticated: {combined[:300]}")
+        raise GeminiUnavailable(f"gemini returned nothing usable: {combined[:300]}")
 
     return str(payload["response"])
 
