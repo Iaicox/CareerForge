@@ -4,6 +4,9 @@ Getting CareerForge running, in detail. If you just want to start, `/setup`
 inside Claude Code walks you through all of it — this page is the reference for
 when something does not work.
 
+For everything past installation — finding work, applying, interviews,
+configuration — see **[docs/manual.md](docs/manual.md)**.
+
 ## 1. Prerequisites
 
 Run `/doctor` (or `python tools/doctor.py`) at any point to see which of these

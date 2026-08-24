@@ -20,6 +20,7 @@ against these files, so a guess made here ends up in a CV.
 | `tracker/` | The tracker database. Never edit by hand — use `tools/tracker.py`. |
 | `applications/`, `processing/`, `rejected/` | Per-application folders. Gitignored. |
 | `job_scraper/` | Scraper state. Gitignored. |
+| `documents/` | Career materials the user dropped in for `/setup` and `/expand` to read. Gitignored. |
 | everything else | The framework. Do not modify it during normal work. |
 
 `/setup` and day-to-day work must leave `git status` clean. If a normal workflow
@@ -45,11 +46,21 @@ Everything you claim about the user must be traceable to one of these:
 |---|---|
 | `/setup` | Build the profile, configure the tracker, check the toolchain |
 | `/scrape` | Search job boards for new postings |
-| `/apply <url\|text>` | Full pipeline: evaluate, draft, review, build, track |
+| `/rank` | Score the shortlist so `/apply` is spent only on what is worth it |
+| `/apply <url\|text>` | Full pipeline: evaluate, draft, review, build, check, track |
+| `/interview <company> [stage]` | Stage-specific prep; `--mock` to rehearse |
 | `/track` | Look at or update the tracker |
 | `/board` | Open the pipeline as a kanban in the browser |
+| `/mailsync` | Match employer replies in the mailbox to open applications |
 | `/triage` | Find folders out of sync and applications gone silent |
+| `/expand` | Grow the profile from `documents/` and public sources |
 | `/doctor` | Check the toolchain |
+
+Bulk gathering — company research, posting extraction, batch ranking, long
+documents — is delegated to `tools/gemini.py` when it is configured. **Exit
+code 3 means it is unavailable, not that the task failed:** do the work
+yourself instead, and say which route you took. It is an optimisation, never a
+dependency.
 
 ## Application lifecycle
 

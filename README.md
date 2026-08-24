@@ -90,11 +90,17 @@ separate](#how-your-data-is-kept-separate).
 |---|---|
 | `/setup` | Build your profile, configure the tracker, check the toolchain |
 | `/scrape` | Search job boards, dedup against everything you have already seen |
-| `/apply <url or text>` | Evaluate, draft, review, revise, build, track |
+| `/rank` | Score what the scraper found, so `/apply` is spent only on what is worth it |
+| `/apply <url or text>` | Evaluate, draft, review, revise, build, check, track |
+| `/interview <company> [stage]` | Prepare for a specific round; `--mock` to rehearse |
 | `/track` | Look at or update the tracker |
 | `/board` | Open the pipeline as a drag-and-drop kanban at `127.0.0.1:8765` |
+| `/mailsync` | Find employer replies in your mailbox and reconcile the pipeline |
 | `/triage` | Find folders out of sync and applications gone silent |
+| `/expand` | Grow the profile from new documents and public sources |
 | `/doctor` | Check the toolchain |
+
+**[Read the manual](docs/manual.md)** for the whole thing end to end.
 
 ## The tracker
 
@@ -177,10 +183,23 @@ optimistic locking, and company-name normalisation.
 
 ## Documentation
 
+- **[docs/manual.md](docs/manual.md)** — the full manual: install, first run,
+  finding work, applying, interviews, configuration, troubleshooting
 - [SETUP.md](SETUP.md) — installation in detail, per platform
 - [docs/architecture.md](docs/architecture.md) — how the pieces fit
 - [docs/tracker-schema.md](docs/tracker-schema.md) — the database, and how to browse it
 - [docs/notion-mirror.md](docs/notion-mirror.md) — the optional Notion mirror
+
+## Optional: delegate the bulk work
+
+With the [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed,
+company research, posting extraction, batch ranking and long-document
+summarising move off Claude's context. Judgement about what is honest to claim
+does not move — that stays in one place, against your profile.
+
+It is never a dependency: if Gemini is missing or unauthenticated, the work is
+done in Claude instead and you are told which route was taken. See
+[the manual](docs/manual.md#11-delegating-to-gemini).
 
 ## Acknowledgements
 
