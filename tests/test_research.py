@@ -196,6 +196,7 @@ class BulkInputTest(unittest.TestCase):
         def fake_run(cmd, **kwargs):
             self.captured["cmd"] = cmd
             self.captured["input"] = kwargs.get("input")
+            self.captured["cwd"] = kwargs.get("cwd")
             return Result()
 
         gemini.subprocess.run = fake_run
@@ -221,6 +222,15 @@ class BulkInputTest(unittest.TestCase):
     def test_the_instruction_still_travels_in_argv(self):
         gemini.call("instruction", payload="data")
         self.assertIn("instruction", self.captured["cmd"])
+
+    def test_gemini_runs_in_an_empty_room_not_the_repo(self):
+        # Gemini is itself an agent: run in the repo it discovers CLAUDE.md and
+        # answers as the workspace assistant instead of doing the task. Seen
+        # live: a digest request came back as "run /setup".
+        gemini.call("instruction", payload="data")
+        cwd = self.captured.get("cwd")
+        self.assertIsNotNone(cwd)
+        self.assertIn("gemini-cwd", str(cwd))
 
     def test_read_only_mode_is_always_requested(self):
         gemini.call("instruction")

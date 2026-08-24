@@ -105,6 +105,7 @@ def load_mail_config() -> dict:
 
 
 def password() -> str:
+    tracker.load_dotenv()
     env = (os.environ.get("MAIL_PASSWORD") or "").strip()
     if env:
         return env
@@ -113,8 +114,8 @@ def password() -> str:
         if value:
             return value
     raise TrackerError(
-        f"no mail password. Set MAIL_PASSWORD, or put an app password in "
-        f"{tracker.rel(PASSWORD_FILE)} (gitignored).\n"
+        f"no mail password. Put MAIL_PASSWORD=<app password> in .env, or in "
+        f"{tracker.rel(PASSWORD_FILE)} (both gitignored).\n"
         "Gmail: myaccount.google.com/apppasswords -- never your account password."
     )
 

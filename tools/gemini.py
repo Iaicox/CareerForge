@@ -38,7 +38,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from tracker import REPO, TrackerError, load_config, rel  # noqa: E402
+from tracker import REPO, TrackerError, load_config, load_dotenv, rel  # noqa: E402
 
 LOG_DIR = REPO / "tracker" / "gemini-log"
 
@@ -140,6 +140,9 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
     if not s["enabled"]:
         raise GeminiUnavailable("gemini is disabled in config/config.toml ([gemini] enabled)")
 
+    # GEMINI_API_KEY may live in .env; the subprocess inherits os.environ.
+    load_dotenv()
+
     cmd = [
         binary(),
         "-p", prompt,
@@ -152,10 +155,17 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
         "--skip-trust",
     ]
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    # Gemini is itself an agent: run in the repo it discovers CLAUDE.md, follows
+    # ITS instructions instead of the prompt, and pokes at the workspace with
+    # its own tools (which cannot even see profile/, since it is gitignored).
+    # An empty working directory gives it nothing to be distracted by, and as a
+    # side effect nothing leaves this machine except what the payload carries.
+    workdir = REPO / "tracker" / "gemini-cwd"
+    workdir.mkdir(parents=True, exist_ok=True)
     try:
         proc = subprocess.run(
             cmd, input=payload, capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
+            encoding="utf-8", errors="replace", cwd=str(workdir),
             timeout=timeout or s["timeout_seconds"], env=env,
         )
     except subprocess.TimeoutExpired:

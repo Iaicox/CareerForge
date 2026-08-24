@@ -234,6 +234,39 @@ class TrackerTestCase(unittest.TestCase):
         on_disk = {p.name for p in tracker.MIGRATIONS_DIR.glob("*.sql")}
         self.assertEqual(recorded, on_disk)
 
+    # -- .env --------------------------------------------------------------
+
+    def test_dotenv_loads_missing_keys_only(self):
+        # The real environment must always win over the file: a value set for
+        # one shell session must not be shadowed by an old line in .env.
+        import os
+        (self.tmp / ".env").write_text(
+            "# comment\n"
+            "CF_TEST_NEW=from_file\n"
+            'CF_TEST_QUOTED="with spaces"\n'
+            "CF_TEST_EXISTING=shadowed\n"
+            "not a kv line\n",
+            encoding="utf-8",
+        )
+        os.environ["CF_TEST_EXISTING"] = "from_environment"
+        tracker._dotenv_loaded = False
+        try:
+            tracker.load_dotenv()
+            self.assertEqual(os.environ.get("CF_TEST_NEW"), "from_file")
+            self.assertEqual(os.environ.get("CF_TEST_QUOTED"), "with spaces")
+            self.assertEqual(os.environ.get("CF_TEST_EXISTING"), "from_environment")
+        finally:
+            for key in ("CF_TEST_NEW", "CF_TEST_QUOTED", "CF_TEST_EXISTING"):
+                os.environ.pop(key, None)
+            tracker._dotenv_loaded = False
+
+    def test_dotenv_missing_file_is_not_an_error(self):
+        tracker._dotenv_loaded = False
+        try:
+            tracker.load_dotenv()  # self.tmp has no .env in this test
+        finally:
+            tracker._dotenv_loaded = False
+
     def test_init_is_idempotent(self):
         before = self.add()
         tracker.init_db()

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -39,6 +40,42 @@ STAGES = ("applications", "processing", "rejected")
 
 class TrackerError(Exception):
     """Anything the user should see as a plain message, not a traceback."""
+
+
+_dotenv_loaded = False
+
+
+def load_dotenv() -> None:
+    """Load REPO/.env into os.environ, once, without overriding anything.
+
+    The standard library does not read .env files, and the secrets consumers
+    (Gemini key, Notion token, mail password) all live there now. Real
+    environment variables always win over the file: a value set for one shell
+    session must not be silently shadowed by an old line in .env.
+    """
+    global _dotenv_loaded
+    if _dotenv_loaded:
+        return
+    _dotenv_loaded = True
+    path = REPO / ".env"
+    if not path.exists():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        # Values may be quoted; the quotes are not part of the value.
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 # ---------------------------------------------------------------------------

@@ -62,6 +62,14 @@ code 3 means it is unavailable, not that the task failed:** do the work
 yourself instead, and say which route you took. It is an optimisation, never a
 dependency.
 
+Secrets live in `.env` (gitignored): `GEMINI_API_KEY`, `NOTION_KEY`,
+`MAIL_PASSWORD`. The tools load it themselves. Never print its values.
+
+`docs/manual.md` is published as an artifact. After editing it, run
+`python tools/publish_manual.py` and republish `tracker/manual-artifact.html`
+with the Artifact tool, passing the URL recorded at the top of the manual so
+the existing page updates.
+
 ## Application lifecycle
 
 An application's documents live in a folder named by its slug. Which directory

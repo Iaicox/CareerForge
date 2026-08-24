@@ -230,17 +230,49 @@ def check_notion() -> Check:
     if not enabled:
         return Check("Notion mirror", OK, "disabled (optional)", required=False)
     import os
-    token = os.environ.get("NOTION_TOKEN") or (REPO / ".notion_token").exists()
+    _load_dotenv()
+    token = (
+        os.environ.get("NOTION_KEY")
+        or os.environ.get("NOTION_TOKEN")
+        or (REPO / ".notion_token").exists()
+    )
     ids = (REPO / "config" / "notion.json").exists()
     if token and ids:
         return Check("Notion mirror", OK, "token and database ids present", required=False)
     what = []
     if not token:
-        what.append("no token (NOTION_TOKEN or .notion_token)")
+        what.append("no token (NOTION_KEY in .env, or .notion_token)")
     if not ids:
         what.append("no config/notion.json")
     return Check("Notion mirror", WARN, "; ".join(what),
                  "python tools/notion_sync.py provision", required=False)
+
+
+def _load_dotenv() -> None:
+    """Doctor must see the same secrets the tools do."""
+    try:
+        sys.path.insert(0, str(REPO / "tools"))
+        from tracker import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
+
+
+def check_dotenv() -> Check:
+    path = REPO / ".env"
+    if not path.exists():
+        return Check(".env", WARN, "not present",
+                     "optional; holds GEMINI_API_KEY, NOTION_KEY, MAIL_PASSWORD",
+                     required=False)
+    try:
+        keys = [
+            line.split("=", 1)[0].strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#") and "=" in line
+        ]
+    except OSError as exc:
+        return Check(".env", WARN, f"unreadable: {exc}", required=False)
+    return Check(".env", OK, f"keys: {', '.join(keys) or '(none)'}", required=False)
 
 
 def check_gemini() -> Check:
@@ -297,6 +329,7 @@ def run_checks() -> list[Check]:
         check_pagecount(),
         check_templates(),
         check_fonts(),
+        check_dotenv(),
         check_gemini(),
         check_notion(),
     ]

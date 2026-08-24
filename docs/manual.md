@@ -1,3 +1,11 @@
+<!--
+  Published as an artifact: https://claude.ai/code/artifact/2b68ae96-7ba7-4e71-8942-451c949f6ea5
+  After editing this file, regenerate and republish:
+    python tools/publish_manual.py
+  then publish tracker/manual-artifact.html with the Artifact tool, passing
+  that url so the existing page updates rather than a second one appearing.
+-->
+
 # CareerForge — the manual
 
 Everything from installing this to sending your first application, and what to
@@ -567,14 +575,20 @@ the board and `/triage` all read the same table.
 
 ### Secrets
 
-| File | For |
-|---|---|
-| `.notion_token` | The Notion mirror |
-| `.mail_password` | IMAP, an app password |
-| `GEMINI_API_KEY` (env) | The Gemini CLI |
+One `.env` file in the repo root holds them all. The tools load it themselves —
+a real environment variable always wins over the file.
 
-All gitignored. Use app passwords, never account passwords: they can be revoked
-on their own.
+```
+GEMINI_API_KEY=...        # the Gemini CLI
+NOTION_KEY=...            # the Notion mirror (NOTION_TOKEN also accepted)
+MAIL_PASSWORD=...         # IMAP, an app password
+```
+
+`.env` is gitignored, and `/doctor` shows which keys it holds — names only,
+never values. The legacy `.notion_token` and `.mail_password` files still work
+as fallbacks.
+
+Use app passwords, never account passwords: they can be revoked on their own.
 
 ---
 

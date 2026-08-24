@@ -64,18 +64,22 @@ _last_call = 0.0
 
 
 def token() -> str:
-    env = (os.environ.get("NOTION_TOKEN") or "").strip()
-    if env:
-        return env
+    tracker.load_dotenv()
+    # NOTION_KEY is the name the user's .env uses; NOTION_TOKEN is kept for
+    # compatibility, and the legacy token file still works as a last resort.
+    for name in ("NOTION_KEY", "NOTION_TOKEN"):
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value
     path = REPO / ".notion_token"
     if path.exists():
         value = path.read_text(encoding="utf-8").strip()
         if value:
             return value
     raise TrackerError(
-        "no Notion token. Set NOTION_TOKEN, or put the integration token in "
-        f"{tracker.rel(path)}. Create one at notion.so/my-integrations "
-        "(Read + Update + Insert content), then share the tracker page with it."
+        "no Notion token. Put NOTION_KEY=<token> in .env (or set NOTION_TOKEN). "
+        "Create one at notion.so/my-integrations (Read + Update + Insert "
+        "content), then share the tracker page with it."
     )
 
 

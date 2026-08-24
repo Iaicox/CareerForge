@@ -37,7 +37,7 @@ stale_after_days = 30
 # applications. Any IMAP provider; nothing is ever marked read, moved or
 # deleted.
 #
-# The password goes in MAIL_PASSWORD or a .mail_password file, never here.
+# The password goes in .env as MAIL_PASSWORD (or a .mail_password file), never here.
 # Use an app password: Gmail requires one, and it can be revoked on its own.
 #   Gmail  imap.gmail.com   993   myaccount.google.com/apppasswords
 #   Outlook outlook.office365.com 993
@@ -56,8 +56,8 @@ stale_after_days = 30
 # does not spend Claude's context. Judgement about what is honest to claim
 # never moves -- that stays with Claude, against profile/ and CLAUDE.md.
 #
-# Needs `npm install -g @google/gemini-cli` and one authentication, either by
-# running `gemini` once and signing in, or by setting GEMINI_API_KEY.
+# Needs `npm install -g @google/gemini-cli` and one authentication: run
+# `gemini` once and sign in, or put GEMINI_API_KEY in .env.
 # Check with: python tools/gemini.py check
 enabled = false
 model = "gemini-2.5-flash"
