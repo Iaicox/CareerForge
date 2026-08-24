@@ -12,10 +12,42 @@ Run the **job-scraper** skill (`.claude/skills/job-scraper/SKILL.md`) with
 - `broad` — every category
 - anything else (`fintech`, `tech lead`) — prioritise that category
 
-Follow the skill's steps exactly: load state (`seen_jobs.json` plus
-`tracker.py list --json` for dedup), search, fetch and parse, quick fit rating,
-record everything seen, save the shortlist to `job_scraper/runs/`, present the
-table, and offer to run `/apply` on the user's picks.
-
 If `profile/search-queries.md` does not exist, stop and offer
 `/setup --section search`.
+
+## Deduplicate against both sources
+
+Before presenting anything, drop what is already known:
+
+```bash
+python tools/shortlist.py show --include-expired --json   # already seen
+python tools/tracker.py list --json                       # already applied to
+```
+
+## Record what was found
+
+Do not hand-edit `seen_jobs.json`. Feed the postings in:
+
+```bash
+python tools/shortlist.py add --file <postings.json>
+```
+
+Each posting: `title`, `company`, `url`, `location`, `source`, `deadline`,
+`summary`. Free-text deadlines (`ASAP`, `rolling`) are stored as none rather
+than as unsortable text; the wording belongs in the summary if it matters.
+
+Extraction from a fetched page is worth delegating:
+
+```bash
+python tools/gemini.py extract-posting --file <page.html>
+```
+
+Exit code 3 means Gemini is unavailable — parse it yourself instead, and say so.
+
+## Then hand over
+
+Report how many are new, then suggest `/rank` to score them. Scoring is a
+separate step so a scrape stays cheap and the shortlist keeps its findings
+between runs.
+
+Never present a posting that WebSearch and WebFetch did not actually return.
