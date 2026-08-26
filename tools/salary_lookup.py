@@ -24,15 +24,6 @@ import argparse
 import unicodedata
 from pathlib import Path
 
-# A redirected stdout on Windows gets the ANSI code page, not UTF-8, so a
-# dataset whose source note is not Latin-1 dies on print the moment the output
-# is piped -- which is how /apply reads it. The console itself is already UTF-8.
-for _stream in (sys.stdout, sys.stderr):
-    try:
-        _stream.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass  # an unusual stdout must not break salary lookup
-
 REPO = Path(__file__).resolve().parent.parent
 DATA_FILE = REPO / "profile" / "salary_data.json"
 
@@ -392,4 +383,6 @@ def main():
 
 
 if __name__ == "__main__":
+    from console import use_utf8
+    use_utf8()
     main()

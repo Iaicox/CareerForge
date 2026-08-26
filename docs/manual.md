@@ -746,6 +746,7 @@ Commands orchestrate; these do the work. Each runs standalone and each takes
 | `pagecount.py` | Page counts without Word: pypdf, then `pdfinfo`, then an approximate fallback that says so |
 | `build.ps1` / `build.sh` | Markdown → DOCX → PDF, per platform |
 | `config_get.py` | Lets the build scripts read `config.toml` without a TOML parser of their own |
+| `console.py` | Forces output to UTF-8, so a redirected run does not die on an emoji in a status label |
 | `doctor.py` | The environment check |
 | `gemini.py` | The single wrapper around the Gemini CLI |
 | `mailsync.py` | IMAP reconciliation |
