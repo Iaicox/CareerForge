@@ -41,7 +41,7 @@ for the framework and `profile/evaluation.md` for the user's own match areas,
 goals, location rules and deal-breakers.
 
 If `salary_data.json` exists, add a benchmark:
-`python salary_lookup.py "<Company>" --json` (add `--city` when the posting
+`python tools/salary_lookup.py "<Company>" --json` (add `--city` when the posting
 names one). Skip the benchmark silently if the tool is not configured.
 
 Present: skills match, experience match, behavioural fit, salary benchmark,

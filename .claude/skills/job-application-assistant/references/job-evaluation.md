@@ -68,7 +68,7 @@ that drain them, from `profile/evaluation.md`.
 If `salary_data.json` exists:
 
 ```bash
-python salary_lookup.py "<Company>" --json          # add --city when the posting names one
+python tools/salary_lookup.py "<Company>" --json    # add --city when the posting names one
 ```
 
 Present it as a small table. If the tool is not configured, omit the section

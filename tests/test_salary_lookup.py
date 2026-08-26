@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-spec = importlib.util.spec_from_file_location("salary_lookup", REPO / "salary_lookup.py")
+spec = importlib.util.spec_from_file_location("salary_lookup", REPO / "tools" / "salary_lookup.py")
 salary = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(salary)

@@ -11,10 +11,10 @@ from your own salary data. See tools/README_SALARY_TOOL.md for
 instructions on the expected format and how to convert from Excel.
 
 Usage:
-    python salary_lookup.py "Company Name"
-    python salary_lookup.py "Company Name" --city "Lisbon"
-    python salary_lookup.py "Company Name" --json
-    python salary_lookup.py --list-all
+    python tools/salary_lookup.py "Company Name"
+    python tools/salary_lookup.py "Company Name" --city "Lisbon"
+    python tools/salary_lookup.py "Company Name" --json
+    python tools/salary_lookup.py --list-all
 """
 
 import json
@@ -24,7 +24,8 @@ import argparse
 import unicodedata
 from pathlib import Path
 
-DATA_FILE = Path(__file__).parent / "salary_data.json"
+REPO = Path(__file__).resolve().parent.parent
+DATA_FILE = REPO / "salary_data.json"
 
 # Company-name normalisation. The lists live in config/config.toml under
 # [salary] so this works in any market; the values below are only the fallback
@@ -45,7 +46,7 @@ def _load_normalisation():
     try:
         import tomllib
 
-        cfg = Path(__file__).parent / "config" / "config.toml"
+        cfg = REPO / "config" / "config.toml"
         if cfg.exists():
             with cfg.open("rb") as fh:
                 data = tomllib.load(fh).get("salary", {})
