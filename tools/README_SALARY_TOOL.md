@@ -2,7 +2,7 @@
 
 ## What is this?
 
-The salary lookup tool (`salary_lookup.py`) lets you benchmark company salaries against a baseline from your own data. It's used during the `/apply` workflow to show how a company's compensation compares to market rates.
+The salary lookup tool (`tools/salary_lookup.py`) lets you benchmark company salaries against a baseline from your own data. It's used during the `/apply` workflow to show how a company's compensation compares to market rates.
 
 **This tool is optional.** If you don't have salary data, the salary step is simply skipped during `/apply`.
 
@@ -107,14 +107,14 @@ Start with an empty template and add companies as you research them:
 ## Usage
 
 ```bash
-python salary_lookup.py "Novo Nordisk"
-python salary_lookup.py "Ørsted" --city "Fredericia"
-python salary_lookup.py "COWI" --json
-python salary_lookup.py --list-all
+python tools/salary_lookup.py "Novo Nordisk"
+python tools/salary_lookup.py "Ørsted" --city "Fredericia"
+python tools/salary_lookup.py "COWI" --json
+python tools/salary_lookup.py --list-all
 ```
 
 ## Important notes
 
 - The data file (`salary_data.json`) is **excluded from git** (see `.gitignore`). Your salary data may be proprietary or confidential.
-- If the data file is missing, `salary_lookup.py` exits with a helpful error message and the `/apply` workflow skips the salary benchmark step.
+- If the data file is missing, `tools/salary_lookup.py` exits with a helpful error message and the `/apply` workflow skips the salary benchmark step.
 - The fuzzy matcher handles Danish company name variations: legal suffixes, Nordic characters, anglicized spellings, and partial matches.

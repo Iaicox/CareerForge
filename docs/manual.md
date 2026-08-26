@@ -556,7 +556,7 @@ documents every key inline.
 | `[mail]` | `/mailsync` | `host`, `port`, `user`, `mailbox`, `ssl`. Password never goes here |
 | `[gemini]` | `tools/gemini.py` | See [§11](#11-delegating-to-gemini) |
 | `[notion]` | `tools/notion_sync.py` | Optional mirror; off by default |
-| `[salary]` | `salary_lookup.py` | Legal forms and region words stripped when matching company names |
+| `[salary]` | `tools/salary_lookup.py` | Legal forms and region words stripped when matching company names |
 
 ### Statuses are yours
 

@@ -88,7 +88,7 @@ enabled = false
 
 
 [salary]
-# Company-name normalisation for salary_lookup.py. Extend for your market.
+# Company-name normalisation for tools/salary_lookup.py. Extend for your market.
 strip_legal_forms = [
   "a/s", "aps", "i/s", "p/s", "k/s", "ivs", "amba",
   "gmbh", "mbh", "ag", "kg", "ug",

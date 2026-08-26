@@ -50,7 +50,7 @@ lives, so the framework can stay neutral:
 | `[[work_modes]]`, `[[event_types]]`, `[[outcomes]]` | tracker validation, board dropdowns |
 | `[documents]` — filenames, page limits, engine | `build.ps1`, `build.sh` |
 | `tracker.stale_after_days` | `tracker.py list --stale`, `/triage` |
-| `[salary]` — legal forms, regions | `salary_lookup.py` normalisation |
+| `[salary]` — legal forms, regions | `tools/salary_lookup.py` normalisation |
 
 The status table is the important one. Before, the status-to-folder mapping was
 written out in three separate documents that could drift apart. Now

@@ -3,7 +3,7 @@
 Convert salary data from Excel to JSON format.
 
 This script converts an Excel file containing company salary data
-into the JSON format expected by salary_lookup.py.
+into the JSON format expected by tools/salary_lookup.py.
 
 Prerequisites:
     pip install openpyxl
