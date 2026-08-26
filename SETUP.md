@@ -130,7 +130,7 @@ if it is not, something wrote to a framework file, which is a bug.
 If you have salary data — a union dataset, a survey, a Glassdoor export, your
 own research:
 
-- **By hand:** create `salary_data.json` in the repo root. Format:
+- **By hand:** create `profile/salary_data.json`. Format:
   `tools/README_SALARY_TOOL.md`.
 - **From Excel:**
   ```bash
@@ -141,7 +141,7 @@ own research:
 Company-name matching normalises legal forms and diacritics. The lists it uses
 are in `config/config.toml` under `[salary]`; extend them for your market.
 
-Without `salary_data.json`, `/apply` simply omits the benchmark.
+Without `profile/salary_data.json`, `/apply` simply omits the benchmark.
 
 ## 4. Optional: mirror to Notion
 

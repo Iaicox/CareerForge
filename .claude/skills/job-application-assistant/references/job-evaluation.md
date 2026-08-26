@@ -65,7 +65,7 @@ that drain them, from `profile/evaluation.md`.
 
 ### 6. Salary benchmark (optional)
 
-If `salary_data.json` exists:
+If `profile/salary_data.json` exists:
 
 ```bash
 python tools/salary_lookup.py "<Company>" --json    # add --city when the posting names one

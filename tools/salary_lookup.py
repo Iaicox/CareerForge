@@ -6,7 +6,7 @@ Looks up company salary data from a user-provided dataset.
 Supports any salary data source: union statistics, Glassdoor exports,
 manually collected benchmarks, whatever you have.
 
-This tool requires a data file (salary_data.json) that you create
+This tool requires a data file (profile/salary_data.json) that you create
 from your own salary data. See tools/README_SALARY_TOOL.md for
 instructions on the expected format and how to convert from Excel.
 
@@ -25,7 +25,7 @@ import unicodedata
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-DATA_FILE = REPO / "salary_data.json"
+DATA_FILE = REPO / "profile" / "salary_data.json"
 
 # Company-name normalisation. The lists live in config/config.toml under
 # [salary] so this works in any market; the values below are only the fallback
@@ -72,7 +72,7 @@ STRIP_PATTERNS = (
 
 def load_data():
     if not DATA_FILE.exists():
-        print("Error: salary_data.json not found.", file=sys.stderr)
+        print("Error: profile/salary_data.json not found.", file=sys.stderr)
         print("", file=sys.stderr)
         print("This tool requires a salary data file.", file=sys.stderr)
         print("See tools/README_SALARY_TOOL.md for setup instructions.", file=sys.stderr)

@@ -8,7 +8,7 @@ The salary lookup tool (`tools/salary_lookup.py`) lets you benchmark company sal
 
 ## How it works
 
-The tool reads a `salary_data.json` file in the repo root containing company salary benchmarks. It uses fuzzy matching to find companies by name, handling Danish/Nordic characters, legal suffixes (A/S, ApS), and common spelling variations.
+The tool reads `profile/salary_data.json`, which sits with the rest of your own data, containing company salary benchmarks. It uses fuzzy matching to find companies by name, handling Danish/Nordic characters, legal suffixes (A/S, ApS), and common spelling variations.
 
 The data format supports any index-based or absolute salary data. For example:
 - Index 100 = median salary, higher is better
@@ -17,7 +17,7 @@ The data format supports any index-based or absolute salary data. For example:
 
 ## Data format
 
-The tool expects `salary_data.json` with this structure:
+The tool expects `profile/salary_data.json` with this structure:
 
 ```json
 {
@@ -59,7 +59,7 @@ The tool expects `salary_data.json` with this structure:
 
 ## Setup options
 
-### Option A: Create salary_data.json manually
+### Option A: Create profile/salary_data.json manually
 
 Create the file by hand with data from any source: union statistics, Glassdoor, salary surveys, networking, or personal research.
 
@@ -115,6 +115,6 @@ python tools/salary_lookup.py --list-all
 
 ## Important notes
 
-- The data file (`salary_data.json`) is **excluded from git** (see `.gitignore`). Your salary data may be proprietary or confidential.
+- The data file (`profile/salary_data.json`) is **excluded from git** with the rest of your data. Your salary data may be proprietary or confidential.
 - If the data file is missing, `tools/salary_lookup.py` exits with a helpful error message and the `/apply` workflow skips the salary benchmark step.
 - The fuzzy matcher handles Danish company name variations: legal suffixes, Nordic characters, anglicized spellings, and partial matches.

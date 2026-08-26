@@ -40,7 +40,7 @@ Read `.claude/skills/job-application-assistant/references/job-evaluation.md`
 for the framework and `profile/evaluation.md` for the user's own match areas,
 goals, location rules and deal-breakers.
 
-If `salary_data.json` exists, add a benchmark:
+If `profile/salary_data.json` exists, add a benchmark:
 `python tools/salary_lookup.py "<Company>" --json` (add `--city` when the posting
 names one). Skip the benchmark silently if the tool is not configured.
 
