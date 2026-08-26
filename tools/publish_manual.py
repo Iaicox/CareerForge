@@ -183,6 +183,14 @@ def check_balance(text: str) -> list[str]:
 
 
 def main() -> int:
+    if len(sys.argv) > 1:
+        if sys.argv[1] in ("-h", "--help"):
+            print(__doc__.strip())
+            return 0
+        # Ignoring arguments is how `--help` came to silently rewrite the page.
+        print(f"error: unexpected argument: {sys.argv[1]}", file=sys.stderr)
+        return 2
+
     md = SOURCE.read_text(encoding="utf-8")
     # HTML comments (the republish note at the top) are for the file's readers,
     # not the page's -- rendered naively they would appear as escaped text.

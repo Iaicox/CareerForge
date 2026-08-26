@@ -786,7 +786,11 @@ python -m unittest discover -s tests
 
 Covers deduplication, the folder lifecycle including collision refusal,
 optimistic locking, deadline parsing, the research cache, the ATS checks, mail
-classification and company-name normalisation.
+classification, company-name normalisation and the salary table's arithmetic.
+
+One of them is a contract rather than a unit test: it runs every tool with
+`--help` and fails if any of them does not answer. That promise had already
+quietly stopped being true in three of them.
 
 ### Upstream
 

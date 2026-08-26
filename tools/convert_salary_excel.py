@@ -31,12 +31,6 @@ import sys
 import argparse
 from pathlib import Path
 
-try:
-    import openpyxl
-except ImportError:
-    print("Error: openpyxl is required. Install it with: pip install openpyxl", file=sys.stderr)
-    sys.exit(1)
-
 
 # Column name patterns for auto-detection
 COMPANY_PATTERNS = {"firma", "company", "virksomhed", "employer", "arbejdsgiver"}
@@ -214,6 +208,14 @@ def main():
         help="Description of what the baseline means (e.g., 'Index 100 = median salary')",
     )
     args = parser.parse_args()
+
+    # Imported here rather than at module level so --help still works on a
+    # machine that has never installed the one optional dependency.
+    try:
+        import openpyxl
+    except ImportError:
+        print("Error: openpyxl is required. Install it with: pip install openpyxl", file=sys.stderr)
+        sys.exit(1)
 
     excel_path = Path(args.excel_file)
     if not excel_path.exists():

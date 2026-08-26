@@ -30,6 +30,10 @@ DEFAULTS = {
 
 
 def main(argv: list[str]) -> int:
+    if len(argv) == 2 and argv[1] in ("-h", "--help"):
+        # Asking for help is not a usage error: stdout, exit 0.
+        print(__doc__.strip())
+        return 0
     if len(argv) != 2:
         print(__doc__.strip(), file=sys.stderr)
         return 2

@@ -70,6 +70,11 @@ def page_count(path: Path) -> tuple[int, bool]:
 
 
 def main(argv: list[str]) -> int:
+    if len(argv) == 2 and argv[1] in ("-h", "--help"):
+        # Asking for help is not a usage error: stdout, exit 0, and the whole
+        # docstring rather than the one usage line a mistake gets.
+        print(__doc__.strip())
+        return 0
     if len(argv) != 2:
         print(__doc__.strip().splitlines()[2], file=sys.stderr)
         return 2
