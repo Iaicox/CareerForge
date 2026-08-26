@@ -24,6 +24,15 @@ import argparse
 import unicodedata
 from pathlib import Path
 
+# A redirected stdout on Windows gets the ANSI code page, not UTF-8, so a
+# dataset whose source note is not Latin-1 dies on print the moment the output
+# is piped -- which is how /apply reads it. The console itself is already UTF-8.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass  # an unusual stdout must not break salary lookup
+
 REPO = Path(__file__).resolve().parent.parent
 DATA_FILE = REPO / "profile" / "salary_data.json"
 
@@ -221,15 +230,50 @@ def search_company(data, query, city=None):
     return [entry for score, entry in scored if score >= min_score]
 
 
+def fmt_number(value):
+    """Render a metric without inventing precision it does not have.
+
+    An index keeps its decimal; a salary in euros reads as 105,000 rather
+    than 105000.0.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if number.is_integer():
+        return f"{int(number):,}"
+    return f"{number:,.1f}"
+
+
+def fmt_label(label):
+    """Unfold a category key into a heading, leaving its casing alone.
+
+    .title() rewrites "eur" as "Eur". How a dataset spells its own units is
+    not this tool's decision to make.
+    """
+    text = label.replace("_", " ").strip()
+    return text[:1].upper() + text[1:]
+
+
+def fmt_difference(value, baseline):
+    """The distance from the baseline, as a percentage of it.
+
+    Subtracting the raw values only reads as a percentage when the baseline
+    happens to be 100. On a dataset denominated in euros, 105,000 against a
+    62,166 baseline is +68.9%, not the +42,834% the subtraction claims. With
+    no baseline configured there is nothing to compare against, so the column
+    stays empty rather than inventing a comparison.
+    """
+    if not baseline:
+        return ""
+    try:
+        return f"{(float(value) - float(baseline)) / float(baseline) * 100:+.1f}%"
+    except (TypeError, ValueError, ZeroDivisionError):
+        return ""
+
+
 def format_entry(entry, metadata):
     """Format a single company entry for display."""
-    lines = []
-    lines.append(f"\n{'='*60}")
-    lines.append(f"  {entry['company']}")
-    if entry.get("city"):
-        lines.append(f"  Location: {entry['city']}")
-    lines.append(f"{'='*60}")
-
     # Get category data (everything except company/city fields)
     categories = entry.get("categories", {})
     if not categories:
@@ -239,43 +283,70 @@ def format_entry(entry, metadata):
             if key not in skip_keys and isinstance(value, dict):
                 categories[key] = value
 
+    body = [f"  {entry['company']}"]
+    if entry.get("city"):
+        body.append(f"  Location: {entry['city']}")
+    heading_ends = len(body)
+
     if categories:
         index_label = metadata.get("index_label", "Index")
         baseline = metadata.get("index_baseline", 100)
 
-        lines.append(f"  {'Category':<22} {'Count':>6} {index_label:>8}  {'vs Baseline':>10}")
-        lines.append(f"  {'-'*50}")
-
+        rows, withheld = [], False
         for label, data in categories.items():
-            display_label = label.replace("_", " ").title()
-            count = data.get("count")
-            index = data.get("index")
-            if count is not None or index is not None:
-                count_str = str(count) if count else "-"
-                if index is not None:
-                    diff = index - baseline
-                    sign = "+" if diff >= 0 else ""
-                    index_str = f"{index:.1f}"
-                    diff_str = f"{sign}{diff:.1f}%"
-                else:
-                    index_str = "N/A*"
-                    diff_str = ""
-                lines.append(f"  {display_label:<22} {count_str:>6} {index_str:>8}  {diff_str:>10}")
+            count, value = data.get("count"), data.get("index")
+            if count is None and value is None:
+                continue
+            if value is None:
+                withheld = True
+                value_str, diff_str = "N/A*", ""
+            else:
+                value_str = fmt_number(value)
+                diff_str = fmt_difference(value, baseline)
+            # A count of 0 is a fact; only a missing one is a dash.
+            count_str = "-" if count is None else str(count)
+            rows.append((fmt_label(label), count_str, value_str, diff_str))
 
-        lines.append(f"\n  * N/A = Too few employees to publish (privacy)")
+        if rows:
+            # The columns are sized from the data. A category name that
+            # carries its own unit runs well past the 22 characters this
+            # table used to assume, and the header drifted off the values.
+            heads = ("Category", "Count", index_label, "vs Baseline")
+            widths = [
+                max(len(head), max(len(row[i]) for row in rows))
+                for i, head in enumerate(heads)
+            ]
+            body.append(
+                f"  {heads[0]:<{widths[0]}}  {heads[1]:>{widths[1]}}"
+                f"  {heads[2]:>{widths[2]}}  {heads[3]:>{widths[3]}}"
+            )
+            body.append("  " + "-" * (sum(widths) + 6))
+            for label, count, value_str, diff_str in rows:
+                body.append(
+                    f"  {label:<{widths[0]}}  {count:>{widths[1]}}"
+                    f"  {value_str:>{widths[2]}}  {diff_str:>{widths[3]}}"
+                )
+
+        notes = []
+        if withheld:
+            notes.append("  * N/A = the dataset carries no value for this category")
         if metadata.get("baseline_description"):
-            lines.append(f"  {metadata['baseline_description']}")
-        else:
-            lines.append(f"  {index_label} {baseline} = baseline")
+            notes.append(f"  {metadata['baseline_description']}")
+        elif baseline:
+            notes.append(f"  {index_label} {fmt_number(baseline)} = baseline")
+        if notes:
+            if rows:
+                body.append("")
+            body.extend(notes)
     else:
         # Simple format: just show all non-standard fields
         skip_keys = {"company", "city", "categories"}
         for key, value in entry.items():
             if key not in skip_keys:
-                display_key = key.replace("_", " ").title()
-                lines.append(f"  {display_key}: {value}")
+                body.append(f"  {fmt_label(key)}: {value}")
 
-    return "\n".join(lines)
+    banner = "=" * max(len(line) for line in body)
+    return "\n".join(["", banner, *body[:heading_ends], banner, *body[heading_ends:]])
 
 
 def main():

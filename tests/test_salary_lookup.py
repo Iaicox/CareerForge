@@ -62,5 +62,66 @@ class NormalisationTest(unittest.TestCase):
         self.assertEqual(salary.extract_core_words("Acme Nordic A/S"), ["acme"])
 
 
+class FormattingTest(unittest.TestCase):
+    """The table has to read correctly for an index and for absolute money."""
+
+    EUR = {
+        "index_label": "EUR gross/year",
+        "index_baseline": 62166,
+        "baseline_description": "62,166 = Lisbon senior median",
+    }
+
+    def test_difference_from_an_index_baseline(self):
+        self.assertEqual(salary.fmt_difference(112.5, 100), "+12.5%")
+        self.assertEqual(salary.fmt_difference(93, 100), "-7.0%")
+
+    def test_difference_from_a_money_baseline_is_not_the_subtraction(self):
+        # 105000 - 62166 = 42834, which is a sum of euros, not "+42834%".
+        self.assertEqual(salary.fmt_difference(105000, 62166), "+68.9%")
+
+    def test_no_baseline_means_no_comparison(self):
+        for baseline in (0, None):
+            with self.subTest(baseline=baseline):
+                self.assertEqual(salary.fmt_difference(105000, baseline), "")
+
+    def test_numbers_keep_only_the_precision_they_carry(self):
+        self.assertEqual(salary.fmt_number(105000), "105,000")
+        self.assertEqual(salary.fmt_number(112.5), "112.5")
+
+    def test_label_casing_belongs_to_the_dataset(self):
+        # .title() would turn the unit into "Eur".
+        self.assertEqual(salary.fmt_label("senior_frontend_EUR"), "Senior frontend EUR")
+
+    def test_columns_line_up_whatever_the_label_length(self):
+        entry = {
+            "company": "Acme",
+            "categories": {
+                "senior_software_engineer_frontend_eur_gross_annual": {
+                    "count": 6, "index": 105000,
+                },
+                "junior": {"count": 12, "index": 40000},
+            },
+        }
+        rendered = salary.format_entry(entry, self.EUR).splitlines()
+        rows = [line for line in rendered if "105,000" in line or "40,000" in line]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows[0]), len(rows[1]), "columns do not line up")
+
+    def test_the_footnote_only_appears_when_a_value_is_missing(self):
+        present = {"company": "Acme", "categories": {"all": {"count": 5, "index": 70000}}}
+        self.assertNotIn("N/A", salary.format_entry(present, self.EUR))
+
+        missing = {"company": "Acme", "categories": {"all": {"count": 5, "index": None}}}
+        self.assertIn("N/A", salary.format_entry(missing, self.EUR))
+
+    def test_a_count_of_zero_is_not_a_dash(self):
+        entry = {"company": "Acme", "categories": {"all": {"count": 0, "index": 70000}}}
+        row = [
+            line for line in salary.format_entry(entry, self.EUR).splitlines()
+            if "70,000" in line
+        ][0]
+        self.assertIn("0", row.split())
+
+
 if __name__ == "__main__":
     unittest.main()
