@@ -8,6 +8,7 @@ database or the real application folders.
 
 from __future__ import annotations
 
+import re
 import shutil
 import sys
 import tempfile
@@ -15,7 +16,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-TOOLS = Path(__file__).resolve().parent.parent / "tools"
+REPO = Path(__file__).resolve().parent.parent
+TOOLS = REPO / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import tracker  # noqa: E402
@@ -357,6 +359,56 @@ class TrackerTestCase(unittest.TestCase):
         self.assertIn("900_test.sql", recorded)
         # And it runs exactly once.
         self.assertEqual(tracker.apply_migrations(self.conn), [])
+
+    # -- the schema document -----------------------------------------------
+
+    CONSTRAINT_KEYWORDS = {"UNIQUE", "PRIMARY", "FOREIGN", "CHECK", "CONSTRAINT"}
+    DOCUMENTED_TABLES = ("companies", "applications", "events", "attachments")
+
+    def schema_tables(self):
+        text = tracker.SCHEMA_PATH.read_text(encoding="utf-8")
+        tables = {}
+        for match in re.finditer(
+            r"CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\);", text, re.S
+        ):
+            columns = []
+            for line in match.group(2).splitlines():
+                line = line.strip()
+                if not line or line.startswith("--"):
+                    continue
+                # Split on the bracket too: "UNIQUE(a, b)" has no space in it.
+                first = re.split(r"[\s(]", line, maxsplit=1)[0]
+                if first.upper() in self.CONSTRAINT_KEYWORDS:
+                    continue
+                columns.append(first)
+            tables[match.group(1)] = columns
+        return tables
+
+    def test_the_schema_doc_describes_every_table_and_column(self):
+        # The doc is what someone reads before opening the database in
+        # datasette or DB Browser, so a column missing from it is a column
+        # they do not know they have. Migration 002 added seven and none of
+        # them were written down.
+        doc = (REPO / "docs" / "tracker-schema.md").read_text(encoding="utf-8")
+        tables = self.schema_tables()
+        self.assertTrue(tables, "no CREATE TABLE statements parsed from schema.sql")
+
+        for table in tables:
+            self.assertIn(f"`{table}`", doc, f"table {table} is not in the doc")
+
+        for table in self.DOCUMENTED_TABLES:
+            for column in tables[table]:
+                self.assertIn(
+                    f"`{column}`", doc,
+                    f"{table}.{column} is in schema.sql but not in tracker-schema.md",
+                )
+
+    def test_the_schema_doc_describes_the_view(self):
+        doc = (REPO / "docs" / "tracker-schema.md").read_text(encoding="utf-8")
+        text = tracker.SCHEMA_PATH.read_text(encoding="utf-8")
+        view = text.split("CREATE VIEW", 1)[1]
+        for alias in re.findall(r"\bAS (\w+)\b", view):
+            self.assertIn(f"`{alias}`", doc, f"view column {alias} is not in the doc")
 
     # -- .env --------------------------------------------------------------
 

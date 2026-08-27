@@ -17,6 +17,9 @@ the same row.
 | `slug` | Normalised; the deduplication key |
 | `description` | One or two sentences: product, industry, size |
 | `website` | |
+| `research_json` | Cached company research, shared by `/apply`'s reviewer and `/interview` so the same company is not researched twice. Leads only — the verification checklist still applies |
+| `researched_at` | When that cache was filled; it expires after 30 days |
+| `created_at` | |
 
 ### `applications`
 
@@ -31,7 +34,13 @@ One row per application: one CV sent for one role.
 | `url` | The posting URL — the primary deduplication key |
 | `status` | An id from `[[statuses]]` in `config/config.toml` |
 | `work_mode` | An id from `[[work_modes]]` |
+| `location` | The place as the posting states it |
+| `location_verdict` | `pass`, `fail` or `flag`. Separate from `location` because the place is a fact and the verdict is a judgement |
 | `office_address` | Hybrid and on-site only |
+| `deadline` | ISO date, or null. `ASAP`, `rolling` and free text store as null rather than making the column unsortable |
+| `source` | Which board or channel it came from |
+| `fit_score` | 0–100, from `/rank` or `/apply` |
+| `fit_strengths`, `fit_gaps` | JSON arrays; read back as lists |
 | `hr_name`, `hr_email`, `other_contacts` | |
 | `posting_text` | Snapshot, in case the posting is taken down |
 | `cover_letter_text` | The letter as sent |
@@ -46,6 +55,7 @@ you got there.
 
 | Column | Notes |
 |---|---|
+| `id` | |
 | `application_id` | → `applications`, cascade delete |
 | `type` | An id from `[[event_types]]` |
 | `date` | ISO-8601; date, or datetime for scheduled calls |
@@ -53,21 +63,36 @@ you got there.
 | `participants` | People on their side |
 | `outcome` | An id from `[[outcomes]]` |
 | `notes` | |
-| `notion_page_id` | Set only for events the Notion import brought across; what keeps a re-run from adding them twice. Empty for anything typed locally |
+| `notion_page_id` | The Notion event page this row mirrors, whichever direction it travelled. What keeps a re-run from adding it twice. Empty until it has been in the mirror |
+| `created_at` | |
 
 ### `attachments`
 
 | Column | Notes |
 |---|---|
+| `id` | |
 | `application_id` | → `applications`, cascade delete |
 | `kind` | `cv`, `cover`, `other` |
 | `path` | Repo-relative. The bytes stay on disk; only the path is stored |
+| `added_at` | |
+
+`UNIQUE(application_id, kind, path)`, so attaching the same file twice is not
+an error and not a duplicate row.
+
+### `meta` and `migrations`
+
+Bookkeeping, two columns each. `meta` holds `schema_version`; `migrations`
+holds the filename of every migration already applied, so each runs once.
 
 ### `applications_view`
 
-What every read goes through. Joins the company, and computes
-`last_event_date` and `event_count` — replacing the rollup field the Notion
-version relied on.
+What every read goes through. Every column of `applications`, plus:
+
+| Column | Notes |
+|---|---|
+| `company_name`, `company_slug`, `company_website` | Joined from `companies` |
+| `last_event_date`, `event_count` | Replacing the rollup field the Notion version relied on |
+| `is_expired` | 1 if `deadline` is past. Evaluated per query, so it stays true as the day rolls over rather than needing a nightly sweep |
 
 ## What the database does not store
 
@@ -104,8 +129,16 @@ keep the tracker and the filesystem agreeing with each other.
 
 `meta.schema_version` records the version. `tracker.py init` is idempotent:
 every statement in `schema.sql` is `IF NOT EXISTS`, so re-running it on an
-existing database adds anything new without touching your rows. Future changes
-that cannot be expressed that way go in `tools/migrations/`.
+existing database adds anything new without touching your rows. Changes that
+cannot be expressed that way — adding a column to an existing table — go in
+`tools/migrations/`, are applied in filename order, and are recorded in the
+`migrations` table so each runs exactly once. A database created fresh from
+`schema.sql` already has everything they would add, so they are recorded as a
+baseline instead of replayed.
+
+Each migration runs in its own transaction together with the row that records
+it, so one that fails partway leaves the database exactly as it was and can be
+retried once fixed.
 
 ## Backups
 
