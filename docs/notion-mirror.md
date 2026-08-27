@@ -77,10 +77,16 @@ The tracker is the source of truth for the fields it holds, so a push
 **overwrites** Type, Date and Participants.
 
 **Outcome is written but never cleared.** It is set when the tracker has one and
-left alone when it does not, for the same reason titles are: an outcome you
-typed in Notion says something the tracker has no way to reproduce, and a push
-that "kept the tracker authoritative" would erase it. Clear an outcome in Notion
-by clearing it in Notion.
+left alone when it does not, for the same reason a title is left alone: an
+outcome you typed in Notion says something the tracker has no way to reproduce,
+and a push that "kept the tracker authoritative" would erase it. Clear an
+outcome in Notion by clearing it in Notion.
+
+If a push warns that two events **share a Notion page**, that is damage from
+before outcome joined the key: two local events were mirrored onto one page, and
+each push writes one over the other. Pick which row is the real event — delete
+the duplicate, or clear its `notion_page_id` so the next push gives it a page of
+its own.
 
 **It never rewrites a title.** `Name` is set once, when the page is created,
 and derived — `Acme - Screening`. After that it is yours: the tracker has no
