@@ -1,10 +1,10 @@
-"""Event identity in the Notion import.
+"""Identity in the Notion mirror: which page is which local row.
 
     python -m unittest discover -s tests
 
 `import` used to append every Notion event on every run, because events were
 keyed on nothing while applications were keyed on their URL. These tests pin
-the identity rules down; they need no network, only the two pure helpers and a
+the identity rules down; they need no network, only the pure helpers and a
 throwaway database.
 """
 
@@ -21,6 +21,52 @@ sys.path.insert(0, str(TOOLS))
 
 import notion_sync  # noqa: E402
 import tracker  # noqa: E402
+
+
+PAGE = "1234567890abcdef1234567890abcdef"
+VIEW = "fedcba0987654321fedcba0987654321"
+EXPECTED = "12345678-90ab-cdef-1234-567890abcdef"
+
+
+class NormaliseIdTestCase(unittest.TestCase):
+    """What `provision --parent-page` accepts. No database, no network."""
+
+    def test_a_database_url_yields_the_page_id_not_the_view_id(self):
+        # The ?v= parameter is a view, and it is the last id in the string.
+        self.assertEqual(
+            notion_sync.normalise_id(f"https://www.notion.so/ws/Job-Tracker-{PAGE}?v={VIEW}"),
+            EXPECTED,
+        )
+
+    def test_a_fragment_is_dropped_too(self):
+        self.assertEqual(
+            notion_sync.normalise_id(f"https://www.notion.so/ws/Job-Tracker-{PAGE}#block{VIEW}"),
+            EXPECTED,
+        )
+
+    def test_a_slug_that_looks_like_hex_does_not_shadow_the_id(self):
+        # "Name-Cafe-" is a run of hex characters and dashes; matching 36 of
+        # those loosely used to swallow the front of the real id.
+        self.assertEqual(
+            notion_sync.normalise_id(f"https://www.notion.so/My-Page-Name-Cafe-{PAGE}"),
+            EXPECTED,
+        )
+
+    def test_a_dashed_id_in_a_url_still_works(self):
+        self.assertEqual(
+            notion_sync.normalise_id(f"https://www.notion.so/ws/T-{EXPECTED}?v={VIEW}"),
+            EXPECTED,
+        )
+
+    def test_a_bare_id_passes_through_in_either_shape(self):
+        self.assertEqual(notion_sync.normalise_id(PAGE), EXPECTED)
+        self.assertEqual(notion_sync.normalise_id(EXPECTED), EXPECTED)
+
+    def test_no_id_at_all_is_a_TrackerError_not_a_traceback(self):
+        # main() only handles TrackerError; a bare ValueError reached the user.
+        for value in ("https://www.notion.so/no-id-here", "", "Cafe-Babe"):
+            with self.assertRaises(notion_sync.TrackerError):
+                notion_sync.normalise_id(value)
 
 
 class EventIdentityTestCase(unittest.TestCase):

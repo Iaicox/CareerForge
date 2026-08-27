@@ -146,13 +146,32 @@ def paginate(path: str, payload: dict) -> Iterable[dict]:
 # ---------------------------------------------------------------------------
 
 
+# A dashed id is matched in full 8-4-4-4-12 shape rather than as "36 characters
+# of hex and dashes": the loose form happily matched a run spanning a title
+# slug, e.g. "e-Cafe-1234567890abcdef1234567890abc" out of ".../My-Page-Name-
+# Cafe-<id>", swallowing part of the real id on its way past.
+DASHED_ID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+BARE_ID_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])")
+
+
 def normalise_id(value: str) -> str:
-    """Accept a bare id, a dashed id, or any Notion URL containing one."""
-    found = re.findall(r"[0-9a-fA-F]{32}|[0-9a-fA-F-]{36}", value or "")
-    if not found:
-        raise TrackerError(f"could not find a Notion id in {value!r}")
-    raw = found[-1].replace("-", "")
-    return str(uuid.UUID(raw))
+    """Accept a bare id, a dashed id, or any Notion URL containing one.
+
+    The query string is dropped first. A Notion database URL carries the view
+    id there -- .../Job-Tracker-<page id>?v=<view id> -- and taking the last id
+    in the string returned that one, so `provision --parent-page` created the
+    three databases under a parent that is not a page, or failed with an opaque
+    404. The page id is the one in the path.
+    """
+    text = (value or "").split("?", 1)[0].split("#", 1)[0]
+    for candidate in DASHED_ID_RE.findall(text) + BARE_ID_RE.findall(text):
+        try:
+            return str(uuid.UUID(candidate.replace("-", "")))
+        except ValueError:
+            continue
+    raise TrackerError(f"could not find a Notion id in {value!r}")
 
 
 def load_ids() -> dict:
