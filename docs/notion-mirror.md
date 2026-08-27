@@ -63,6 +63,12 @@ python tools/notion_sync.py push --slug acme  # just one application
 `notion_page_id` on the local row. A files property is replaced wholesale on
 each push, so re-pushing swaps the PDF rather than adding a second copy.
 
+**`push` writes applications only.** It does not create or update event pages —
+events travel the other way, through `import`. So a funnel event added with
+`tracker.py event add` stays local until you put it in Notion yourself, and the
+two sides can drift apart in both directions. Comparing event counts will not
+tell you: diff on application, type, date and outcome instead.
+
 Upload limits: 20 MiB per file in a single request. A CV is tens of kilobytes.
 
 ## Migrating an existing Notion tracker in
@@ -101,7 +107,19 @@ listed there.
 python tools/notion_sync.py import
 ```
 
-Idempotent, keyed on the posting URL: re-running skips what is already there.
+Idempotent: re-running skips what is already there. Applications are keyed on
+the posting URL, events on the Notion page id, which the import records in
+`events.notion_page_id` the first time it sees them. Events that came across
+before that column existed are matched once on application, type, date and
+outcome, and adopt their page id then; every later run is an exact lookup.
+
+The summary separates the two, so a re-run reads honestly:
+
+```
+imported: 0 application(s), 2 event(s)
+already present: 80 application(s), 130 event(s)
+```
+
 Page bodies are read too, so posting snapshots and cover letter text come
 across. `--no-bodies` is much faster if you do not need them.
 
