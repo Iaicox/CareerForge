@@ -97,9 +97,12 @@ strip_legal_forms = [
   "bv", "nv", "sa", "sas", "sarl", "srl", "spa", "ab", "as", "oy", "sp z oo",
   "lda", "unipessoal", "sl", "sll", "pte", "pty",
 ]
-# Geographic suffixes that are noise in company names, e.g. "Acme Nordic".
+# Geographic and structural suffixes that are noise in company names, e.g.
+# "Acme Nordic", "Acme Group". Each list REPLACES the tool's built-in one
+# rather than adding to it, so drop entries only if you mean to lose them.
 strip_regions = [
   "europe", "emea", "nordic", "nordics", "scandinavia", "international", "global",
+  "group", "holding",
 ]
 
 

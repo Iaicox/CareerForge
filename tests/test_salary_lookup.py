@@ -46,6 +46,36 @@ class NormalisationTest(unittest.TestCase):
         self.assertNormalises("Cocacola", "cocacola")
         self.assertNormalises("Incorp", "incorp")
 
+    def test_the_example_config_carries_every_built_in_pattern(self):
+        # config.example.toml is copied to config.toml by /setup, and a
+        # configured list REPLACES the built-in one rather than extending it.
+        # So anything missing from the example is silently lost the moment a
+        # user has a config at all -- "group" and "holding" were.
+        import tomllib
+
+        with (REPO / "config" / "config.example.toml").open("rb") as fh:
+            example = tomllib.load(fh)["salary"]
+        self.assertEqual(
+            set(salary.DEFAULT_LEGAL_FORMS) - set(example["strip_legal_forms"]),
+            set(),
+            "built-in legal forms missing from config.example.toml",
+        )
+        self.assertEqual(
+            set(salary.DEFAULT_REGIONS) - set(example["strip_regions"]),
+            set(),
+            "built-in region words missing from config.example.toml",
+        )
+        self.assertEqual(
+            set(example["strip_legal_forms"]) - set(salary.DEFAULT_LEGAL_FORMS),
+            set(),
+            "config.example.toml legal forms missing from the built-in list",
+        )
+        self.assertEqual(
+            set(example["strip_regions"]) - set(salary.DEFAULT_REGIONS),
+            set(),
+            "config.example.toml region words missing from the built-in list",
+        )
+
     def test_never_normalises_to_an_empty_key(self):
         # An empty key would match every entry in the dataset.
         for name in ("Company Ltd", "Group Holding", "Global"):

@@ -30,19 +30,27 @@ DATA_FILE = REPO / "profile" / "salary_data.json"
 # Company-name normalisation. The lists live in config/config.toml under
 # [salary] so this works in any market; the values below are only the fallback
 # for a workspace with no configuration yet.
+DEFAULT_LEGAL_FORMS = [
+    "a/s", "aps", "i/s", "p/s", "k/s", "ivs", "amba",
+    "gmbh", "mbh", "ag", "kg", "ug",
+    "ltd", "limited", "plc", "llp", "inc", "incorporated", "corp",
+    "corporation", "llc", "co", "company",
+    "bv", "nv", "sa", "sas", "sarl", "srl", "spa", "ab", "as", "oy", "sp z oo",
+    "lda", "unipessoal", "sl", "sll", "pte", "pty",
+]
+DEFAULT_REGIONS = [
+    "europe", "emea", "nordic", "nordics", "scandinavia",
+    "international", "global", "group", "holding",
+]
+
+
 def _load_normalisation():
-    legal = [
-        "a/s", "aps", "i/s", "p/s", "k/s", "ivs", "amba",
-        "gmbh", "mbh", "ag", "kg", "ug",
-        "ltd", "limited", "plc", "llp", "inc", "incorporated", "corp",
-        "corporation", "llc", "co", "company",
-        "bv", "nv", "sa", "sas", "sarl", "srl", "spa", "ab", "as", "oy",
-        "lda", "unipessoal", "sl", "sll", "pte", "pty",
-    ]
-    regions = [
-        "europe", "emea", "nordic", "nordics", "scandinavia",
-        "international", "global", "group", "holding",
-    ]
+    # A configured list replaces the default outright, so config.example.toml
+    # has to carry every entry these do -- a copy of it that is missing one
+    # silently normalises worse than no configuration at all. A test pins the
+    # two together.
+    legal = list(DEFAULT_LEGAL_FORMS)
+    regions = list(DEFAULT_REGIONS)
     try:
         import tomllib
 
