@@ -180,18 +180,34 @@ try {
         # to warn was aborting the whole build -- and atscheck writes to stderr in
         # exactly the case reported below as 'no extractor'. Setting the
         # preference inside the scriptblock scopes it to this one call.
+        #
+        # It also demotes a missing python to non-terminating, and a command that
+        # never ran leaves $LASTEXITCODE at whatever pandoc last set it to -- 0.
+        # So the table said 'ATS: OK' about a check that had not happened.
+        # Clearing it first makes "did not run" a state of its own, and the catch
+        # keeps the CommandNotFoundException out of the console and in $atsOutput
+        # with everything else this step has to say.
         $atsOutput = & {
             $ErrorActionPreference = 'Continue'
-            & python (Join-Path $PSScriptRoot 'atscheck.py') $pdf --source $md.FullName 2>&1
+            $global:LASTEXITCODE = $null
+            try {
+                & python (Join-Path $PSScriptRoot 'atscheck.py') $pdf --source $md.FullName 2>&1
+            } catch { $_ }
         }
         $atsCode = $LASTEXITCODE
-        $ats = switch ($atsCode) {
-            0 { 'OK' }
-            3 { 'no extractor' }
-            default { 'see below' }
+        if ($null -eq $atsCode) {
+            $ats = 'not run'
+            $atsDetails += "$($md.Name): ATS check did not run - is python on PATH?"
+            $atsDetails += $atsOutput
+        } else {
+            $ats = switch ($atsCode) {
+                0 { 'OK' }
+                3 { 'no extractor' }
+                default { 'see below' }
+            }
+            # Anything that says 'see below' has to actually appear below.
+            if ($atsCode -ne 0 -and $atsCode -ne 3) { $atsDetails += $atsOutput }
         }
-        # Anything that says 'see below' has to actually appear below.
-        if ($atsCode -ne 0 -and $atsCode -ne 3) { $atsDetails += $atsOutput }
 
         $ok = if ($pages -le $limit) { 'OK' } else { "OVER LIMIT ($limit)" }
         $results += [pscustomobject]@{
