@@ -225,4 +225,11 @@ if ($atsDetails) {
     Write-Output 'ATS findings (warnings - the document still built):'
     $atsDetails | ForEach-Object { Write-Output "  $_" }
 }
+# Exit 2 means one thing: a document is over its page limit. Falling off the end
+# instead of exiting returned whatever $LASTEXITCODE happened to hold, and the
+# last thing to set it is atscheck -- which exits 2 on a finding. So a document
+# that built fine and merely failed the ATS text check reported the same code as
+# one that is too long, and the answer to that is to cut content. build.sh has
+# always ended `exit $(( over ? 2 : 0 ))`; this is the same contract.
 if ($results | Where-Object { $_.Pages -gt $_.Limit }) { exit 2 }
+exit 0
