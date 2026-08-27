@@ -33,6 +33,17 @@ from typing import Any, Iterable
 REPO = Path(__file__).resolve().parent.parent
 DB_PATH = REPO / "tracker" / "careerforge.db"
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
+# What a file in here may contain. apply_migrations() wraps it in BEGIN/COMMIT
+# together with the row that records it, so:
+#   - no transaction control of its own -- no BEGIN, COMMIT or SAVEPOINT;
+#   - no PRAGMA. SQLite ignores `PRAGMA foreign_keys` inside a transaction,
+#     silently, so the documented table-rebuild recipe cannot be written here as
+#     it stands: connect() leaves foreign keys ON and the rebuild would drop
+#     references without erroring. Such a migration needs the wrapper changed,
+#     not a pragma smuggled into the file;
+#   - every statement terminated with `;`. The bookkeeping INSERT is appended
+#     to the text, so a missing final semicolon glues it onto the last statement
+#     and the syntax error points at the INSERT rather than at the file.
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 SCHEMA_VERSION = "3"
 STAGES = ("applications", "processing", "rejected")
