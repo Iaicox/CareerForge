@@ -337,6 +337,33 @@ class TrackerTestCase(unittest.TestCase):
         self.add(company="Initech")
         self.assertEqual(self.stale_slugs(), [])
 
+    def test_a_terminal_status_outside_the_rejected_stage_is_never_stale(self):
+        # Nothing stops a user from filing "accepted" under `processing` and
+        # marking it terminal. Testing the stage alone chased it forever.
+        self.cfg.data["statuses"].append(
+            {"id": "accepted", "stage": "processing", "terminal": True,
+             "labels": {"en": "Accepted"}}
+        )
+        row = self.add(company="Hooli")
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, row["slug"], "accepted")
+        self.age(row)
+        self.assertEqual(self.stale_slugs(), [])
+
+    def test_an_application_whose_status_is_not_in_config_is_not_stale(self):
+        # enrich() leaves stage None for these, and None != "rejected" was true,
+        # so every orphan read as silent -- renaming the `rejected` status id
+        # would have made every closed application permanently "Silent" in
+        # /triage, which only ever proposes closing them again.
+        row = self.add(company="Vandelay")
+        self.age(row)
+        with self.conn:
+            self.conn.execute(
+                "UPDATE applications SET status = 'gone_from_config' WHERE id = ?",
+                (row["id"],),
+            )
+        self.assertEqual(self.stale_slugs(), [])
+
     # -- migrations --------------------------------------------------------
 
     def test_fresh_database_records_migrations_without_running_them(self):

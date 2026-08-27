@@ -132,6 +132,23 @@ class Config:
             )
         return stage
 
+    def is_terminal(self, status_id: str | None) -> bool | None:
+        """Is this status closed for good? None when it is not configured at all.
+
+        The `terminal` flag is the answer where it is set; the `rejected` stage
+        is the fallback for a status that predates it. Reading the stage alone
+        got both ends wrong: a user-defined terminal status filed under
+        `processing` -- an accepted/hired column, which nothing forbids -- was
+        never treated as closed, and an unconfigured status has no stage at all,
+        so it read as open.
+        """
+        for s in self.statuses:
+            if s["id"] == status_id:
+                if "terminal" in s:
+                    return bool(s["terminal"])
+                return s.get("stage") == "rejected"
+        return None
+
     def label(self, kind: str, item_id: str | None) -> str:
         if not item_id:
             return ""
@@ -694,22 +711,30 @@ def list_applications(
     if stale:
         today = datetime.now(timezone.utc).date()
         cutoff = (today - timedelta(days=cfg.stale_after_days())).isoformat()
-        # Anything not already closed. Restricting this to the `applications`
-        # stage hid every status under `processing` -- screening, assignment,
-        # interview, final, offer -- so an interview process that went quiet
-        # could not reach /triage's "Silent" section, which reads only from
-        # here. That is the silence worth chasing, and the one case the sweep
-        # structurally could not see.
+        # Anything still open. Restricting this to the `applications` stage hid
+        # every status under `processing` -- screening, assignment, interview,
+        # final, offer -- so an interview process that went quiet could not
+        # reach /triage's "Silent" section, which reads only from here. That is
+        # the silence worth chasing, and the one case the sweep structurally
+        # could not see.
+        #
+        # Open means cfg.is_terminal() says so: False, not None. A status that
+        # is not in the config is an orphan, and the only thing /triage offers
+        # a silent row is to close it -- which would be guessing about a row we
+        # could not even read. /triage lists those separately instead.
         rows = [
             r
             for r in rows
-            if r["stage"] != "rejected"
+            if cfg.is_terminal(r["status"]) is False
             and (r["last_event_date"] or r["created_at"])[:10] < cutoff
         ]
     if expired:
         # Only worth surfacing while the application is still open; a deadline
         # that passed after a rejection is not news.
-        rows = [r for r in rows if r["is_expired"] and r["stage"] != "rejected"]
+        rows = [
+            r for r in rows
+            if r["is_expired"] and cfg.is_terminal(r["status"]) is False
+        ]
     return rows
 
 
