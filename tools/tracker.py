@@ -34,7 +34,7 @@ REPO = Path(__file__).resolve().parent.parent
 DB_PATH = REPO / "tracker" / "careerforge.db"
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 STAGES = ("applications", "processing", "rejected")
 
 

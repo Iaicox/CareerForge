@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS events (
     participants   TEXT,
     outcome        TEXT,
     notes          TEXT,
+    notion_page_id TEXT,                  -- set only for events imported from Notion
     created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

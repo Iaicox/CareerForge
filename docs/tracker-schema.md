@@ -53,6 +53,7 @@ you got there.
 | `participants` | People on their side |
 | `outcome` | An id from `[[outcomes]]` |
 | `notes` | |
+| `notion_page_id` | Set only for events the Notion import brought across; what keeps a re-run from adding them twice. Empty for anything typed locally |
 
 ### `attachments`
 
