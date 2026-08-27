@@ -27,6 +27,7 @@ with paired count/index columns per category, it groups them automatically.
 """
 
 import json
+import re
 import sys
 import argparse
 from pathlib import Path
@@ -39,19 +40,39 @@ COUNT_PATTERNS = {"antal", "count", "number", "n", "employees", "medarbejdere"}
 INDEX_PATTERNS = {"indeks", "index", "idx", "salary", "løn", "median", "average", "gennemsnit"}
 
 
+def header_words(header):
+    """The header split into lowercase words, keeping Danish letters intact."""
+    return re.findall(r"[^\W_]+", (header or "").lower(), flags=re.UNICODE)
+
+
 def detect_column_type(header):
-    """Detect whether a column header refers to count or index data."""
-    h = header.lower().strip()
-    for p in COUNT_PATTERNS:
-        if p in h:
-            return "count"
-    for p in INDEX_PATTERNS:
-        if p in h:
-            return "index"
+    """Detect whether a column header refers to count or index data.
+
+    Matching is on whole words, not substrings. "n" is a legitimate count
+    header on its own, but as a substring it appears in "Indeks", "Median" and
+    "Engineering" alike -- which classified every column as a count and left
+    the count/index pairing below unreachable.
+    """
+    words = set(header_words(header))
+    if words & COUNT_PATTERNS:
+        return "count"
+    if words & INDEX_PATTERNS:
+        return "index"
     return None
 
 
-def parse_sheet(ws, sheet_label=None):
+def category_name(header, patterns):
+    """The header with its count/index marker words removed.
+
+    Only the words that actually matched are dropped, so "Antal Engineering"
+    becomes "engineering". Removing the patterns as substrings instead took the
+    letters with them -- "atal egieerig" -- and did it in set-iteration order,
+    so the result was not even stable between runs.
+    """
+    return "_".join(w for w in header_words(header) if w not in patterns)
+
+
+def parse_sheet(ws):
     """Parse a single worksheet into a list of company entries and detected categories."""
     # Find header row
     header_row = None
@@ -108,9 +129,7 @@ def parse_sheet(ws, sheet_label=None):
             # If we have a count/index pair, group them
             if col_type == "count" and next_col_type == "index":
                 # Use the header minus the count/index suffix as category name
-                cat_name = col_header
-                for p in COUNT_PATTERNS:
-                    cat_name = cat_name.lower().replace(p, "").strip(" _-")
+                cat_name = category_name(col_header, COUNT_PATTERNS)
                 if not cat_name:
                     cat_name = f"category_{len(categories)+1}"
                 categories.append({
@@ -121,9 +140,7 @@ def parse_sheet(ws, sheet_label=None):
                 i += 2
                 continue
             elif col_type == "index" and next_col_type == "count":
-                cat_name = col_header
-                for p in INDEX_PATTERNS:
-                    cat_name = cat_name.lower().replace(p, "").strip(" _-")
+                cat_name = category_name(col_header, INDEX_PATTERNS)
                 if not cat_name:
                     cat_name = f"category_{len(categories)+1}"
                 categories.append({
@@ -233,7 +250,7 @@ def main():
     for sheet_name in wb.sheetnames:
         print(f"  Parsing sheet: {sheet_name}")
         ws = wb[sheet_name]
-        companies = parse_sheet(ws, sheet_label=sheet_name)
+        companies = parse_sheet(ws)
         all_companies.extend(companies)
 
     wb.close()
