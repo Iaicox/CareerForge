@@ -10,6 +10,8 @@ throwaway database.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import shutil
 import sys
 import tempfile
@@ -325,6 +327,19 @@ class PushEventsTestCase(MirrorTestCase):
         self.event(type_="follow_up", when="2026-08-19", outcome="passed")
         self.assertEqual(self.push(), (2, 0))
         self.assertEqual(self.page_ids(), ["created-1", "created-2"])
+
+    def test_two_rows_left_pointing_at_one_page_are_reported(self):
+        # What a tracker pushed before the key was fixed looks like now. The
+        # tool cannot know which row is the real event, so it says so rather
+        # than writing one over the other without a word.
+        self.event(type_="follow_up", when="2026-08-19", outcome="passed",
+                   page_id="shared-page")
+        self.event(type_="follow_up", when="2026-08-19", outcome=None,
+                   page_id="shared-page")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(self.push(), (0, 2))
+        self.assertIn("shares Notion page shared-page", out.getvalue())
 
     def test_a_dry_run_writes_nothing(self):
         self.event(when="2026-08-25T14:00")

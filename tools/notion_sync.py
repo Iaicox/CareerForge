@@ -739,6 +739,16 @@ def push_events(conn, ids: dict, detail: dict, app_page_id: str,
             app_page_id, ev["type_label"], ev["date"], ev["outcome_label"]
         )
         page_id = ev.get("notion_page_id")
+        if page_id and page_id in used:
+            # The damage the three-field key already did, on a tracker that was
+            # pushed before it was fixed. Repairing it means deciding which of
+            # the two rows is the real event, which is not this tool's call --
+            # so say it out loud instead of overwriting one with the other in
+            # silence, as every push until now has done.
+            print(f"  warning: event #{ev['id']} shares Notion page {page_id} "
+                  "with an earlier event of this application; only one of them "
+                  "can survive there. Delete the duplicate event, or clear its "
+                  "notion_page_id to give it a page of its own.")
         if not page_id:
             candidate = index.get(key)
             if candidate and candidate not in used:
@@ -810,7 +820,7 @@ def do_push(slug: str | None, with_files: bool, dry_run: bool,
     # A workspace provisioned before this could push events has an Events
     # database; one whose notion.json predates it does not.
     mirror_events = with_events and "events" in ids
-    index: dict[tuple[str, str, str], str] = {}
+    index: dict[tuple[str, str, str, str], str] = {}
     index_loaded = False
     ev_created = ev_updated = 0
 
