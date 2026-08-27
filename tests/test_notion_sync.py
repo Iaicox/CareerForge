@@ -38,6 +38,17 @@ class NormaliseIdTestCase(unittest.TestCase):
             EXPECTED,
         )
 
+    def test_a_side_peek_url_yields_the_page_id_not_the_database_id(self):
+        # A page opened as a peek from a database keeps the database id in the
+        # path and puts the page id in ?p=. Dropping the whole query string
+        # returned the database -- the same wrong-parent bug ?v= caused.
+        self.assertEqual(
+            notion_sync.normalise_id(
+                f"https://www.notion.so/ws/Job-Tracker-{VIEW}?v={VIEW}&p={PAGE}&pm=s"
+            ),
+            EXPECTED,
+        )
+
     def test_a_fragment_is_dropped_too(self):
         self.assertEqual(
             notion_sync.normalise_id(f"https://www.notion.so/ws/Job-Tracker-{PAGE}#block{VIEW}"),

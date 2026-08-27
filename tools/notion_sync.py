@@ -29,6 +29,7 @@ import sqlite3
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -160,13 +161,19 @@ BARE_ID_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])")
 def normalise_id(value: str) -> str:
     """Accept a bare id, a dashed id, or any Notion URL containing one.
 
-    The query string is dropped first. A Notion database URL carries the view
-    id there -- .../Job-Tracker-<page id>?v=<view id> -- and taking the last id
-    in the string returned that one, so `provision --parent-page` created the
-    three databases under a parent that is not a page, or failed with an opaque
-    404. The page id is the one in the path.
+    A Notion database URL carries the view id in the query --
+    .../Job-Tracker-<page id>?v=<view id> -- and taking the last id in the whole
+    string returned that one, so `provision --parent-page` created the three
+    databases under a parent that is not a page, or failed with an opaque 404.
+
+    But the query is not all noise. A page opened as a side peek from a database
+    reads .../<db slug>-<db id>?v=<view>&p=<page id>&pm=s: there the path holds
+    the *database*, and the only page id in the URL is `p=`. So `p=` is read
+    first, and only when it is absent does the path decide.
     """
-    text = (value or "").split("?", 1)[0].split("#", 1)[0]
+    parts = urllib.parse.urlsplit(value or "")
+    page_param = urllib.parse.parse_qs(parts.query).get("p", [""])[0]
+    text = page_param or parts.path
     for candidate in DASHED_ID_RE.findall(text) + BARE_ID_RE.findall(text):
         try:
             return str(uuid.UUID(candidate.replace("-", "")))
