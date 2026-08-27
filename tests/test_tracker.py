@@ -164,6 +164,36 @@ class TrackerTestCase(unittest.TestCase):
         self.assertEqual(data["total"], 1)
         self.assertEqual(data["orphans"], [])
 
+    def test_an_orphan_card_carries_what_the_board_needs_to_move_it(self):
+        # A status that used to be in config and is not any more. The board
+        # renders these under "Unknown status" so they can be dragged back into
+        # a real column, which needs id and updated_at on the card.
+        row = self.add()
+        with self.conn:
+            self.conn.execute(
+                "UPDATE applications SET status = 'was_renamed' WHERE id = ?",
+                (row["id"],),
+            )
+        data = tracker.board_data(self.conn, self.cfg)
+        self.assertEqual([c["id"] for c in data["orphans"]], [row["id"]])
+        orphan = data["orphans"][0]
+        for key in ("id", "updated_at", "company_name", "role", "status"):
+            self.assertIn(key, orphan)
+        self.assertIsNone(orphan["stage"])
+
+    def test_an_orphan_can_be_moved_back_to_a_configured_status(self):
+        # set_status validates the target, never the status being left behind.
+        row = self.add()
+        with self.conn:
+            self.conn.execute(
+                "UPDATE applications SET status = 'was_renamed' WHERE id = ?",
+                (row["id"],),
+            )
+        with self.conn:
+            moved, _ = tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+        self.assertEqual(moved["status"], "screening")
+        self.assertEqual(tracker.board_data(self.conn, self.cfg)["orphans"], [])
+
     def test_slugify_folds_accents_and_punctuation(self):
         self.assertEqual(tracker.slugify("Nestl" + chr(233) + " S.A."), "nestle-s-a")
         self.assertEqual(tracker.slugify("  Acme   Corp!  "), "acme-corp")

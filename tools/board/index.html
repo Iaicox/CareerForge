@@ -196,7 +196,11 @@ function cardById(id) {
     const hit = col.cards.find((c) => c.id === id);
     if (hit) return hit;
   }
-  return null;
+  // Orphans are rendered as cards too, so they have to be findable as cards.
+  // Without this, clicking one closed the panel and dragging one did nothing
+  // at all -- silently, since move() returns before it makes a request. That
+  // is the one column whose whole purpose is to be emptied by hand.
+  return (state.orphans || []).find((c) => c.id === id) || null;
 }
 
 function render() {
