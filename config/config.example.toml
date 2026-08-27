@@ -221,6 +221,14 @@ id = "offer"
 labels = { en = "Offer / negotiation", ru = "💰 Оффер/переговоры" }
 
 [[event_types]]
+id = "rejection"
+labels = { en = "Rejection", ru = "❌ Отказ" }
+
+[[event_types]]
+id = "follow_up"
+labels = { en = "Follow-up", ru = "📩 Follow-up" }
+
+[[event_types]]
 id = "other"
 labels = { en = "Other", ru = "📆 Другое" }
 
