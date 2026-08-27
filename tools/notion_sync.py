@@ -642,16 +642,26 @@ def source_parent(entry: dict) -> dict:
     return {"type": "database_id", "database_id": entry["database_id"]}
 
 
-def event_key(app_page_id: str, type_label: str, when: str) -> tuple[str, str, str]:
-    """The identity of an event page: which application, what, when.
+def event_key(app_page_id: str, type_label: str, when: str,
+              outcome_label: str) -> tuple[str, str, str, str]:
+    """The identity of an event page: which application, what, when, how it went.
 
-    The same three fields existing_event_id() matches a local row on, so the
-    two directions of the mirror agree on what "the same event" means.
+    The same four fields existing_event_id() matches a local row on, so the two
+    directions of the mirror agree on what "the same event" means. Leaving
+    outcome out gave one application's two follow-ups on the same evening -- one
+    answered, one not -- a single key: the second PATCHed the page the first had
+    just created, both local rows took the same notion_page_id, and one event
+    disappeared from the mirror without a word.
     """
-    return (app_page_id, (type_label or "").strip(), norm_when(when))
+    return (
+        app_page_id,
+        (type_label or "").strip(),
+        norm_when(when),
+        (outcome_label or "").strip(),
+    )
 
 
-def event_index(ids: dict) -> dict[tuple[str, str, str], str]:
+def event_index(ids: dict) -> dict[tuple[str, str, str, str], str]:
     """Every event page already in Notion, keyed by event_key.
 
     Built once per push. An event typed locally may already have been written
@@ -668,6 +678,7 @@ def event_index(ids: dict) -> dict[tuple[str, str, str], str]:
             app_ref,
             plain(props.get("Type") or props.get("Тип")),
             plain(props.get("Date") or props.get("Дата")),
+            plain(props.get("Outcome") or props.get("Итог")),
         )
         index.setdefault(key, page["id"])
     return index
@@ -698,6 +709,11 @@ def event_props(detail: dict, ev: dict, app_page_id: str,
         props["Name"] = {"title": [{"type": "text", "text": {
             "content": f"{detail['company_name']} - {ev['type_label']}"}}]}
     if ev.get("outcome"):
+        # Written when there is one, never cleared. Sending {"select": None} for
+        # an empty local outcome would wipe one typed into Notion by hand, which
+        # is the same information loss the title rule above exists to prevent --
+        # and unlike Type or Date, an absent outcome is more often "not recorded
+        # yet" than "there was none".
         props["Outcome"] = {"select": {"name": ev["outcome_label"]}}
     return props
 
@@ -706,9 +722,22 @@ def push_events(conn, ids: dict, detail: dict, app_page_id: str,
                 index: dict, dry_run: bool) -> tuple[int, int]:
     """Mirror one application's events. Returns (created, updated)."""
     created = updated = 0
+    # The pages this push has already spoken for, the way do_import() carries
+    # `claimed`: two local events alike in every mirrored field share a key, and
+    # without this the second would overwrite the page the first just took
+    # instead of getting one of its own.
+    used: set[str] = set()
     for ev in detail["events"]:
-        key = event_key(app_page_id, ev["type_label"], ev["date"])
-        page_id = ev.get("notion_page_id") or index.get(key)
+        key = event_key(
+            app_page_id, ev["type_label"], ev["date"], ev["outcome_label"]
+        )
+        page_id = ev.get("notion_page_id")
+        if not page_id:
+            candidate = index.get(key)
+            if candidate and candidate not in used:
+                page_id = candidate
+        if page_id:
+            used.add(page_id)
         if dry_run:
             if page_id:
                 updated += 1
@@ -724,6 +753,7 @@ def push_events(conn, ids: dict, detail: dict, app_page_id: str,
             page = request("POST", "/pages",
                            {"parent": source_parent(ids["events"]), "properties": props})
             page_id = page["id"]
+            used.add(page_id)
             created += 1
 
         if ev.get("notion_page_id") != page_id:

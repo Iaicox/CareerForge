@@ -275,7 +275,7 @@ class PushEventsTestCase(MirrorTestCase):
         index = {
             notion_sync.event_key(
                 self.APP_PAGE, self.cfg.label("event_types", "screening"),
-                "2026-08-25T14:00",
+                "2026-08-25T14:00", self.cfg.label("outcomes", "passed"),
             ): "hand-written-page"
         }
         self.push(index=index)
@@ -288,13 +288,32 @@ class PushEventsTestCase(MirrorTestCase):
         index = {
             notion_sync.event_key(
                 self.APP_PAGE, self.cfg.label("event_types", "screening"),
-                "2026-08-25T14:00:00.000+01:00",
+                "2026-08-25T14:00:00.000+01:00", self.cfg.label("outcomes", "passed"),
             ): "hand-written-page"
         }
         self.assertEqual(self.push(index=index), (0, 1))
         self.assertEqual([c[0] for c in self.calls], ["PATCH"])
         self.assertEqual(self.calls[0][1], "/pages/hand-written-page")
         self.assertEqual(self.page_ids(), ["hand-written-page"])
+
+    def test_two_events_differing_only_by_outcome_get_two_pages(self):
+        # The case existing_event_id()'s docstring names: two follow-up emails
+        # sent the same evening, one answered and one not. Keyed on three fields
+        # the second PATCHed the page the first had just created, both local rows
+        # ended up with the same notion_page_id, and one event left the mirror.
+        self.event(type_="follow_up", when="2026-08-19", outcome="passed")
+        self.event(type_="follow_up", when="2026-08-19", outcome=None)
+        self.assertEqual(self.push(), (2, 0))
+        self.assertEqual([c[0] for c in self.calls], ["POST", "POST"])
+        self.assertEqual(self.page_ids(), ["created-1", "created-2"])
+
+    def test_two_events_alike_in_every_mirrored_field_get_two_pages(self):
+        # Nothing in the tracker forbids them, and the import side already
+        # accounts for this with `claimed`; the push side has to match.
+        self.event(type_="follow_up", when="2026-08-19", outcome="passed")
+        self.event(type_="follow_up", when="2026-08-19", outcome="passed")
+        self.assertEqual(self.push(), (2, 0))
+        self.assertEqual(self.page_ids(), ["created-1", "created-2"])
 
     def test_a_dry_run_writes_nothing(self):
         self.event(when="2026-08-25T14:00")
@@ -316,8 +335,18 @@ class PushEventsTestCase(MirrorTestCase):
         # event_key and existing_event_id must normalise the date the same
         # way, or push and import will disagree about the same page.
         self.assertEqual(
-            notion_sync.event_key("a", "Screening", "2026-08-25T14:00:00.000+01:00"),
-            notion_sync.event_key("a", " Screening ", "2026-08-25 14:00"),
+            notion_sync.event_key(
+                "a", "Screening", "2026-08-25T14:00:00.000+01:00", "Passed"),
+            notion_sync.event_key(
+                "a", " Screening ", "2026-08-25 14:00", " Passed "),
+        )
+
+    def test_the_two_directions_agree_that_outcome_is_part_of_it(self):
+        # The import side keys on four fields; three here meant push collapsed
+        # two events onto one page while import kept them apart.
+        self.assertNotEqual(
+            notion_sync.event_key("a", "Follow-up", "2026-08-19", "Passed"),
+            notion_sync.event_key("a", "Follow-up", "2026-08-19", ""),
         )
 
 

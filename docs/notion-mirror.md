@@ -66,12 +66,21 @@ python tools/notion_sync.py push --dry-run     # counts only, writes nothing
 each push, so re-pushing swaps the PDF rather than adding a second copy.
 
 **Events go across too**, keyed the same way — `events.notion_page_id`, and for
-an event that has none, a match on application, type and date. So an event you
-typed into Notion by hand before pushing is adopted rather than duplicated, and
-a second push updates the page it made the first time.
+an event that has none, a match on application, type, date and outcome. So an
+event you typed into Notion by hand before pushing is adopted rather than
+duplicated, and a second push updates the page it made the first time. Outcome
+is in that key because one application can hold two events of the same type on
+the same day that differ only by it — two follow-up emails sent the same
+evening, one answered and one not. Both keep their own page.
 
 The tracker is the source of truth for the fields it holds, so a push
-**overwrites** Type, Date, Participants and Outcome.
+**overwrites** Type, Date and Participants.
+
+**Outcome is written but never cleared.** It is set when the tracker has one and
+left alone when it does not, for the same reason titles are: an outcome you
+typed in Notion says something the tracker has no way to reproduce, and a push
+that "kept the tracker authoritative" would erase it. Clear an outcome in Notion
+by clearing it in Notion.
 
 **It never rewrites a title.** `Name` is set once, when the page is created,
 and derived — `Acme - Screening`. After that it is yours: the tracker has no
