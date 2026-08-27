@@ -623,6 +623,60 @@ def set_event_type(
     return conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
 
 
+def delete_event(conn: sqlite3.Connection, event_id: int) -> sqlite3.Row:
+    """Remove an event that should not be a row at all.
+
+    Not for editing history -- set_event_type() explains why an event is
+    otherwise immutable. This is for a row that records nothing that happened:
+    the same interview logged twice, once when it was scheduled and again with
+    its outcome, or a meeting that moved and left its old slot behind. Until
+    now the only way out was to leave it there, which quietly doubles a stage
+    in the funnel and puts a date in /triage's way that nobody is waiting for.
+
+    Returns the row it removed, so the caller can show what is gone.
+    """
+    row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+    if row is None:
+        raise TrackerError(f"no event with id {event_id}")
+    conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
+    conn.execute(
+        "UPDATE applications SET updated_at = ? WHERE id = ?",
+        (now(), row["application_id"]),
+    )
+    return row
+
+
+def deleted_event_report(conn: sqlite3.Connection, cfg: Config, row: dict) -> str:
+    """Everything the deleted row held, because after this it is only here."""
+    lines = [
+        f"deleted event #{row['id']} "
+        f"{cfg.label('event_types', row['type'])} on {row['date']}"
+    ]
+    for field in ("participants", "outcome", "notes"):
+        if row.get(field):
+            value = (cfg.label("outcomes", row[field])
+                     if field == "outcome" else row[field])
+            lines.append(f"  {field}: {value}")
+
+    page = row.get("notion_page_id")
+    if not page:
+        return "\n".join(lines)
+    # A page another event still points at is that event's page. That is exactly
+    # the case when the row removed was a duplicate the mirror had collapsed
+    # onto one page, and telling the user to delete it would cost them the
+    # surviving event.
+    if conn.execute(
+        "SELECT 1 FROM events WHERE notion_page_id = ? LIMIT 1", (page,)
+    ).fetchone():
+        lines.append(f"  Notion page {page} stays: another event still uses it")
+    else:
+        lines.append(
+            f"  it was mirrored as Notion page {page} -- delete that page too, "
+            "or the next `notion_sync.py import` brings the event back"
+        )
+    return "\n".join(lines)
+
+
 def add_event(
     conn: sqlite3.Connection,
     cfg: Config,
@@ -967,6 +1021,10 @@ def build_parser() -> argparse.ArgumentParser:
     evs.add_argument("--type", dest="type_", required=True)
     evs.add_argument("--outcome", help="also correct the outcome")
 
+    evd = with_json(evsub.add_parser(
+        "delete", help="remove an event that records nothing that happened"))
+    evd.add_argument("event_id", type=int, help="from `show <application>`")
+
     at = with_json(sub.add_parser("attach", help="record a built document"))
     at.add_argument("application")
     at.add_argument("--kind", default="cv", choices=["cv", "cover", "other"])
@@ -1123,29 +1181,36 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         elif args.command == "event":
-            if args.event_command == "set-type":
+            if args.event_command == "delete":
                 with conn:
-                    e = set_event_type(
-                        conn, cfg, args.event_id, args.type_, args.outcome
-                    )
+                    e = delete_event(conn, args.event_id)
+                d = dict(e)
+                emit(args, d, deleted_event_report(conn, cfg, d))
             else:
-                with conn:
-                    e = add_event(
-                        conn,
-                        cfg,
-                        args.application,
-                        args.type_,
-                        args.when,
-                        args.participants,
-                        args.outcome,
-                        args.notes,
-                    )
-            d = dict(e)
-            emit(
-                args,
-                d,
-                f"event #{d['id']} {cfg.label('event_types', d['type'])} on {d['date']}",
-            )
+                if args.event_command == "set-type":
+                    with conn:
+                        e = set_event_type(
+                            conn, cfg, args.event_id, args.type_, args.outcome
+                        )
+                else:
+                    with conn:
+                        e = add_event(
+                            conn,
+                            cfg,
+                            args.application,
+                            args.type_,
+                            args.when,
+                            args.participants,
+                            args.outcome,
+                            args.notes,
+                        )
+                d = dict(e)
+                emit(
+                    args,
+                    d,
+                    f"event #{d['id']} "
+                    f"{cfg.label('event_types', d['type'])} on {d['date']}",
+                )
 
         elif args.command == "attach":
             with conn:

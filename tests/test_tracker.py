@@ -297,6 +297,82 @@ class TrackerTestCase(unittest.TestCase):
         with self.assertRaises(TrackerError):
             tracker.set_event_type(self.conn, self.cfg, 9999, "rejection")
 
+    def test_an_event_recorded_twice_can_be_deleted(self):
+        row = self.add()
+        with self.conn:
+            keep = tracker.add_event(self.conn, self.cfg, row["slug"],
+                                     "tech_interview", "2026-08-25T14:00",
+                                     outcome="passed")
+            drop = tracker.add_event(self.conn, self.cfg, row["slug"],
+                                     "tech_interview", "2026-08-25T14:00",
+                                     outcome="pending")
+        with self.conn:
+            gone = tracker.delete_event(self.conn, int(drop["id"]))
+        # The whole row comes back, so the caller can show what it removed.
+        self.assertEqual(gone["outcome"], "pending")
+        left = [
+            int(e["id"])
+            for e in self.conn.execute(
+                "SELECT id FROM events WHERE application_id = ?", (row["id"],)
+            )
+        ]
+        self.assertEqual(left, [int(keep["id"])])
+
+    def test_deleting_an_event_that_is_not_there_is_an_error(self):
+        with self.assertRaises(TrackerError):
+            tracker.delete_event(self.conn, 9999)
+
+    def test_the_delete_report_keeps_a_page_another_event_still_uses(self):
+        # The duplicate case: two rows collapsed onto one Notion page. Telling
+        # the user to delete that page would cost them the surviving event.
+        row = self.add()
+        with self.conn:
+            keep = tracker.add_event(self.conn, self.cfg, row["slug"],
+                                     "tech_interview", "2026-08-25T14:00")
+            drop = tracker.add_event(self.conn, self.cfg, row["slug"],
+                                     "tech_interview", "2026-08-25T14:00")
+            self.conn.execute(
+                "UPDATE events SET notion_page_id = 'shared' WHERE id IN (?, ?)",
+                (keep["id"], drop["id"]),
+            )
+        with self.conn:
+            gone = dict(tracker.delete_event(self.conn, int(drop["id"])))
+        report = tracker.deleted_event_report(self.conn, self.cfg, gone)
+        self.assertIn("stays", report)
+        self.assertNotIn("delete that page too", report)
+
+    def test_the_delete_report_says_when_a_notion_page_is_left_orphaned(self):
+        row = self.add()
+        with self.conn:
+            ev = tracker.add_event(self.conn, self.cfg, row["slug"], "other",
+                                   "2026-08-19", notes="only copy of this")
+            self.conn.execute(
+                "UPDATE events SET notion_page_id = 'lonely' WHERE id = ?",
+                (ev["id"],),
+            )
+        with self.conn:
+            gone = dict(tracker.delete_event(self.conn, int(ev["id"])))
+        report = tracker.deleted_event_report(self.conn, self.cfg, gone)
+        self.assertIn("delete that page too", report)
+        # And the notes are in the report, since nothing else holds them now.
+        self.assertIn("only copy of this", report)
+
+    def test_deleting_an_event_touches_its_application(self):
+        row = self.add()
+        with self.conn:
+            ev = tracker.add_event(self.conn, self.cfg, row["slug"], "other",
+                                   "2026-08-19")
+            self.conn.execute(
+                "UPDATE applications SET updated_at = '2000-01-01 00:00:00' "
+                "WHERE id = ?", (row["id"],)
+            )
+        with self.conn:
+            tracker.delete_event(self.conn, int(ev["id"]))
+        after = self.conn.execute(
+            "SELECT updated_at FROM applications WHERE id = ?", (row["id"],)
+        ).fetchone()["updated_at"]
+        self.assertNotEqual(after, "2000-01-01 00:00:00")
+
     # -- staleness ---------------------------------------------------------
 
     def stale_slugs(self):
