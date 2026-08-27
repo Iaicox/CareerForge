@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The Notion import no longer duplicates events.** `notion_sync.py import`
+  deduplicated applications on their posting URL but keyed events on nothing, so
+  every re-run appended the whole Notion event history again — against a
+  tracker holding 133 events that meant ~132 silent duplicates per run, while
+  the documentation promised the import was idempotent. Events now carry
+  `notion_page_id` (migration `003`), and the import matches on it. Events that
+  arrived before the column existed are matched once on application, type, date
+  and outcome, and adopt their page id then.
+
+  The identity keeps `outcome`, because one application can legitimately hold
+  two events of the same type on the same day that differ only by it — two
+  follow-up emails the same evening, one answered and one not. A `UNIQUE` index
+  on `(application_id, type, date)` would have destroyed those, and could not
+  live in `schema.sql` anyway: `init_db()` runs the schema before the
+  migrations, so an index naming a column the migration has yet to add fails on
+  every existing database.
+
+- **`--dry-run` no longer flatters itself.** It counted every event it would
+  process, so "would import: 132 event(s)" read as 132 new ones. New and
+  already-present are now reported on separate lines, for applications and
+  events alike.
+
+### Documentation
+
+- `docs/notion-mirror.md` states what `push` actually does: applications only,
+  never events. The two sides can drift in both directions, and equal event
+  counts do not mean they agree.
+
 ## 0.2.0 — 2026-08-24
 
 Catching up with what upstream learned since the fork, moving bulk work off

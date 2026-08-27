@@ -24,6 +24,7 @@ import json
 import mimetypes
 import os
 import re
+import sqlite3
 import sys
 import time
 import urllib.error
@@ -368,6 +369,53 @@ def split_body(body: str) -> tuple[str, str, str]:
     return tuple("\n".join(v).strip() for v in sections.values())  # type: ignore[return-value]
 
 
+def norm_when(value: str | None) -> str:
+    """A date string trimmed to the precision both sides agree on.
+
+    Notion hands back a full offset datetime ("2026-08-25T14:00:00.000+01:00");
+    an event typed through tracker.py stores what was passed ("2026-08-25T14:00").
+    Comparing the first 16 characters is what makes those the same instant.
+    """
+    return (value or "").strip().replace(" ", "T")[:16]
+
+
+def existing_event_id(
+    conn: sqlite3.Connection,
+    page_id: str,
+    app_id: int,
+    type_id: str,
+    when: str,
+    outcome: str | None,
+) -> int | None:
+    """The local event this Notion page already is, or None if it is new.
+
+    Identity is the Notion page id. Events that came across before that column
+    existed carry none, so they are matched once on their fields and then adopt
+    the page id, after which every later run is an exact lookup.
+
+    The fallback deliberately keeps `outcome` in the key: one application can
+    hold two events of the same type on the same day that differ only by it --
+    two follow-up emails sent the same evening, one answered and one not.
+    """
+    row = conn.execute(
+        "SELECT id FROM events WHERE notion_page_id = ?", (page_id,)
+    ).fetchone()
+    if row:
+        return int(row["id"])
+    row = conn.execute(
+        """SELECT id FROM events
+            WHERE application_id = ?
+              AND type = ?
+              AND REPLACE(SUBSTR(date, 1, 16), ' ', 'T') = ?
+              AND IFNULL(outcome, '') = IFNULL(?, '')
+              AND notion_page_id IS NULL
+            ORDER BY id
+            LIMIT 1""",
+        (app_id, type_id, norm_when(when), outcome),
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
 def do_import(dry_run: bool, with_bodies: bool) -> int:
     cfg = tracker.load_config()
     ids = load_ids()
@@ -447,6 +495,7 @@ def do_import(dry_run: bool, with_bodies: bool) -> int:
         imported += 1
 
     events = 0
+    events_present = 0
     if "events" in ids:
         for page in query_source(ids["events"]):
             props = page.get("properties", {})
@@ -458,20 +507,41 @@ def do_import(dry_run: bool, with_bodies: bool) -> int:
             when = plain(props.get("Date") or props.get("Дата"))
             if not type_id or not when:
                 continue
+            outcome = match_by_label(cfg, "outcomes", plain(props.get("Outcome") or props.get("Итог")))
+
+            # An event already here must not come across a second time. This is
+            # what makes a re-run idempotent rather than doubling the history.
+            already = existing_event_id(conn, page["id"], app_id, type_id, when, outcome)
+            if already is not None:
+                if not dry_run:
+                    with conn:
+                        conn.execute(
+                            "UPDATE events SET notion_page_id = ? "
+                            "WHERE id = ? AND notion_page_id IS NULL",
+                            (page["id"], already),
+                        )
+                events_present += 1
+                continue
+
             if dry_run:
                 events += 1
                 continue
             with conn:
-                tracker.add_event(
+                row = tracker.add_event(
                     conn, cfg, str(app_id), type_id, when,
                     plain(props.get("Participants") or props.get("Участники")) or None,
-                    match_by_label(cfg, "outcomes", plain(props.get("Outcome") or props.get("Итог"))),
+                    outcome,
+                )
+                conn.execute(
+                    "UPDATE events SET notion_page_id = ? WHERE id = ?",
+                    (page["id"], row["id"]),
                 )
             events += 1
 
     conn.close()
     verb = "would import" if dry_run else "imported"
-    print(f"{verb}: {imported} application(s), {events} event(s); {skipped} already present")
+    print(f"{verb}: {imported} application(s), {events} event(s)")
+    print(f"already present: {skipped} application(s), {events_present} event(s)")
     if unmapped_statuses:
         print("statuses with no match in config/config.toml (stored as 'draft'):")
         for s in sorted(unmapped_statuses):
