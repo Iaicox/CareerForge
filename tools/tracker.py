@@ -237,11 +237,31 @@ def apply_migrations(conn: sqlite3.Connection, baseline: bool = False) -> list[s
     pending = sorted(p for p in MIGRATIONS_DIR.glob("*.sql") if p.name not in done)
     applied: list[str] = []
     for path in pending:
-        with conn:
-            if not baseline:
-                conn.executescript(path.read_text(encoding="utf-8"))
-                applied.append(path.name)
-            conn.execute("INSERT INTO migrations(name) VALUES (?)", (path.name,))
+        if baseline:
+            with conn:
+                conn.execute("INSERT INTO migrations(name) VALUES (?)", (path.name,))
+            continue
+
+        # executescript() COMMITs any open transaction before it runs a single
+        # statement, so a `with conn:` around it has nothing left to roll back:
+        # a migration that failed halfway left its earlier statements committed
+        # and no row in `migrations`, and every later run replayed the file and
+        # died on a duplicate column. SQLite DDL is transactional, so the script
+        # owns its own transaction and records itself inside it -- the columns
+        # and the record land together or not at all.
+        name = path.name.replace("'", "''")
+        script = (
+            "BEGIN;\n"
+            f"{path.read_text(encoding='utf-8')}\n"
+            f"INSERT INTO migrations(name) VALUES ('{name}');\n"
+            "COMMIT;"
+        )
+        try:
+            conn.executescript(script)
+        except Exception:
+            conn.rollback()
+            raise
+        applied.append(path.name)
     return applied
 
 
@@ -639,10 +659,16 @@ def list_applications(
     if stale:
         today = datetime.now(timezone.utc).date()
         cutoff = (today - timedelta(days=cfg.stale_after_days())).isoformat()
+        # Anything not already closed. Restricting this to the `applications`
+        # stage hid every status under `processing` -- screening, assignment,
+        # interview, final, offer -- so an interview process that went quiet
+        # could not reach /triage's "Silent" section, which reads only from
+        # here. That is the silence worth chasing, and the one case the sweep
+        # structurally could not see.
         rows = [
             r
             for r in rows
-            if r["stage"] == "applications"
+            if r["stage"] != "rejected"
             and (r["last_event_date"] or r["created_at"])[:10] < cutoff
         ]
     if expired:

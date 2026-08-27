@@ -12,6 +12,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent.parent / "tools"
@@ -224,6 +225,46 @@ class TrackerTestCase(unittest.TestCase):
         self.assertEqual(d["fit_strengths"], [])
         self.assertEqual(d["fit_gaps"], [])
 
+    # -- staleness ---------------------------------------------------------
+
+    def stale_slugs(self):
+        return [
+            r["slug"]
+            for r in tracker.list_applications(self.conn, self.cfg, stale=True)
+        ]
+
+    def age(self, row, days=400):
+        """Backdate an application so it counts as silent."""
+        old = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).isoformat(sep=" ", timespec="seconds")
+        with self.conn:
+            self.conn.execute(
+                "UPDATE applications SET created_at = ?, updated_at = ? WHERE id = ?",
+                (old, old, row["id"]),
+            )
+
+    def test_an_interview_gone_quiet_is_stale(self):
+        # The costly kind of silence: they replied, a call happened, and then
+        # nothing. Restricting --stale to the `applications` stage hid every
+        # status under `processing`, which is exactly this one.
+        row = self.add(company="Acme")
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+        self.age(row)
+        self.assertEqual(self.stale_slugs(), [row["slug"]])
+
+    def test_a_closed_application_is_never_stale(self):
+        row = self.add(company="Globex")
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, row["slug"], "rejected")
+        self.age(row)
+        self.assertEqual(self.stale_slugs(), [])
+
+    def test_a_recent_application_is_not_stale(self):
+        self.add(company="Initech")
+        self.assertEqual(self.stale_slugs(), [])
+
     # -- migrations --------------------------------------------------------
 
     def test_fresh_database_records_migrations_without_running_them(self):
@@ -233,6 +274,59 @@ class TrackerTestCase(unittest.TestCase):
         recorded = {r["name"] for r in self.conn.execute("SELECT name FROM migrations")}
         on_disk = {p.name for p in tracker.MIGRATIONS_DIR.glob("*.sql")}
         self.assertEqual(recorded, on_disk)
+
+    def columns(self, table="applications"):
+        return {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+
+    def use_migrations(self, sql, name="900_test.sql"):
+        """Point the module at a throwaway migrations directory."""
+        d = self.tmp / "migrations"
+        d.mkdir(exist_ok=True)
+        (d / name).write_text(sql, encoding="utf-8")
+        self.addCleanup(setattr, tracker, "MIGRATIONS_DIR", tracker.MIGRATIONS_DIR)
+        tracker.MIGRATIONS_DIR = d
+        return d
+
+    def test_a_migration_that_fails_halfway_leaves_nothing_behind(self):
+        # executescript() commits before it runs, so `with conn:` rolled back
+        # nothing: the statements before the failure stayed, the migrations row
+        # never landed, and every later init replayed the file and died on the
+        # duplicate column -- unrecoverable without hand-editing the database.
+        self.use_migrations(
+            "ALTER TABLE applications ADD COLUMN probe_one TEXT;\n"
+            "ALTER TABLE applications ADD COLUMN probe_two TEXT;\n"
+            "ALTER TABLE applications ADD COLUMN probe_one TEXT;\n"
+        )
+        with self.assertRaises(Exception):
+            tracker.apply_migrations(self.conn)
+
+        cols = self.columns()
+        self.assertNotIn("probe_one", cols)
+        self.assertNotIn("probe_two", cols)
+        recorded = {r["name"] for r in self.conn.execute("SELECT name FROM migrations")}
+        self.assertNotIn("900_test.sql", recorded)
+
+    def test_the_repaired_migration_then_applies_cleanly(self):
+        d = self.use_migrations(
+            "ALTER TABLE applications ADD COLUMN probe_one TEXT;\n"
+            "ALTER TABLE applications ADD COLUMN probe_one TEXT;\n"
+        )
+        with self.assertRaises(Exception):
+            tracker.apply_migrations(self.conn)
+
+        (d / "900_test.sql").write_text(
+            "ALTER TABLE applications ADD COLUMN probe_one TEXT;\n", encoding="utf-8"
+        )
+        self.assertEqual(tracker.apply_migrations(self.conn), ["900_test.sql"])
+        self.assertIn("probe_one", self.columns())
+
+    def test_a_good_migration_records_itself(self):
+        self.use_migrations("ALTER TABLE applications ADD COLUMN probe_one TEXT;\n")
+        self.assertEqual(tracker.apply_migrations(self.conn), ["900_test.sql"])
+        recorded = {r["name"] for r in self.conn.execute("SELECT name FROM migrations")}
+        self.assertIn("900_test.sql", recorded)
+        # And it runs exactly once.
+        self.assertEqual(tracker.apply_migrations(self.conn), [])
 
     # -- .env --------------------------------------------------------------
 
