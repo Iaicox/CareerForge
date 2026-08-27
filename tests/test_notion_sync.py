@@ -69,7 +69,9 @@ class NormaliseIdTestCase(unittest.TestCase):
                 notion_sync.normalise_id(value)
 
 
-class EventIdentityTestCase(unittest.TestCase):
+class MirrorTestCase(unittest.TestCase):
+    """A throwaway repo with one application. No network, no real database."""
+
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-notion-test-"))
         self._real_repo = tracker.REPO
@@ -114,10 +116,15 @@ class EventIdentityTestCase(unittest.TestCase):
                 )
         return row
 
+
+class EventIdentityTestCase(MirrorTestCase):
+    """import: which Notion page is which local row."""
+
     def find(self, page_id="page-1", type_="screening",
-             when="2026-08-25T14:00:00.000+01:00", outcome="passed"):
+             when="2026-08-25T14:00:00.000+01:00", outcome="passed",
+             claimed=None):
         return notion_sync.existing_event_id(
-            self.conn, page_id, int(self.app["id"]), type_, when, outcome
+            self.conn, page_id, int(self.app["id"]), type_, when, outcome, claimed
         )
 
     # -- the precision the two sides agree on ------------------------------
@@ -173,6 +180,120 @@ class EventIdentityTestCase(unittest.TestCase):
         self.assertIsNotNone(
             self.find(page_id="page-c", type_="manager", when="2026-08-19",
                       outcome=None)
+        )
+
+    # -- a dry run has to predict what the real run will do ----------------
+
+    def test_a_dry_run_does_not_report_two_pages_as_one_present_event(self):
+        # Both pages field-match the single local event. The real run adopts
+        # the first and imports the second, so the preview must say so too.
+        self.event(when="2026-08-25T14:00")
+        claimed: set[int] = set()
+        first = self.find(page_id="page-1", claimed=claimed)
+        self.assertIsNotNone(first)
+        claimed.add(first)
+        self.assertIsNone(self.find(page_id="page-2", claimed=claimed))
+
+
+class PushEventsTestCase(MirrorTestCase):
+    """push: SQLite -> Notion, without touching Notion."""
+
+    IDS = {"events": {"database_id": "db-events", "data_source_id": "ds-events"}}
+    APP_PAGE = "app-page-1"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.calls: list[tuple[str, str, dict]] = []
+        self._real_request = notion_sync.request
+        notion_sync.request = self.fake_request
+        self.addCleanup(setattr, notion_sync, "request", self._real_request)
+
+    def fake_request(self, method, path, payload=None):
+        self.calls.append((method, path, payload or {}))
+        return {"id": f"created-{len(self.calls)}"}
+
+    def detail(self):
+        return tracker.application_detail(self.conn, self.cfg, self.app["slug"])
+
+    def push(self, index=None, dry_run=False):
+        return notion_sync.push_events(
+            self.conn, self.IDS, self.detail(), self.APP_PAGE,
+            {} if index is None else index, dry_run,
+        )
+
+    def page_ids(self):
+        return [
+            r["notion_page_id"]
+            for r in self.conn.execute("SELECT notion_page_id FROM events ORDER BY id")
+        ]
+
+    def test_an_event_notion_has_never_seen_is_created(self):
+        self.event(when="2026-08-25T14:00")
+        self.assertEqual(self.push(), (1, 0))
+        self.assertEqual([c[0] for c in self.calls], ["POST"])
+        self.assertEqual(self.calls[0][1], "/pages")
+        # The page id comes back onto the local row, so the next push updates.
+        self.assertEqual(self.page_ids(), ["created-1"])
+
+    def test_the_created_page_carries_the_application_relation(self):
+        self.event(when="2026-08-25T14:00", outcome="passed")
+        self.push()
+        props = self.calls[0][2]["properties"]
+        self.assertEqual(props["Application"]["relation"], [{"id": self.APP_PAGE}])
+        self.assertEqual(props["Date"]["date"]["start"], "2026-08-25T14:00:00")
+        self.assertIn("Acme", props["Name"]["title"][0]["text"]["content"])
+        self.assertIn("Outcome", props)
+
+    def test_an_event_with_no_outcome_does_not_send_an_empty_select(self):
+        self.event(type_="manager", when="2026-08-19", outcome=None)
+        self.push()
+        self.assertNotIn("Outcome", self.calls[0][2]["properties"])
+
+    def test_pushing_the_same_event_twice_updates_rather_than_duplicates(self):
+        self.event(when="2026-08-25T14:00")
+        self.push()
+        self.calls.clear()
+        self.assertEqual(self.push(), (0, 1))
+        self.assertEqual([c[0] for c in self.calls], ["PATCH"])
+        self.assertEqual(self.calls[0][1], "/pages/created-1")
+
+    def test_a_page_typed_into_notion_by_hand_is_adopted_not_duplicated(self):
+        # Until push could write events, typing them into Notion was the only
+        # way. Those pages have no local id and must not be doubled.
+        self.event(when="2026-08-25T14:00")
+        index = {
+            notion_sync.event_key(
+                self.APP_PAGE, self.cfg.label("event_types", "screening"),
+                "2026-08-25T14:00:00.000+01:00",
+            ): "hand-written-page"
+        }
+        self.assertEqual(self.push(index=index), (0, 1))
+        self.assertEqual([c[0] for c in self.calls], ["PATCH"])
+        self.assertEqual(self.calls[0][1], "/pages/hand-written-page")
+        self.assertEqual(self.page_ids(), ["hand-written-page"])
+
+    def test_a_dry_run_writes_nothing(self):
+        self.event(when="2026-08-25T14:00")
+        self.assertEqual(self.push(dry_run=True), (1, 0))
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.page_ids(), [None])
+
+    def test_notion_date_gets_the_seconds_notion_wants(self):
+        self.assertEqual(notion_sync.notion_date("2026-08-25T14:00"),
+                         "2026-08-25T14:00:00")
+        self.assertEqual(notion_sync.notion_date("2026-08-25 14:00"),
+                         "2026-08-25T14:00:00")
+        # An all-day event stays a date, and a full datetime is left alone.
+        self.assertEqual(notion_sync.notion_date("2026-08-25"), "2026-08-25")
+        self.assertEqual(notion_sync.notion_date("2026-08-25T14:00:00+01:00"),
+                         "2026-08-25T14:00:00+01:00")
+
+    def test_the_two_directions_agree_on_what_one_event_is(self):
+        # event_key and existing_event_id must normalise the date the same
+        # way, or push and import will disagree about the same page.
+        self.assertEqual(
+            notion_sync.event_key("a", "Screening", "2026-08-25T14:00:00.000+01:00"),
+            notion_sync.event_key("a", " Screening ", "2026-08-25 14:00"),
         )
 
 

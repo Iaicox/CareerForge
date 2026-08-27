@@ -7,11 +7,12 @@ phone. Nothing in CareerForge requires it.
     python tools/notion_sync.py provision --parent-page <page-id-or-url>
     python tools/notion_sync.py import --dry-run
     python tools/notion_sync.py import
-    python tools/notion_sync.py push [--slug acme] [--files]
+    python tools/notion_sync.py push [--slug acme] [--files] [--no-events]
 
-Auth: NOTION_TOKEN in the environment, or a .notion_token file in the repo
-root (gitignored). Create the integration at notion.so/my-integrations with
-Read, Update and Insert content, then share the parent page with it.
+Auth: NOTION_KEY in .env, or NOTION_TOKEN in the environment, or a
+.notion_token file in the repo root (all gitignored). Create the integration
+at notion.so/my-integrations with Read, Update and Insert content, then share
+the parent page with it.
 
 Database ids live in config/notion.json (gitignored), written by `provision`
 or by hand. Standard library only.
@@ -398,6 +399,12 @@ def norm_when(value: str | None) -> str:
     return (value or "").strip().replace(" ", "T")[:16]
 
 
+# The SQL half of norm_when(). Kept in the same shape and the same order as
+# the Python: strip, then space-to-T, then cut to minutes. Written the other
+# way round they agree on every value seen so far and would not stay that way.
+SQL_NORM_WHEN = "SUBSTR(REPLACE(TRIM(date), ' ', 'T'), 1, 16)"
+
+
 def existing_event_id(
     conn: sqlite3.Connection,
     page_id: str,
@@ -405,6 +412,7 @@ def existing_event_id(
     type_id: str,
     when: str,
     outcome: str | None,
+    claimed: set[int] | None = None,
 ) -> int | None:
     """The local event this Notion page already is, or None if it is new.
 
@@ -415,24 +423,30 @@ def existing_event_id(
     The fallback deliberately keeps `outcome` in the key: one application can
     hold two events of the same type on the same day that differ only by it --
     two follow-up emails sent the same evening, one answered and one not.
+
+    `claimed` stands in for the page ids a dry run would have written: without
+    it two Notion pages matching one local event both read as already present,
+    while a real run adopts on the first and imports the second.
     """
     row = conn.execute(
         "SELECT id FROM events WHERE notion_page_id = ?", (page_id,)
     ).fetchone()
     if row:
         return int(row["id"])
-    row = conn.execute(
-        """SELECT id FROM events
+    rows = conn.execute(
+        f"""SELECT id FROM events
             WHERE application_id = ?
               AND type = ?
-              AND REPLACE(SUBSTR(date, 1, 16), ' ', 'T') = ?
+              AND {SQL_NORM_WHEN} = ?
               AND IFNULL(outcome, '') = IFNULL(?, '')
               AND notion_page_id IS NULL
-            ORDER BY id
-            LIMIT 1""",
+            ORDER BY id""",
         (app_id, type_id, norm_when(when), outcome),
-    ).fetchone()
-    return int(row["id"]) if row else None
+    ).fetchall()
+    for row in rows:
+        if not claimed or int(row["id"]) not in claimed:
+            return int(row["id"])
+    return None
 
 
 def do_import(dry_run: bool, with_bodies: bool) -> int:
@@ -515,6 +529,10 @@ def do_import(dry_run: bool, with_bodies: bool) -> int:
 
     events = 0
     events_present = 0
+    # A dry run writes no page ids, so it has to remember the rows it would
+    # have claimed; otherwise it reports a second page matching the same local
+    # event as already present, and undercounts what the real run will import.
+    claimed: set[int] = set()
     if "events" in ids:
         for page in query_source(ids["events"]):
             props = page.get("properties", {})
@@ -530,9 +548,13 @@ def do_import(dry_run: bool, with_bodies: bool) -> int:
 
             # An event already here must not come across a second time. This is
             # what makes a re-run idempotent rather than doubling the history.
-            already = existing_event_id(conn, page["id"], app_id, type_id, when, outcome)
+            already = existing_event_id(
+                conn, page["id"], app_id, type_id, when, outcome, claimed
+            )
             if already is not None:
-                if not dry_run:
+                if dry_run:
+                    claimed.add(already)
+                else:
                     with conn:
                         conn.execute(
                             "UPDATE events SET notion_page_id = ? "
@@ -613,14 +635,108 @@ def upload_file(path: Path) -> str:
     return created["id"]
 
 
+def source_parent(entry: dict) -> dict:
+    """Where a new page goes, in whichever API shape this workspace exposes."""
+    if entry.get("data_source_id"):
+        return {"type": "data_source_id", "data_source_id": entry["data_source_id"]}
+    return {"type": "database_id", "database_id": entry["database_id"]}
+
+
+def event_key(app_page_id: str, type_label: str, when: str) -> tuple[str, str, str]:
+    """The identity of an event page: which application, what, when.
+
+    The same three fields existing_event_id() matches a local row on, so the
+    two directions of the mirror agree on what "the same event" means.
+    """
+    return (app_page_id, (type_label or "").strip(), norm_when(when))
+
+
+def event_index(ids: dict) -> dict[tuple[str, str, str], str]:
+    """Every event page already in Notion, keyed by event_key.
+
+    Built once per push. An event typed locally may already have been written
+    into Notion by hand -- that was the only way to get one there until now --
+    and creating a second page for it is exactly the drift this is meant to end.
+    """
+    index: dict[tuple[str, str, str], str] = {}
+    for page in query_source(ids["events"]):
+        props = page.get("properties", {})
+        app_ref = first_relation(props.get("Application") or props.get("Отклик"))
+        if not app_ref:
+            continue
+        key = event_key(
+            app_ref,
+            plain(props.get("Type") or props.get("Тип")),
+            plain(props.get("Date") or props.get("Дата")),
+        )
+        index.setdefault(key, page["id"])
+    return index
+
+
+def notion_date(value: str) -> str:
+    """An event date in the shape Notion's date property accepts."""
+    when = (value or "").strip().replace(" ", "T")
+    if "T" in when and len(when) == 16:
+        when += ":00"  # Notion wants seconds on a datetime, not just minutes
+    return when
+
+
+def event_props(detail: dict, ev: dict, app_page_id: str) -> dict:
+    props: dict[str, Any] = {
+        # The tracker has no title field, so the title is derived. It is what
+        # a Notion calendar view shows, and "screening" alone says too little.
+        "Name": {"title": [{"type": "text", "text": {
+            "content": f"{detail['company_name']} - {ev['type_label']}"}}]},
+        "Type": {"select": {"name": ev["type_label"]}},
+        "Date": {"date": {"start": notion_date(ev["date"])}},
+        "Participants": {"rich_text": rich_text(ev.get("participants"))},
+        "Application": {"relation": [{"id": app_page_id}]},
+    }
+    if ev.get("outcome"):
+        props["Outcome"] = {"select": {"name": ev["outcome_label"]}}
+    return props
+
+
+def push_events(conn, ids: dict, detail: dict, app_page_id: str,
+                index: dict, dry_run: bool) -> tuple[int, int]:
+    """Mirror one application's events. Returns (created, updated)."""
+    created = updated = 0
+    for ev in detail["events"]:
+        key = event_key(app_page_id, ev["type_label"], ev["date"])
+        page_id = ev.get("notion_page_id") or index.get(key)
+        if dry_run:
+            if page_id:
+                updated += 1
+            else:
+                created += 1
+            continue
+
+        props = event_props(detail, ev, app_page_id)
+        if page_id:
+            request("PATCH", f"/pages/{page_id}", {"properties": props})
+            updated += 1
+        else:
+            page = request("POST", "/pages",
+                           {"parent": source_parent(ids["events"]), "properties": props})
+            page_id = page["id"]
+            created += 1
+
+        if ev.get("notion_page_id") != page_id:
+            with conn:
+                conn.execute(
+                    "UPDATE events SET notion_page_id = ? WHERE id = ?",
+                    (page_id, ev["id"]),
+                )
+        index[key] = page_id
+    return created, updated
+
+
 def company_page(conn, ids: dict, cache: dict, name: str, website: str | None,
                  description: str | None) -> str:
     if name in cache:
         return cache[name]
     entry = ids["companies"]
-    parent = ({"type": "data_source_id", "data_source_id": entry["data_source_id"]}
-              if entry.get("data_source_id")
-              else {"type": "database_id", "database_id": entry["database_id"]})
+    parent = source_parent(entry)
     for page in query_source(entry):
         if plain(page["properties"].get("Name") or page["properties"].get("Название")) == name:
             cache[name] = page["id"]
@@ -637,19 +753,37 @@ def company_page(conn, ids: dict, cache: dict, name: str, website: str | None,
     return page["id"]
 
 
-def do_push(slug: str | None, with_files: bool, dry_run: bool) -> int:
+def do_push(slug: str | None, with_files: bool, dry_run: bool,
+            with_events: bool = True) -> int:
     cfg = tracker.load_config()
     ids = load_ids()
     conn = tracker.connect()
-    entry = ids["applications"]
-    parent = ({"type": "data_source_id", "data_source_id": entry["data_source_id"]}
-              if entry.get("data_source_id")
-              else {"type": "database_id", "database_id": entry["database_id"]})
+    parent = source_parent(ids["applications"])
 
     rows = ([tracker.application_detail(conn, cfg, slug)] if slug
             else tracker.list_applications(conn, cfg))
     cache: dict[str, str] = {}
     pushed = 0
+
+    # A workspace provisioned before this could push events has an Events
+    # database; one whose notion.json predates it does not.
+    mirror_events = with_events and "events" in ids
+    index: dict[tuple[str, str, str], str] = {}
+    index_loaded = False
+    ev_created = ev_updated = 0
+
+    def mirror(detail: dict, app_page_id: str) -> None:
+        nonlocal index, index_loaded, ev_created, ev_updated
+        if not mirror_events or not detail["events"]:
+            return
+        if not index_loaded:
+            index = event_index(ids)
+            index_loaded = True
+        created, updated = push_events(
+            conn, ids, detail, app_page_id, index, dry_run
+        )
+        ev_created += created
+        ev_updated += updated
 
     for row in rows:
         detail = row if "attachments" in row else tracker.application_detail(conn, cfg, str(row["id"]))
@@ -667,6 +801,9 @@ def do_push(slug: str | None, with_files: bool, dry_run: bool) -> int:
         if dry_run:
             print(f"would push #{detail['id']} {detail['company_name']} - {detail['role']}")
             pushed += 1
+            # With no page yet there is nothing for an event to relate to, so
+            # its events read as new -- which is what the real run will do.
+            mirror(detail, detail["notion_page_id"] or "")
             continue
 
         props[P_COMPANY] = {"relation": [{"id": company_page(
@@ -688,19 +825,32 @@ def do_push(slug: str | None, with_files: bool, dry_run: bool) -> int:
                 }]}
 
         if detail["notion_page_id"]:
-            request("PATCH", f"/pages/{detail['notion_page_id']}", {"properties": props})
+            app_page_id = detail["notion_page_id"]
+            request("PATCH", f"/pages/{app_page_id}", {"properties": props})
         else:
             page = request("POST", "/pages", {"parent": parent, "properties": props})
+            app_page_id = page["id"]
             with conn:
                 conn.execute(
                     "UPDATE applications SET notion_page_id = ? WHERE id = ?",
-                    (page["id"], detail["id"]),
+                    (app_page_id, detail["id"]),
                 )
         pushed += 1
         print(f"pushed #{detail['id']} {detail['company_name']} - {detail['role']}")
+        before = (ev_created, ev_updated)
+        mirror(detail, app_page_id)
+        if (ev_created, ev_updated) != before:
+            print(f"  events: {ev_created - before[0]} created, "
+                  f"{ev_updated - before[1]} updated")
 
     conn.close()
-    print(f"{'would push' if dry_run else 'pushed'}: {pushed}")
+    print(f"{'would push' if dry_run else 'pushed'}: {pushed} application(s)")
+    if mirror_events:
+        print(f"events: {'would create' if dry_run else 'created'} {ev_created}, "
+              f"{'would update' if dry_run else 'updated'} {ev_updated}")
+    elif with_events:
+        print("events: skipped -- no Events database in config/notion.json. "
+              "Run `notion_sync.py provision` to create one.")
     return 0
 
 
@@ -725,6 +875,8 @@ def main() -> int:
     pu = sub.add_parser("push", help="copy the local tracker into Notion")
     pu.add_argument("--slug", help="one application instead of all")
     pu.add_argument("--files", action="store_true", help="also upload the built PDFs")
+    pu.add_argument("--no-events", action="store_true",
+                    help="applications and companies only, leave event pages alone")
     pu.add_argument("--dry-run", action="store_true")
 
     args = ap.parse_args()
@@ -733,7 +885,7 @@ def main() -> int:
         return 0
     if args.command == "import":
         return do_import(args.dry_run, not args.no_bodies)
-    return do_push(args.slug, args.files, args.dry_run)
+    return do_push(args.slug, args.files, args.dry_run, not args.no_events)
 
 
 if __name__ == "__main__":

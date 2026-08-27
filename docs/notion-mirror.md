@@ -27,9 +27,9 @@ this page. `python tools/board.py` already gives you a kanban.
 → New integration, with **Read content**, **Update content** and **Insert
 content**.
 
-**2. Store the token.** Either `NOTION_TOKEN` in your environment, or a
-`.notion_token` file in the repo root. Both are gitignored; neither is ever
-logged.
+**2. Store the token.** `NOTION_KEY=<token>` in `.env` in the repo root.
+`NOTION_TOKEN` in your environment and a `.notion_token` file both still work
+as fallbacks. All three are gitignored; none is ever logged.
 
 **3. Pick a parent page** in Notion to hold the tracker, and connect the
 integration to it: `...` → Connections → your integration. The databases created
@@ -54,20 +54,33 @@ transcribe; the ids it gets back are written to `config/notion.json`
 ## Daily use
 
 ```bash
-python tools/notion_sync.py push              # properties only
-python tools/notion_sync.py push --files      # also upload the built PDFs
-python tools/notion_sync.py push --slug acme  # just one application
+python tools/notion_sync.py push               # applications, companies, events
+python tools/notion_sync.py push --files       # also upload the built PDFs
+python tools/notion_sync.py push --slug acme   # just one application
+python tools/notion_sync.py push --no-events   # leave event pages alone
+python tools/notion_sync.py push --dry-run     # counts only, writes nothing
 ```
 
 `push` creates a page the first time and updates it afterwards, keyed by
 `notion_page_id` on the local row. A files property is replaced wholesale on
 each push, so re-pushing swaps the PDF rather than adding a second copy.
 
-**`push` writes applications only.** It does not create or update event pages —
-events travel the other way, through `import`. So a funnel event added with
-`tracker.py event add` stays local until you put it in Notion yourself, and the
-two sides can drift apart in both directions. Comparing event counts will not
-tell you: diff on application, type, date and outcome instead.
+**Events go across too**, keyed the same way — `events.notion_page_id`, and for
+an event that has none, a match on application, type and date. So an event you
+typed into Notion by hand before pushing is adopted rather than duplicated, and
+a second push updates the page it made the first time.
+
+The tracker is the source of truth for the fields it holds, so a push
+**overwrites** Type, Date, Participants, Outcome and the page title. The title
+is derived — `Acme - Screening` — because the tracker has no title field of its
+own. If you have been writing richer titles in Notion by hand, `--no-events`
+keeps them; there is no local field for that text to survive in otherwise.
+
+Event `notes` stay local: the Events database `provision` creates has no field
+for them, so there is nowhere to put them.
+
+`--dry-run` reports what it would create and update without writing, and it
+accounts for the pages it would have claimed, so its numbers match the real run.
 
 Upload limits: 20 MiB per file in a single request. A CV is tens of kilobytes.
 
@@ -123,7 +136,7 @@ already present: 80 application(s), 130 event(s)
 Page bodies are read too, so posting snapshots and cover letter text come
 across. `--no-bodies` is much faster if you do not need them.
 
-## What does not come across
+## What does not come across on import
 
 - **Attachments.** Files stay in Notion. Your local PDFs are already on disk;
   `tracker.py attach` records them.
