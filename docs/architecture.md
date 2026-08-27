@@ -10,7 +10,8 @@ them apart.
 CareerForge/
 ├── framework  (committed, never written to during normal work)
 │   ├── CLAUDE.md                 rules, lifecycle, verification checklist
-│   ├── .claude/commands/         /setup /scrape /apply /track /board /triage /doctor
+│   ├── .claude/commands/         /setup /scrape /rank /apply /interview /track
+│   │                             /board /mailsync /triage /expand /doctor
 │   ├── .claude/agents/           application-reviewer
 │   ├── .claude/skills/           job-application-assistant, job-scraper, application-tracker
 │   ├── .claude/hooks/            first-run notice
