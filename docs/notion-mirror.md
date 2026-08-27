@@ -71,10 +71,15 @@ typed into Notion by hand before pushing is adopted rather than duplicated, and
 a second push updates the page it made the first time.
 
 The tracker is the source of truth for the fields it holds, so a push
-**overwrites** Type, Date, Participants, Outcome and the page title. The title
-is derived — `Acme - Screening` — because the tracker has no title field of its
-own. If you have been writing richer titles in Notion by hand, `--no-events`
-keeps them; there is no local field for that text to survive in otherwise.
+**overwrites** Type, Date, Participants and Outcome.
+
+**It never rewrites a title.** `Name` is set once, when the page is created,
+and derived — `Acme - Screening`. After that it is yours: the tracker has no
+title field, so it has nothing to say there that could be better than what is
+already on the page. That matters more than it sounds. On a real mirror, 54 of
+135 titles carried something the `Type` select did not — `Отказ после Code
+Review` on a page typed `Другое` — and a push that "kept the tracker
+authoritative" would have thrown all of it away.
 
 Event `notes` stay local: the Events database `provision` creates has no field
 for them, so there is nowhere to put them.

@@ -681,17 +681,22 @@ def notion_date(value: str) -> str:
     return when
 
 
-def event_props(detail: dict, ev: dict, app_page_id: str) -> dict:
+def event_props(detail: dict, ev: dict, app_page_id: str,
+                with_title: bool) -> dict:
     props: dict[str, Any] = {
-        # The tracker has no title field, so the title is derived. It is what
-        # a Notion calendar view shows, and "screening" alone says too little.
-        "Name": {"title": [{"type": "text", "text": {
-            "content": f"{detail['company_name']} - {ev['type_label']}"}}]},
         "Type": {"select": {"name": ev["type_label"]}},
         "Date": {"date": {"start": notion_date(ev["date"])}},
         "Participants": {"rich_text": rich_text(ev.get("participants"))},
         "Application": {"relation": [{"id": app_page_id}]},
     }
+    if with_title:
+        # Only on create, and derived, because the tracker has no title field:
+        # there is nothing here that could be more informative than what is
+        # already on an existing page. On this tracker 54 of 135 titles said
+        # something the Type select did not -- "Отказ после Code Review"
+        # against a type of "Другое" -- so overwriting them lost the record.
+        props["Name"] = {"title": [{"type": "text", "text": {
+            "content": f"{detail['company_name']} - {ev['type_label']}"}}]}
     if ev.get("outcome"):
         props["Outcome"] = {"select": {"name": ev["outcome_label"]}}
     return props
@@ -711,7 +716,7 @@ def push_events(conn, ids: dict, detail: dict, app_page_id: str,
                 created += 1
             continue
 
-        props = event_props(detail, ev, app_page_id)
+        props = event_props(detail, ev, app_page_id, with_title=not page_id)
         if page_id:
             request("PATCH", f"/pages/{page_id}", {"properties": props})
             updated += 1

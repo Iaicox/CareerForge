@@ -257,6 +257,30 @@ class PushEventsTestCase(MirrorTestCase):
         self.assertEqual([c[0] for c in self.calls], ["PATCH"])
         self.assertEqual(self.calls[0][1], "/pages/created-1")
 
+    def test_an_update_never_rewrites_the_title(self):
+        # The tracker has no title field, so it has nothing better to say than
+        # what is already on the page. On the live mirror 54 of 135 titles
+        # carried what the Type select did not.
+        self.event(when="2026-08-25T14:00")
+        self.push()
+        self.calls.clear()
+        self.push()
+        self.assertNotIn("Name", self.calls[0][2]["properties"])
+        # The rest is still tracker-driven.
+        for field in ("Type", "Date", "Participants", "Application"):
+            self.assertIn(field, self.calls[0][2]["properties"])
+
+    def test_an_adopted_page_keeps_its_title_too(self):
+        self.event(when="2026-08-25T14:00")
+        index = {
+            notion_sync.event_key(
+                self.APP_PAGE, self.cfg.label("event_types", "screening"),
+                "2026-08-25T14:00",
+            ): "hand-written-page"
+        }
+        self.push(index=index)
+        self.assertNotIn("Name", self.calls[0][2]["properties"])
+
     def test_a_page_typed_into_notion_by_hand_is_adopted_not_duplicated(self):
         # Until push could write events, typing them into Notion was the only
         # way. Those pages have no local id and must not be doubled.
