@@ -8,7 +8,9 @@ produces a dataset that salary_lookup then renders as a benchmark table.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -68,6 +70,26 @@ class ColumnTypeTest(unittest.TestCase):
         self.assertEqual(convert.detect_column_type("Antal Engineering"), "count")
         self.assertEqual(convert.detect_column_type("Indeks Engineering"), "index")
 
+    def test_a_marker_welded_into_one_word_still_decides(self):
+        # Danish and German write these as one word, which is why the pattern
+        # lists are Danish in the first place. Whole-word matching alone read
+        # every one of them as neither, and an unclassified column is stored as
+        # a salary index.
+        self.assertEqual(convert.detect_column_type("Lønindeks"), "index")
+        self.assertEqual(convert.detect_column_type("Gennemsnitsløn"), "index")
+        self.assertEqual(convert.detect_column_type("Medarbejderantal"), "count")
+
+    def test_the_head_of_a_compound_wins(self):
+        # Scandinavian and German compounds are head-final: the last part says
+        # what the column is, the earlier parts qualify it.
+        self.assertEqual(convert.detect_column_type("Lønantal"), "count")
+        self.assertEqual(convert.detect_column_type("Antalindeks"), "index")
+
+    def test_a_one_letter_marker_is_still_whole_word_only(self):
+        # "n" as a substring is what classified every column as a count.
+        self.assertEqual(convert.detect_column_type("N"), "count")
+        self.assertIsNone(convert.detect_column_type("Engineering"))
+
 
 class CategoryNameTest(unittest.TestCase):
     def test_only_the_marker_word_is_removed(self):
@@ -119,6 +141,31 @@ class PairingTest(unittest.TestCase):
         ])
         entries = convert.parse_sheet(sheet)
         self.assertEqual(entries[0]["categories"], {"indeks": {"index": 104.5}})
+
+    def test_a_standalone_count_is_not_filed_as_a_salary(self):
+        # salary_lookup reads "index" and renders it against the baseline, so a
+        # headcount stored there is shown to the user as a salary figure.
+        sheet = FakeSheet([
+            ["Firma", "Medarbejderantal"],
+            ["Acme", 240],
+        ])
+        entries = convert.parse_sheet(sheet)
+        self.assertEqual(
+            entries[0]["categories"], {"medarbejderantal": {"count": 240}}
+        )
+
+    def test_a_column_nobody_could_classify_says_so(self):
+        # It still lands in "index" -- there is nowhere else to put it -- but
+        # not silently, which is how a headcount got rendered as a salary.
+        sheet = FakeSheet([
+            ["Firma", "Omsætning"],
+            ["Acme", 12.0],
+        ])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            entries = convert.parse_sheet(sheet)
+        self.assertEqual(entries[0]["categories"], {"omsætning": {"index": 12.0}})
+        self.assertIn("Omsætning", err.getvalue())
 
 
 if __name__ == "__main__":
