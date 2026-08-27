@@ -173,14 +173,25 @@ try {
 
         # ATS text layer: a PDF can look perfect and extract as mojibake, which
         # is invisible until an employer's parser reads nothing.
-        $atsOutput = & python (Join-Path $PSScriptRoot 'atscheck.py') $pdf --source $md.FullName 2>&1
+        #
+        # 2>&1 makes Windows PowerShell wrap every stderr line in an ErrorRecord,
+        # which $ErrorActionPreference = 'Stop' then treats as terminating. There
+        # is no catch around this block, so the one step that is only ever meant
+        # to warn was aborting the whole build -- and atscheck writes to stderr in
+        # exactly the case reported below as 'no extractor'. Setting the
+        # preference inside the scriptblock scopes it to this one call.
+        $atsOutput = & {
+            $ErrorActionPreference = 'Continue'
+            & python (Join-Path $PSScriptRoot 'atscheck.py') $pdf --source $md.FullName 2>&1
+        }
         $atsCode = $LASTEXITCODE
         $ats = switch ($atsCode) {
             0 { 'OK' }
             3 { 'no extractor' }
             default { 'see below' }
         }
-        if ($atsCode -eq 2) { $atsDetails += $atsOutput }
+        # Anything that says 'see below' has to actually appear below.
+        if ($atsCode -ne 0 -and $atsCode -ne 3) { $atsDetails += $atsOutput }
 
         $ok = if ($pages -le $limit) { 'OK' } else { "OVER LIMIT ($limit)" }
         $results += [pscustomobject]@{
