@@ -257,6 +257,46 @@ class TrackerTestCase(unittest.TestCase):
         self.assertEqual(d["fit_strengths"], [])
         self.assertEqual(d["fit_gaps"], [])
 
+    # -- correcting an event's type ----------------------------------------
+
+    def test_an_event_filed_under_the_wrong_type_can_be_corrected(self):
+        # An import maps a Notion label it does not recognise to `other`, and
+        # the row then says nothing about how far the application got.
+        row = self.add()
+        with self.conn:
+            ev = tracker.add_event(self.conn, self.cfg, row["slug"], "other",
+                                   "2026-08-19")
+        with self.conn:
+            fixed = tracker.set_event_type(
+                self.conn, self.cfg, int(ev["id"]), "rejection", outcome="failed"
+            )
+        self.assertEqual(fixed["type"], "rejection")
+        self.assertEqual(fixed["outcome"], "failed")
+
+    def test_the_outcome_is_left_alone_when_not_given(self):
+        row = self.add()
+        with self.conn:
+            ev = tracker.add_event(self.conn, self.cfg, row["slug"], "other",
+                                   "2026-08-19", None, "passed")
+        with self.conn:
+            fixed = tracker.set_event_type(
+                self.conn, self.cfg, int(ev["id"]), "follow_up"
+            )
+        self.assertEqual(fixed["type"], "follow_up")
+        self.assertEqual(fixed["outcome"], "passed")
+
+    def test_an_unknown_type_is_refused(self):
+        row = self.add()
+        with self.conn:
+            ev = tracker.add_event(self.conn, self.cfg, row["slug"], "other",
+                                   "2026-08-19")
+        with self.assertRaises(TrackerError):
+            tracker.set_event_type(self.conn, self.cfg, int(ev["id"]), "not_a_type")
+
+    def test_correcting_an_event_that_is_not_there_is_an_error(self):
+        with self.assertRaises(TrackerError):
+            tracker.set_event_type(self.conn, self.cfg, 9999, "rejection")
+
     # -- staleness ---------------------------------------------------------
 
     def stale_slugs(self):

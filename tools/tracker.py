@@ -560,6 +560,41 @@ def set_status(
 # ---------------------------------------------------------------------------
 
 
+def set_event_type(
+    conn: sqlite3.Connection,
+    cfg: Config,
+    event_id: int,
+    type_: str,
+    outcome: str | None = None,
+) -> sqlite3.Row:
+    """Correct the type of an event that was filed under the wrong one.
+
+    The only edit an event allows, and deliberately so: everything else on an
+    event is a record of what happened, and a record is not something to go
+    back and change. The type is a classification, and a classification can
+    simply be wrong -- an import maps a Notion label it does not recognise to
+    `other`, and the row then says nothing about how far the application got.
+    """
+    cfg.validate(type_, "event_types")
+    cfg.validate(outcome, "outcomes")
+    row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+    if row is None:
+        raise TrackerError(f"no event with id {event_id}")
+
+    if outcome is None:
+        conn.execute("UPDATE events SET type = ? WHERE id = ?", (type_, event_id))
+    else:
+        conn.execute(
+            "UPDATE events SET type = ?, outcome = ? WHERE id = ?",
+            (type_, outcome, event_id),
+        )
+    conn.execute(
+        "UPDATE applications SET updated_at = ? WHERE id = ?",
+        (now(), row["application_id"]),
+    )
+    return conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+
+
 def add_event(
     conn: sqlite3.Connection,
     cfg: Config,
@@ -890,6 +925,12 @@ def build_parser() -> argparse.ArgumentParser:
     eva.add_argument("--outcome")
     eva.add_argument("--notes")
 
+    evs = with_json(evsub.add_parser(
+        "set-type", help="correct the type an event was filed under"))
+    evs.add_argument("event_id", type=int, help="from `show <application>`")
+    evs.add_argument("--type", dest="type_", required=True)
+    evs.add_argument("--outcome", help="also correct the outcome")
+
     at = with_json(sub.add_parser("attach", help="record a built document"))
     at.add_argument("application")
     at.add_argument("--kind", default="cv", choices=["cv", "cover", "other"])
@@ -1021,8 +1062,11 @@ def main(argv: list[str] | None = None) -> int:
                 if d["events"]:
                     print("  events:")
                     for e in d["events"]:
+                        # The id is here so `event set-type` has something to
+                        # name; it is the only handle an event has.
                         print(
-                            f"    {e['date'][:16]}  {e['type_label']}  {e['outcome_label']}"
+                            f"    #{e['id']:<4} {e['date'][:16]}  "
+                            f"{e['type_label']}  {e['outcome_label']}"
                         )
                 if d["attachments"]:
                     print("  files:")
@@ -1043,17 +1087,23 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         elif args.command == "event":
-            with conn:
-                e = add_event(
-                    conn,
-                    cfg,
-                    args.application,
-                    args.type_,
-                    args.when,
-                    args.participants,
-                    args.outcome,
-                    args.notes,
-                )
+            if args.event_command == "set-type":
+                with conn:
+                    e = set_event_type(
+                        conn, cfg, args.event_id, args.type_, args.outcome
+                    )
+            else:
+                with conn:
+                    e = add_event(
+                        conn,
+                        cfg,
+                        args.application,
+                        args.type_,
+                        args.when,
+                        args.participants,
+                        args.outcome,
+                        args.notes,
+                    )
             d = dict(e)
             emit(
                 args,
