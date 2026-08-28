@@ -376,5 +376,117 @@ class PushEventsTestCase(MirrorTestCase):
         )
 
 
+class SyncOptionsTestCase(MirrorTestCase):
+    """sync-options: config -> the mirror's select options, additively."""
+
+    IDS = {
+        "applications": {"database_id": "db-apps", "data_source_id": "ds-apps"},
+        "events": {"database_id": "db-events", "data_source_id": "ds-events"},
+    }
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.calls: list[tuple[str, str, dict]] = []
+        self.schema: dict[str, dict] = {}
+        # Captured before the swap, or the cleanup restores the fake.
+        self.addCleanup(setattr, notion_sync, "request", notion_sync.request)
+        self.addCleanup(setattr, notion_sync, "load_ids", notion_sync.load_ids)
+        notion_sync.request = self.fake_request
+        notion_sync.load_ids = lambda: self.IDS
+
+    def fake_request(self, method, path, payload=None):
+        self.calls.append((method, path, payload or {}))
+        if method == "GET":
+            return {"properties": self.schema.get(path, {})}
+        return {}
+
+    def select(self, *names):
+        return {"type": "select", "select": {
+            "options": [{"id": f"opt-{n}", "name": n, "color": "default"}
+                        for n in names]
+        }}
+
+    def labels(self, table):
+        return [o["name"] for o in notion_sync.status_options(self.cfg, table)]
+
+    def run_sync(self, dry_run=False):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            notion_sync.do_sync_options(dry_run)
+        return out.getvalue()
+
+    def test_an_option_added_to_config_reaches_notion(self):
+        # provision() writes the options once; nothing carried a later edit
+        # across, so the new value had nowhere to land.
+        outcomes = self.labels("outcomes")
+        self.schema["/data_sources/ds-events"] = {
+            "Type": self.select(*self.labels("event_types")),
+            "Outcome": self.select(*outcomes[:-1]),   # the last one is missing
+        }
+        self.schema["/data_sources/ds-apps"] = {
+            notion_sync.P_STATUS: self.select(*self.labels("statuses")),
+            notion_sync.P_MODE: self.select(*self.labels("work_modes")),
+        }
+        out = self.run_sync()
+        patches = [c for c in self.calls if c[0] == "PATCH"]
+        self.assertEqual(len(patches), 1)
+        sent = patches[0][2]["properties"]["Outcome"]["select"]["options"]
+        # Every option goes back, so Notion does not read an absence as removal.
+        self.assertEqual([o["name"] for o in sent], outcomes)
+        self.assertEqual(sum(1 for o in sent if "id" in o), len(outcomes) - 1)
+        self.assertIn("added: 1 option(s)", out)
+
+    def test_an_option_only_notion_has_is_reported_not_removed(self):
+        # Removing it would clear the value on every page using it.
+        self.schema["/data_sources/ds-events"] = {
+            "Type": self.select(*self.labels("event_types")),
+            "Outcome": self.select(*self.labels("outcomes"), "Hand-typed"),
+        }
+        self.schema["/data_sources/ds-apps"] = {
+            notion_sync.P_STATUS: self.select(*self.labels("statuses")),
+            notion_sync.P_MODE: self.select(*self.labels("work_modes")),
+        }
+        out = self.run_sync()
+        self.assertEqual([c for c in self.calls if c[0] == "PATCH"], [])
+        self.assertIn("left alone: Hand-typed", out)
+
+    def test_a_dry_run_writes_nothing(self):
+        self.schema["/data_sources/ds-events"] = {
+            "Type": self.select(*self.labels("event_types")),
+            "Outcome": self.select(),
+        }
+        self.schema["/data_sources/ds-apps"] = {
+            notion_sync.P_STATUS: self.select(*self.labels("statuses")),
+            notion_sync.P_MODE: self.select(*self.labels("work_modes")),
+        }
+        out = self.run_sync(dry_run=True)
+        self.assertEqual([c for c in self.calls if c[0] == "PATCH"], [])
+        self.assertIn("would add", out)
+
+    def test_a_mirror_already_in_step_is_left_alone(self):
+        self.schema["/data_sources/ds-events"] = {
+            "Type": self.select(*self.labels("event_types")),
+            "Outcome": self.select(*self.labels("outcomes")),
+        }
+        self.schema["/data_sources/ds-apps"] = {
+            notion_sync.P_STATUS: self.select(*self.labels("statuses")),
+            notion_sync.P_MODE: self.select(*self.labels("work_modes")),
+        }
+        out = self.run_sync()
+        self.assertEqual([c for c in self.calls if c[0] == "PATCH"], [])
+        self.assertIn("added: 0 option(s)", out)
+
+    def test_a_workspace_without_data_sources_uses_the_database_path(self):
+        notion_sync.load_ids = lambda: {
+            "events": {"database_id": "db-events"},
+        }
+        self.schema["/databases/db-events"] = {
+            "Type": self.select(*self.labels("event_types")),
+            "Outcome": self.select(*self.labels("outcomes")),
+        }
+        self.run_sync()
+        self.assertEqual([c[1] for c in self.calls], ["/databases/db-events"] * 2)
+
+
 if __name__ == "__main__":
     unittest.main()

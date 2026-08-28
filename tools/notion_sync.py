@@ -273,6 +273,75 @@ def status_options(cfg: tracker.Config, kind: str) -> list[dict]:
     return [{"name": cfg.label(kind, item["id"])} for item in cfg.data.get(kind, [])]
 
 
+# The select properties provision() fills from config, as
+# (notion.json key, Notion property name, config table).
+CONFIG_SELECTS = (
+    ("applications", P_STATUS, "statuses"),
+    ("applications", P_MODE, "work_modes"),
+    ("events", "Type", "event_types"),
+    ("events", "Outcome", "outcomes"),
+)
+
+
+def schema_path(entry: dict) -> str:
+    """Where a database's own schema lives, in whichever API shape this has."""
+    if entry.get("data_source_id"):
+        return f"/data_sources/{entry['data_source_id']}"
+    return f"/databases/{entry['database_id']}"
+
+
+def do_sync_options(dry_run: bool) -> int:
+    """Bring the mirror's select options back in step with config.
+
+    provision() writes them once. Add a status, event type, work mode or
+    outcome to config/config.toml afterwards and Notion never hears about it:
+    the select keeps the options it was created with, and the new value has
+    nowhere to land.
+
+    Only ever adds. An option Notion has and config does not is reported and
+    left alone -- a page may be using it, and dropping the option would clear
+    that page's value with nothing to say so.
+    """
+    cfg = tracker.load_config()
+    ids = load_ids()
+    added = 0
+    for key, prop, table in CONFIG_SELECTS:
+        entry = ids.get(key)
+        if not entry:
+            continue
+        path = schema_path(entry)
+        current = request("GET", path).get("properties", {}).get(prop)
+        if not current or current.get("type") != "select":
+            print(f"{prop}: not a select in Notion, skipped")
+            continue
+
+        options = current["select"]["options"]
+        have = {o["name"] for o in options}
+        want = [o["name"] for o in status_options(cfg, table)]
+        missing = [name for name in want if name not in have]
+        extra = sorted(have - set(want))
+
+        if missing:
+            added += len(missing)
+            verb = "would add" if dry_run else "adding"
+            print(f"{prop}: {verb} {', '.join(missing)}")
+            if not dry_run:
+                request("PATCH", path, {"properties": {prop: {"select": {
+                    # The existing options go back verbatim, ids and all, or
+                    # Notion reads their absence as a request to remove them.
+                    "options": options + [{"name": n} for n in missing],
+                }}}})
+        if extra:
+            print(f"{prop}: in Notion but not in config, left alone: "
+                  f"{', '.join(extra)}")
+        if not missing and not extra:
+            print(f"{prop}: in step")
+
+    verb = "would add" if dry_run else "added"
+    print(f"{verb}: {added} option(s)")
+    return 0
+
+
 def provision(parent_page: str, dry_run: bool) -> dict:
     cfg = tracker.load_config()
     parent = {"type": "page_id", "page_id": normalise_id(parent_page)}
@@ -919,6 +988,11 @@ def main() -> int:
     pv.add_argument("--parent-page", required=True, help="page id or URL to create them under")
     pv.add_argument("--dry-run", action="store_true")
 
+    so = sub.add_parser(
+        "sync-options",
+        help="bring the mirror's select options back in step with config")
+    so.add_argument("--dry-run", action="store_true")
+
     im = sub.add_parser("import", help="copy Notion into the local tracker")
     im.add_argument("--dry-run", action="store_true")
     im.add_argument("--no-bodies", action="store_true",
@@ -935,6 +1009,8 @@ def main() -> int:
     if args.command == "provision":
         provision(args.parent_page, args.dry_run)
         return 0
+    if args.command == "sync-options":
+        return do_sync_options(args.dry_run)
     if args.command == "import":
         return do_import(args.dry_run, not args.no_bodies)
     return do_push(args.slug, args.files, args.dry_run, not args.no_events)

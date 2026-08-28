@@ -245,6 +245,13 @@ labels = { en = "Passed", ru = "✅ Пройдено" }
 id = "pending"
 labels = { en = "Pending", ru = "⏳ Ожидание" }
 
+# For a letter that got an answer: a follow-up, a question, a nudge. The reply
+# itself is the outcome -- "passed" would claim a stage was cleared, and there
+# was no stage.
+[[outcomes]]
+id = "replied"
+labels = { en = "Replied", ru = "📬 Ответили" }
+
 [[outcomes]]
 id = "failed"
 labels = { en = "Failed", ru = "❌ Провалено" }

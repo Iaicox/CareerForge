@@ -51,9 +51,28 @@ transcribe; the ids it gets back are written to `config/notion.json`
 
 **5. Enable it.** Set `notion.enabled = true` in `config/config.toml`.
 
+## After you edit config/config.toml
+
+`provision` writes the select options once. Add a status, work mode, event type
+or outcome to `config/config.toml` afterwards and Notion has never heard of it —
+the select still holds the options it was created with, and the new value has
+nowhere to land.
+
+```bash
+python tools/notion_sync.py sync-options --dry-run
+python tools/notion_sync.py sync-options
+```
+
+It only ever **adds**. An option Notion has and your config does not is
+reported and left where it is: a page may be using it, and removing the option
+would clear that page's value with nothing to say so. Renaming a label is
+therefore two options, not one — delete the old one in Notion yourself, once
+you are sure nothing uses it.
+
 ## Daily use
 
 ```bash
+python tools/notion_sync.py sync-options       # after editing config/config.toml
 python tools/notion_sync.py push               # applications, companies, events
 python tools/notion_sync.py push --files       # also upload the built PDFs
 python tools/notion_sync.py push --slug acme   # just one application
