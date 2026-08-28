@@ -164,8 +164,12 @@ python tools/notion_sync.py provision --parent-page <page URL>
 ```
 
 They need an integration token first (notion.so/my-integrations, with Read,
-Update and Insert content), stored in `NOTION_TOKEN` or `.notion_token`, and the
-parent page shared with it. Then set `notion.enabled = true`.
+Update and Insert content), stored as `NOTION_KEY=<token>` in `.env`
+(`NOTION_TOKEN` in the environment and a `.notion_token` file also work), and
+the parent page shared with it. Then set `notion.enabled = true`.
+
+Pass the **page** URL. A Notion URL copied from a board or table view carries a
+`?v=` view id; `provision` reads the page id from the path and ignores it.
 
 ---
 

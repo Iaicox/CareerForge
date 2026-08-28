@@ -46,6 +46,36 @@ class NormalisationTest(unittest.TestCase):
         self.assertNormalises("Cocacola", "cocacola")
         self.assertNormalises("Incorp", "incorp")
 
+    def test_the_example_config_carries_every_built_in_pattern(self):
+        # config.example.toml is copied to config.toml by /setup, and a
+        # configured list REPLACES the built-in one rather than extending it.
+        # So anything missing from the example is silently lost the moment a
+        # user has a config at all -- "group" and "holding" were.
+        import tomllib
+
+        with (REPO / "config" / "config.example.toml").open("rb") as fh:
+            example = tomllib.load(fh)["salary"]
+        self.assertEqual(
+            set(salary.DEFAULT_LEGAL_FORMS) - set(example["strip_legal_forms"]),
+            set(),
+            "built-in legal forms missing from config.example.toml",
+        )
+        self.assertEqual(
+            set(salary.DEFAULT_REGIONS) - set(example["strip_regions"]),
+            set(),
+            "built-in region words missing from config.example.toml",
+        )
+        self.assertEqual(
+            set(example["strip_legal_forms"]) - set(salary.DEFAULT_LEGAL_FORMS),
+            set(),
+            "config.example.toml legal forms missing from the built-in list",
+        )
+        self.assertEqual(
+            set(example["strip_regions"]) - set(salary.DEFAULT_REGIONS),
+            set(),
+            "config.example.toml region words missing from the built-in list",
+        )
+
     def test_never_normalises_to_an_empty_key(self):
         # An empty key would match every entry in the dataset.
         for name in ("Company Ltd", "Group Holding", "Global"):
@@ -113,6 +143,26 @@ class FormattingTest(unittest.TestCase):
 
         missing = {"company": "Acme", "categories": {"all": {"count": 5, "index": None}}}
         self.assertIn("N/A", salary.format_entry(missing, self.EUR))
+
+    def test_a_short_entry_inside_a_longer_query_still_scores(self):
+        # The dataset holds "Novo"; the posting says "Novo Nordisk Pharma".
+        # This is the branch that looks redundant next to the word-coverage
+        # fallback below and is not: without it these score in the 40s and
+        # fall behind worse matches.
+        self.assertEqual(salary.match_score("Novo Nordisk Pharma", "Novo"), 75)
+        self.assertEqual(salary.match_score("Ostergaard Cafe", "Cafe"), 75)
+
+    def test_a_short_name_inside_a_longer_one_needs_a_shared_word(self):
+        # "abcd" sits inside "Abcdefgh Systems" without being any part of it.
+        # Both directions have to refuse it.
+        self.assertEqual(salary.match_score("Abcd", "Abcdefgh Systems"), 0)
+        self.assertEqual(salary.match_score("Abcdefgh Systems", "Abcd"), 0)
+
+    def test_containment_scores_above_word_overlap(self):
+        # A name the dataset spells out in full beats one that merely shares
+        # words with it.
+        self.assertEqual(salary.match_score("Vestas", "Vestas Wind Systems"), 83)
+        self.assertEqual(salary.match_score("Novo Nordisk", "Nordisk Pharma"), 50)
 
     def test_a_count_of_zero_is_not_a_dash(self):
         entry = {"company": "Acme", "categories": {"all": {"count": 0, "index": 70000}}}

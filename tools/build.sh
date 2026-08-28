@@ -55,9 +55,15 @@ read_limit() {
 CV_LIMIT="$(read_limit cv_max_pages 2)"
 COVER_LIMIT="$(read_limit cover_max_pages 1)"
 
+FILES=()
 if [ -d "$TARGET" ]; then
   # Folder mode: only the documents the pipeline owns.
-  mapfile -t FILES < <(find "$TARGET" -maxdepth 1 -type f \
+  #
+  # Read in a loop rather than with mapfile: mapfile is a bash 4 builtin and
+  # macOS ships bash 3.2, where this is the documented way to run the script.
+  while IFS= read -r f; do
+    FILES+=("$f")
+  done < <(find "$TARGET" -maxdepth 1 -type f \
     \( -name 'cv_*.md' -o -name 'cover*.md' \) | sort)
 else
   FILES=("$TARGET")

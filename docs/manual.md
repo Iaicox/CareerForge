@@ -552,7 +552,7 @@ documents every key inline.
 | `documents.engine` | build scripts | `auto` prefers Word, falls back to LibreOffice |
 | `tracker.stale_after_days` | `/triage`, `list --stale` | When silence counts as dead |
 | `[[statuses]]` | tracker, board, `/triage`, Notion provisioning | `id`, `stage`, per-locale `labels`, optional `terminal` |
-| `[[work_modes]]`, `[[event_types]]`, `[[outcomes]]` | tracker validation, board dropdowns | Same shape |
+| `[[work_modes]]`, `[[event_types]]`, `[[outcomes]]` | tracker validation, board dropdowns, Notion provisioning | Same shape. Edit one after provisioning the mirror and run `notion_sync.py sync-options` |
 | `[mail]` | `/mailsync` | `host`, `port`, `user`, `mailbox`, `ssl`. Password never goes here |
 | `[gemini]` | `tools/gemini.py` | See [§11](#11-delegating-to-gemini) |
 | `[notion]` | `tools/notion_sync.py` | Optional mirror; off by default |
@@ -750,7 +750,7 @@ Commands orchestrate; these do the work. Each runs standalone and each takes
 | `doctor.py` | The environment check |
 | `gemini.py` | The single wrapper around the Gemini CLI |
 | `mailsync.py` | IMAP reconciliation |
-| `notion_sync.py` | The optional Notion mirror: provision, import, push |
+| `notion_sync.py` | The optional Notion mirror: provision, sync-options, import, push |
 | `salary_lookup.py`, `convert_salary_excel.py` | Salary benchmarking against data you supply |
 | `session_digest.py` | Mines old Claude Code transcripts into `profile/history.md` |
 

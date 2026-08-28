@@ -205,7 +205,7 @@ def fetch_messages(conn: imaplib.IMAP4, since: datetime) -> list[dict]:
         sender = header_text(msg.get("From"))
         addr = email.utils.parseaddr(sender)[1].lower()
         domain = addr.split("@")[-1] if "@" in addr else ""
-        if any(domain.endswith(d) for d in NOISE_DOMAINS):
+        if any(domain_matches(domain, d) for d in NOISE_DOMAINS):
             continue
         messages.append({
             "uid": num.decode(),
@@ -231,6 +231,23 @@ def domain_of(url: str | None) -> str:
     return m.group(1).lower() if m else ""
 
 
+def domain_matches(domain: str, base: str) -> bool:
+    """True when `domain` is `base` itself or a subdomain of it.
+
+    endswith() on its own has no notion of a label boundary, so "acme.com"
+    ends with "me.com" and a personal iCloud address was attributed to the
+    Acme application -- with "sender domain matches acme.com" as the reason,
+    and a status change proposed off the back of it. The same shape let
+    "joinindeed.com" be discarded as Indeed's own noise.
+
+    The company-name matcher below already worked this way; the domain one
+    never got the equivalent.
+    """
+    if not domain or not base:
+        return False
+    return domain == base or domain.endswith("." + base)
+
+
 def match_application(message: dict, applications: list[dict]) -> tuple[dict | None, str]:
     """Returns (application, why). Strongest evidence first."""
     haystack = f"{message['subject']} {message['body']}".lower()
@@ -241,9 +258,9 @@ def match_application(message: dict, applications: list[dict]) -> tuple[dict | N
 
     for app in applications:
         site = domain_of(app.get("company_website"))
-        if site and message["domain"] and (
-            message["domain"].endswith(site) or site.endswith(message["domain"])
-        ):
+        # Both directions: mail may come from a subdomain of the careers site,
+        # or the recorded site may be a subdomain of the sending domain.
+        if domain_matches(message["domain"], site) or domain_matches(site, message["domain"]):
             return app, f"sender domain matches {site}"
 
     for app in applications:
@@ -274,6 +291,25 @@ SUGGESTED_STATUS = {
     "acknowledgement": None,
     "unknown": None,
 }
+
+
+def suggested_status(config, kind: str) -> str | None:
+    """The status this kind of reply implies, if the user has such a status.
+
+    The ids above are the ones config.example.toml ships with, but statuses
+    come from config/config.toml and belong to the user -- renaming `screening`
+    or dropping `assignment` is a supported thing to do. Proposing an id that
+    is not configured used to fail in `tracker.py set-status`, after the whole
+    table had been read and approved. No suggestion is the honest answer.
+    """
+    wanted = SUGGESTED_STATUS.get(kind)
+    if not wanted:
+        return None
+    try:
+        config.status(wanted)
+    except TrackerError:
+        return None
+    return wanted
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +388,7 @@ def cmd_scan(args) -> int:
             "match_reason": why,
             "kind": kind,
             "matched_phrase": phrase,
-            "suggested_status": SUGGESTED_STATUS.get(kind),
+            "suggested_status": suggested_status(config, kind),
             "from": message["from"],
             "subject": message["subject"],
             "date": message["date"],

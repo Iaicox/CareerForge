@@ -173,14 +173,41 @@ try {
 
         # ATS text layer: a PDF can look perfect and extract as mojibake, which
         # is invisible until an employer's parser reads nothing.
-        $atsOutput = & python (Join-Path $PSScriptRoot 'atscheck.py') $pdf --source $md.FullName 2>&1
-        $atsCode = $LASTEXITCODE
-        $ats = switch ($atsCode) {
-            0 { 'OK' }
-            3 { 'no extractor' }
-            default { 'see below' }
+        #
+        # 2>&1 makes Windows PowerShell wrap every stderr line in an ErrorRecord,
+        # which $ErrorActionPreference = 'Stop' then treats as terminating. There
+        # is no catch around this block, so the one step that is only ever meant
+        # to warn was aborting the whole build -- and atscheck writes to stderr in
+        # exactly the case reported below as 'no extractor'. Setting the
+        # preference inside the scriptblock scopes it to this one call.
+        #
+        # It also demotes a missing python to non-terminating, and a command that
+        # never ran leaves $LASTEXITCODE at whatever pandoc last set it to -- 0.
+        # So the table said 'ATS: OK' about a check that had not happened.
+        # Clearing it first makes "did not run" a state of its own, and the catch
+        # keeps the CommandNotFoundException out of the console and in $atsOutput
+        # with everything else this step has to say.
+        $atsOutput = & {
+            $ErrorActionPreference = 'Continue'
+            $global:LASTEXITCODE = $null
+            try {
+                & python (Join-Path $PSScriptRoot 'atscheck.py') $pdf --source $md.FullName 2>&1
+            } catch { $_ }
         }
-        if ($atsCode -eq 2) { $atsDetails += $atsOutput }
+        $atsCode = $LASTEXITCODE
+        if ($null -eq $atsCode) {
+            $ats = 'not run'
+            $atsDetails += "$($md.Name): ATS check did not run - is python on PATH?"
+            $atsDetails += $atsOutput
+        } else {
+            $ats = switch ($atsCode) {
+                0 { 'OK' }
+                3 { 'no extractor' }
+                default { 'see below' }
+            }
+            # Anything that says 'see below' has to actually appear below.
+            if ($atsCode -ne 0 -and $atsCode -ne 3) { $atsDetails += $atsOutput }
+        }
 
         $ok = if ($pages -le $limit) { 'OK' } else { "OVER LIMIT ($limit)" }
         $results += [pscustomobject]@{
@@ -198,4 +225,11 @@ if ($atsDetails) {
     Write-Output 'ATS findings (warnings - the document still built):'
     $atsDetails | ForEach-Object { Write-Output "  $_" }
 }
+# Exit 2 means one thing: a document is over its page limit. Falling off the end
+# instead of exiting returned whatever $LASTEXITCODE happened to hold, and the
+# last thing to set it is atscheck -- which exits 2 on a finding. So a document
+# that built fine and merely failed the ATS text check reported the same code as
+# one that is too long, and the answer to that is to cut content. build.sh has
+# always ended `exit $(( over ? 2 : 0 ))`; this is the same contract.
 if ($results | Where-Object { $_.Pages -gt $_.Limit }) { exit 2 }
+exit 0

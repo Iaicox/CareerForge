@@ -30,19 +30,27 @@ DATA_FILE = REPO / "profile" / "salary_data.json"
 # Company-name normalisation. The lists live in config/config.toml under
 # [salary] so this works in any market; the values below are only the fallback
 # for a workspace with no configuration yet.
+DEFAULT_LEGAL_FORMS = [
+    "a/s", "aps", "i/s", "p/s", "k/s", "ivs", "amba",
+    "gmbh", "mbh", "ag", "kg", "ug",
+    "ltd", "limited", "plc", "llp", "inc", "incorporated", "corp",
+    "corporation", "llc", "co", "company",
+    "bv", "nv", "sa", "sas", "sarl", "srl", "spa", "ab", "as", "oy", "sp z oo",
+    "lda", "unipessoal", "sl", "sll", "pte", "pty",
+]
+DEFAULT_REGIONS = [
+    "europe", "emea", "nordic", "nordics", "scandinavia",
+    "international", "global", "group", "holding",
+]
+
+
 def _load_normalisation():
-    legal = [
-        "a/s", "aps", "i/s", "p/s", "k/s", "ivs", "amba",
-        "gmbh", "mbh", "ag", "kg", "ug",
-        "ltd", "limited", "plc", "llp", "inc", "incorporated", "corp",
-        "corporation", "llc", "co", "company",
-        "bv", "nv", "sa", "sas", "sarl", "srl", "spa", "ab", "as", "oy",
-        "lda", "unipessoal", "sl", "sll", "pte", "pty",
-    ]
-    regions = [
-        "europe", "emea", "nordic", "nordics", "scandinavia",
-        "international", "global", "group", "holding",
-    ]
+    # A configured list replaces the default outright, so config.example.toml
+    # has to carry every entry these do -- a copy of it that is missing one
+    # silently normalises worse than no configuration at all. A test pins the
+    # two together.
+    legal = list(DEFAULT_LEGAL_FORMS)
+    regions = list(DEFAULT_REGIONS)
     try:
         import tomllib
 
@@ -119,15 +127,15 @@ def normalize(s):
     return re.sub(r"[^a-z0-9]", "", strip_noise(s)).strip()
 
 
-def anglicize(s):
-    """Kept as an alias: normalisation now folds diacritics for every market."""
-    return fold(s)
-
-
 def extract_core_words(s):
     """Extract meaningful words from a company name, ignoring noise."""
     words = re.findall(r"[a-z0-9]+", strip_noise(fold(s).replace(".", "")))
     return [w for w in words if len(w) > 1]
+
+
+def shared_words(a, b):
+    """The meaningful words two company names have in common."""
+    return set(extract_core_words(a)) & set(extract_core_words(b))
 
 
 def match_score(query, entry_name):
@@ -141,38 +149,26 @@ def match_score(query, entry_name):
     if q_norm == n_norm:
         return 100
 
+    # One name contains the other. A short string inside a much longer one is
+    # weak evidence on its own -- "abc" sits inside "Abcdef Holdings" -- so
+    # that case has to be backed by a word the two names actually share.
     if q_norm in n_norm:
         ratio = len(q_norm) / len(n_norm)
         if len(q_norm) <= 4 and ratio < 0.5:
-            q_words = set(extract_core_words(query))
-            n_words = set(extract_core_words(entry_name))
-            if not q_words & n_words:
-                pass
-            else:
+            if shared_words(query, entry_name):
                 return 80 + int(ratio * 10)
         else:
             return 80 + int(ratio * 10)
+
     if n_norm in q_norm:
         ratio = len(n_norm) / len(q_norm)
         if len(n_norm) <= 4 and ratio < 0.5:
-            pass
-        else:
-            return 80 + int(ratio * 10)
-
-    q_ang = anglicize(q_norm)
-    n_ang = anglicize(n_norm)
-    if q_ang == n_ang:
-        return 85
-    if q_ang in n_ang or n_ang in q_ang:
-        shorter = min(len(q_ang), len(n_ang))
-        longer = max(len(q_ang), len(n_ang))
-        if shorter <= 4 and shorter / longer < 0.5:
-            q_words_ang = {anglicize(w) for w in extract_core_words(query)}
-            n_words_ang = {anglicize(w) for w in extract_core_words(entry_name)}
-            if q_words_ang & n_words_ang:
+            # The mirror image, scored lower: the dataset entry is the short
+            # side, so the query carries words the entry never had.
+            if shared_words(query, entry_name):
                 return 75
         else:
-            return 75
+            return 80 + int(ratio * 10)
 
     q_words = set(extract_core_words(query))
     n_words = set(extract_core_words(entry_name))
@@ -180,19 +176,10 @@ def match_score(query, entry_name):
         return 0
 
     overlap = q_words & n_words
-    if not overlap:
-        q_words_ang = {anglicize(w) for w in q_words}
-        n_words_ang = {anglicize(w) for w in n_words}
-        overlap = q_words_ang & n_words_ang
-
     if overlap:
+        # A one-word query that overlaps at all is that word, matched whole.
         if len(q_words) == 1:
-            q_word = list(q_words)[0]
-            if q_word in n_words or anglicize(q_word) in {anglicize(w) for w in n_words}:
-                return 70
-            else:
-                return 0
-
+            return 70
         coverage = len(overlap) / len(q_words)
         return int(30 + coverage * 40)
 
@@ -208,7 +195,7 @@ def search_company(data, query, city=None):
         if city:
             city_lower = city.lower()
             entry_city = entry.get("city", "").lower()
-            if city_lower not in entry_city and anglicize(city_lower) not in anglicize(entry_city):
+            if city_lower not in entry_city and fold(city_lower) not in fold(entry_city):
                 continue
 
         score = match_score(query, entry["company"])

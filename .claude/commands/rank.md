@@ -33,12 +33,14 @@ Report how many, then leave them alone unless `--all` was passed.
 
 ## Step 2: take what needs scoring
 
+Write the selection to a file — step 3 scores that file and nothing else.
+
 ```bash
-python tools/shortlist.py show --unscored --json        # default
-python tools/shortlist.py show --include-expired --json # with --all
+python tools/shortlist.py show --unscored --json        > /tmp/to_rank.json  # default
+python tools/shortlist.py show --include-expired --json > /tmp/to_rank.json  # with --all
 ```
 
-If nothing comes back, say so and stop. Do not invent work.
+If the file is an empty list, say so and stop. Do not invent work.
 
 Entries marked `verdict` with a trailing `*` in the table carry a coarse rating
 inherited from before this command existed — they still count as unscored.
@@ -50,9 +52,14 @@ the bulk work that should not sit in Claude's context:
 
 ```bash
 python tools/gemini.py rank \
-  --input job_scraper/seen_jobs.json \
+  --input /tmp/to_rank.json \
   --criteria profile/evaluation.md > /tmp/ranking.json
 ```
+
+**Score the file from step 2, never `job_scraper/seen_jobs.json`.** That file
+is every posting ever seen: passing it re-scores the whole history on every
+run, expired entries included, and `merge-scores` then overwrites scores that
+were already good. Step 1 exists to take expired postings out of the run.
 
 Exit code 3 means Gemini is unavailable — not an error. Score them yourself
 instead, using `.claude/skills/job-application-assistant/references/job-evaluation.md`

@@ -27,6 +27,7 @@ with paired count/index columns per category, it groups them automatically.
 """
 
 import json
+import re
 import sys
 import argparse
 from pathlib import Path
@@ -39,19 +40,70 @@ COUNT_PATTERNS = {"antal", "count", "number", "n", "employees", "medarbejdere"}
 INDEX_PATTERNS = {"indeks", "index", "idx", "salary", "løn", "median", "average", "gennemsnit"}
 
 
+# A marker this short is only trusted as a whole word: "n" is a real count
+# header on its own, but as a substring it is in "Indeks", "Median" and
+# "Engineering" alike, which classified every column as a count and left the
+# count/index pairing below unreachable.
+MIN_SUBSTRING_MARKER = 3
+
+
+def header_words(header):
+    """The header split into lowercase words, keeping Danish letters intact."""
+    return re.findall(r"[^\W_]+", (header or "").lower(), flags=re.UNICODE)
+
+
+def marker_in(word):
+    """Where a count/index marker sits inside one word, if it does at all.
+
+    Returns (end position, kind) for the marker ending last, or None. Danish and
+    German weld these into one word -- "Lønindeks", "Medarbejderantal" -- and
+    those compounds are head-final, so the last marker is the one that says what
+    the column holds.
+    """
+    hits = [
+        (word.rindex(p) + len(p), kind)
+        for kind, patterns in (("count", COUNT_PATTERNS), ("index", INDEX_PATTERNS))
+        for p in patterns
+        if len(p) >= MIN_SUBSTRING_MARKER and p in word
+    ]
+    return max(hits) if hits else None
+
+
 def detect_column_type(header):
-    """Detect whether a column header refers to count or index data."""
-    h = header.lower().strip()
-    for p in COUNT_PATTERNS:
-        if p in h:
-            return "count"
-    for p in INDEX_PATTERNS:
-        if p in h:
-            return "index"
-    return None
+    """Detect whether a column header refers to count or index data.
+
+    A whole word decides outright; only then are substrings considered, and only
+    for the longer markers. Whole words alone read "Lønindeks" and
+    "Medarbejderantal" as neither, and an unclassified column is stored below as
+    a salary index -- so a headcount came out the far end of salary_lookup as a
+    benchmark figure.
+    """
+    words = header_words(header)
+    if set(words) & COUNT_PATTERNS:
+        return "count"
+    if set(words) & INDEX_PATTERNS:
+        return "index"
+    hits = [m for m in (marker_in(w) for w in words) if m]
+    return hits[-1][1] if hits else None
 
 
-def parse_sheet(ws, sheet_label=None):
+def category_name(header, patterns):
+    """The header with its count/index marker words removed.
+
+    Only the words that actually matched are dropped, so "Antal Engineering"
+    becomes "engineering". Removing the patterns as substrings instead took the
+    letters with them -- "atal egieerig" -- and did it in set-iteration order,
+    so the result was not even stable between runs. A word that merely contains
+    a marker goes too, or the compound keeps it: "lønindeks_engineering".
+    """
+    return "_".join(
+        w for w in header_words(header)
+        if w not in patterns
+        and not any(len(p) >= MIN_SUBSTRING_MARKER and p in w for p in patterns)
+    )
+
+
+def parse_sheet(ws):
     """Parse a single worksheet into a list of company entries and detected categories."""
     # Find header row
     header_row = None
@@ -96,6 +148,7 @@ def parse_sheet(ws, sheet_label=None):
     # Try to detect paired count/index columns per category
     # Heuristic: if columns come in pairs and alternate count/index, group them
     categories = []
+    unclassified = []
     i = 0
     while i < len(data_cols):
         col_idx, col_header = data_cols[i]
@@ -108,9 +161,7 @@ def parse_sheet(ws, sheet_label=None):
             # If we have a count/index pair, group them
             if col_type == "count" and next_col_type == "index":
                 # Use the header minus the count/index suffix as category name
-                cat_name = col_header
-                for p in COUNT_PATTERNS:
-                    cat_name = cat_name.lower().replace(p, "").strip(" _-")
+                cat_name = category_name(col_header, COUNT_PATTERNS)
                 if not cat_name:
                     cat_name = f"category_{len(categories)+1}"
                 categories.append({
@@ -121,9 +172,7 @@ def parse_sheet(ws, sheet_label=None):
                 i += 2
                 continue
             elif col_type == "index" and next_col_type == "count":
-                cat_name = col_header
-                for p in INDEX_PATTERNS:
-                    cat_name = cat_name.lower().replace(p, "").strip(" _-")
+                cat_name = category_name(col_header, INDEX_PATTERNS)
                 if not cat_name:
                     cat_name = f"category_{len(categories)+1}"
                 categories.append({
@@ -134,12 +183,25 @@ def parse_sheet(ws, sheet_label=None):
                 i += 2
                 continue
 
-        # Single column - treat as a standalone value
+        # Single column - treat as a standalone value, under the field its own
+        # header names. Filing everything as "index" put headcounts where
+        # salary_lookup reads a salary and compared them to the baseline.
+        if col_type is None:
+            unclassified.append(col_header)
         categories.append({
             "name": col_header.lower().replace(" ", "_"),
             "value_col": col_idx,
+            "value_type": col_type or "index",
         })
         i += 1
+
+    if unclassified:
+        print(
+            f"Warning: in sheet '{ws.title}', could not tell whether these "
+            "columns hold a headcount or a salary index; stored as index: "
+            + ", ".join(unclassified),
+            file=sys.stderr,
+        )
 
     # Parse data rows
     companies = []
@@ -179,7 +241,7 @@ def parse_sheet(ws, sheet_label=None):
                         val = float(val)
                     except (ValueError, TypeError):
                         val = str(val)
-                    entry["categories"][cat_name] = {"index": val}
+                    entry["categories"][cat_name] = {cat["value_type"]: val}
 
         companies.append(entry)
 
@@ -233,7 +295,7 @@ def main():
     for sheet_name in wb.sheetnames:
         print(f"  Parsing sheet: {sheet_name}")
         ws = wb[sheet_name]
-        companies = parse_sheet(ws, sheet_label=sheet_name)
+        companies = parse_sheet(ws)
         all_companies.extend(companies)
 
     wb.close()

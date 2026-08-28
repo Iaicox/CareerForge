@@ -33,6 +33,17 @@ from typing import Any, Iterable
 REPO = Path(__file__).resolve().parent.parent
 DB_PATH = REPO / "tracker" / "careerforge.db"
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
+# What a file in here may contain. apply_migrations() wraps it in BEGIN/COMMIT
+# together with the row that records it, so:
+#   - no transaction control of its own -- no BEGIN, COMMIT or SAVEPOINT;
+#   - no PRAGMA. SQLite ignores `PRAGMA foreign_keys` inside a transaction,
+#     silently, so the documented table-rebuild recipe cannot be written here as
+#     it stands: connect() leaves foreign keys ON and the rebuild would drop
+#     references without erroring. Such a migration needs the wrapper changed,
+#     not a pragma smuggled into the file;
+#   - every statement terminated with `;`. The bookkeeping INSERT is appended
+#     to the text, so a missing final semicolon glues it onto the last statement
+#     and the syntax error points at the INSERT rather than at the file.
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 SCHEMA_VERSION = "3"
 STAGES = ("applications", "processing", "rejected")
@@ -131,6 +142,23 @@ class Config:
                 f"must be one of {', '.join(STAGES)}"
             )
         return stage
+
+    def is_terminal(self, status_id: str | None) -> bool | None:
+        """Is this status closed for good? None when it is not configured at all.
+
+        The `terminal` flag is the answer where it is set; the `rejected` stage
+        is the fallback for a status that predates it. Reading the stage alone
+        got both ends wrong: a user-defined terminal status filed under
+        `processing` -- an accepted/hired column, which nothing forbids -- was
+        never treated as closed, and an unconfigured status has no stage at all,
+        so it read as open.
+        """
+        for s in self.statuses:
+            if s["id"] == status_id:
+                if "terminal" in s:
+                    return bool(s["terminal"])
+                return s.get("stage") == "rejected"
+        return None
 
     def label(self, kind: str, item_id: str | None) -> str:
         if not item_id:
@@ -237,11 +265,31 @@ def apply_migrations(conn: sqlite3.Connection, baseline: bool = False) -> list[s
     pending = sorted(p for p in MIGRATIONS_DIR.glob("*.sql") if p.name not in done)
     applied: list[str] = []
     for path in pending:
-        with conn:
-            if not baseline:
-                conn.executescript(path.read_text(encoding="utf-8"))
-                applied.append(path.name)
-            conn.execute("INSERT INTO migrations(name) VALUES (?)", (path.name,))
+        if baseline:
+            with conn:
+                conn.execute("INSERT INTO migrations(name) VALUES (?)", (path.name,))
+            continue
+
+        # executescript() COMMITs any open transaction before it runs a single
+        # statement, so a `with conn:` around it has nothing left to roll back:
+        # a migration that failed halfway left its earlier statements committed
+        # and no row in `migrations`, and every later run replayed the file and
+        # died on a duplicate column. SQLite DDL is transactional, so the script
+        # owns its own transaction and records itself inside it -- the columns
+        # and the record land together or not at all.
+        name = path.name.replace("'", "''")
+        script = (
+            "BEGIN;\n"
+            f"{path.read_text(encoding='utf-8')}\n"
+            f"INSERT INTO migrations(name) VALUES ('{name}');\n"
+            "COMMIT;"
+        )
+        try:
+            conn.executescript(script)
+        except Exception:
+            conn.rollback()
+            raise
+        applied.append(path.name)
     return applied
 
 
@@ -540,6 +588,95 @@ def set_status(
 # ---------------------------------------------------------------------------
 
 
+def set_event_type(
+    conn: sqlite3.Connection,
+    cfg: Config,
+    event_id: int,
+    type_: str,
+    outcome: str | None = None,
+) -> sqlite3.Row:
+    """Correct the type of an event that was filed under the wrong one.
+
+    The only edit an event allows, and deliberately so: everything else on an
+    event is a record of what happened, and a record is not something to go
+    back and change. The type is a classification, and a classification can
+    simply be wrong -- an import maps a Notion label it does not recognise to
+    `other`, and the row then says nothing about how far the application got.
+    """
+    cfg.validate(type_, "event_types")
+    cfg.validate(outcome, "outcomes")
+    row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+    if row is None:
+        raise TrackerError(f"no event with id {event_id}")
+
+    if outcome is None:
+        conn.execute("UPDATE events SET type = ? WHERE id = ?", (type_, event_id))
+    else:
+        conn.execute(
+            "UPDATE events SET type = ?, outcome = ? WHERE id = ?",
+            (type_, outcome, event_id),
+        )
+    conn.execute(
+        "UPDATE applications SET updated_at = ? WHERE id = ?",
+        (now(), row["application_id"]),
+    )
+    return conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+
+
+def delete_event(conn: sqlite3.Connection, event_id: int) -> sqlite3.Row:
+    """Remove an event that should not be a row at all.
+
+    Not for editing history -- set_event_type() explains why an event is
+    otherwise immutable. This is for a row that records nothing that happened:
+    the same interview logged twice, once when it was scheduled and again with
+    its outcome, or a meeting that moved and left its old slot behind. Until
+    now the only way out was to leave it there, which quietly doubles a stage
+    in the funnel and puts a date in /triage's way that nobody is waiting for.
+
+    Returns the row it removed, so the caller can show what is gone.
+    """
+    row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+    if row is None:
+        raise TrackerError(f"no event with id {event_id}")
+    conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
+    conn.execute(
+        "UPDATE applications SET updated_at = ? WHERE id = ?",
+        (now(), row["application_id"]),
+    )
+    return row
+
+
+def deleted_event_report(conn: sqlite3.Connection, cfg: Config, row: dict) -> str:
+    """Everything the deleted row held, because after this it is only here."""
+    lines = [
+        f"deleted event #{row['id']} "
+        f"{cfg.label('event_types', row['type'])} on {row['date']}"
+    ]
+    for field in ("participants", "outcome", "notes"):
+        if row.get(field):
+            value = (cfg.label("outcomes", row[field])
+                     if field == "outcome" else row[field])
+            lines.append(f"  {field}: {value}")
+
+    page = row.get("notion_page_id")
+    if not page:
+        return "\n".join(lines)
+    # A page another event still points at is that event's page. That is exactly
+    # the case when the row removed was a duplicate the mirror had collapsed
+    # onto one page, and telling the user to delete it would cost them the
+    # surviving event.
+    if conn.execute(
+        "SELECT 1 FROM events WHERE notion_page_id = ? LIMIT 1", (page,)
+    ).fetchone():
+        lines.append(f"  Notion page {page} stays: another event still uses it")
+    else:
+        lines.append(
+            f"  it was mirrored as Notion page {page} -- delete that page too, "
+            "or the next `notion_sync.py import` brings the event back"
+        )
+    return "\n".join(lines)
+
+
 def add_event(
     conn: sqlite3.Connection,
     cfg: Config,
@@ -639,16 +776,30 @@ def list_applications(
     if stale:
         today = datetime.now(timezone.utc).date()
         cutoff = (today - timedelta(days=cfg.stale_after_days())).isoformat()
+        # Anything still open. Restricting this to the `applications` stage hid
+        # every status under `processing` -- screening, assignment, interview,
+        # final, offer -- so an interview process that went quiet could not
+        # reach /triage's "Silent" section, which reads only from here. That is
+        # the silence worth chasing, and the one case the sweep structurally
+        # could not see.
+        #
+        # Open means cfg.is_terminal() says so: False, not None. A status that
+        # is not in the config is an orphan, and the only thing /triage offers
+        # a silent row is to close it -- which would be guessing about a row we
+        # could not even read. /triage lists those separately instead.
         rows = [
             r
             for r in rows
-            if r["stage"] == "applications"
+            if cfg.is_terminal(r["status"]) is False
             and (r["last_event_date"] or r["created_at"])[:10] < cutoff
         ]
     if expired:
         # Only worth surfacing while the application is still open; a deadline
         # that passed after a rejection is not news.
-        rows = [r for r in rows if r["is_expired"] and r["stage"] != "rejected"]
+        rows = [
+            r for r in rows
+            if r["is_expired"] and cfg.is_terminal(r["status"]) is False
+        ]
     return rows
 
 
@@ -864,6 +1015,16 @@ def build_parser() -> argparse.ArgumentParser:
     eva.add_argument("--outcome")
     eva.add_argument("--notes")
 
+    evs = with_json(evsub.add_parser(
+        "set-type", help="correct the type an event was filed under"))
+    evs.add_argument("event_id", type=int, help="from `show <application>`")
+    evs.add_argument("--type", dest="type_", required=True)
+    evs.add_argument("--outcome", help="also correct the outcome")
+
+    evd = with_json(evsub.add_parser(
+        "delete", help="remove an event that records nothing that happened"))
+    evd.add_argument("event_id", type=int, help="from `show <application>`")
+
     at = with_json(sub.add_parser("attach", help="record a built document"))
     at.add_argument("application")
     at.add_argument("--kind", default="cv", choices=["cv", "cover", "other"])
@@ -995,8 +1156,11 @@ def main(argv: list[str] | None = None) -> int:
                 if d["events"]:
                     print("  events:")
                     for e in d["events"]:
+                        # The id is here so `event set-type` has something to
+                        # name; it is the only handle an event has.
                         print(
-                            f"    {e['date'][:16]}  {e['type_label']}  {e['outcome_label']}"
+                            f"    #{e['id']:<4} {e['date'][:16]}  "
+                            f"{e['type_label']}  {e['outcome_label']}"
                         )
                 if d["attachments"]:
                     print("  files:")
@@ -1017,23 +1181,36 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         elif args.command == "event":
-            with conn:
-                e = add_event(
-                    conn,
-                    cfg,
-                    args.application,
-                    args.type_,
-                    args.when,
-                    args.participants,
-                    args.outcome,
-                    args.notes,
+            if args.event_command == "delete":
+                with conn:
+                    e = delete_event(conn, args.event_id)
+                d = dict(e)
+                emit(args, d, deleted_event_report(conn, cfg, d))
+            else:
+                if args.event_command == "set-type":
+                    with conn:
+                        e = set_event_type(
+                            conn, cfg, args.event_id, args.type_, args.outcome
+                        )
+                else:
+                    with conn:
+                        e = add_event(
+                            conn,
+                            cfg,
+                            args.application,
+                            args.type_,
+                            args.when,
+                            args.participants,
+                            args.outcome,
+                            args.notes,
+                        )
+                d = dict(e)
+                emit(
+                    args,
+                    d,
+                    f"event #{d['id']} "
+                    f"{cfg.label('event_types', d['type'])} on {d['date']}",
                 )
-            d = dict(e)
-            emit(
-                args,
-                d,
-                f"event #{d['id']} {cfg.label('event_types', d['type'])} on {d['date']}",
-            )
 
         elif args.command == "attach":
             with conn:

@@ -8,13 +8,16 @@ database or the real application folders.
 
 from __future__ import annotations
 
+import re
 import shutil
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-TOOLS = Path(__file__).resolve().parent.parent / "tools"
+REPO = Path(__file__).resolve().parent.parent
+TOOLS = REPO / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import tracker  # noqa: E402
@@ -163,6 +166,36 @@ class TrackerTestCase(unittest.TestCase):
         self.assertEqual(data["total"], 1)
         self.assertEqual(data["orphans"], [])
 
+    def test_an_orphan_card_carries_what_the_board_needs_to_move_it(self):
+        # A status that used to be in config and is not any more. The board
+        # renders these under "Unknown status" so they can be dragged back into
+        # a real column, which needs id and updated_at on the card.
+        row = self.add()
+        with self.conn:
+            self.conn.execute(
+                "UPDATE applications SET status = 'was_renamed' WHERE id = ?",
+                (row["id"],),
+            )
+        data = tracker.board_data(self.conn, self.cfg)
+        self.assertEqual([c["id"] for c in data["orphans"]], [row["id"]])
+        orphan = data["orphans"][0]
+        for key in ("id", "updated_at", "company_name", "role", "status"):
+            self.assertIn(key, orphan)
+        self.assertIsNone(orphan["stage"])
+
+    def test_an_orphan_can_be_moved_back_to_a_configured_status(self):
+        # set_status validates the target, never the status being left behind.
+        row = self.add()
+        with self.conn:
+            self.conn.execute(
+                "UPDATE applications SET status = 'was_renamed' WHERE id = ?",
+                (row["id"],),
+            )
+        with self.conn:
+            moved, _ = tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+        self.assertEqual(moved["status"], "screening")
+        self.assertEqual(tracker.board_data(self.conn, self.cfg)["orphans"], [])
+
     def test_slugify_folds_accents_and_punctuation(self):
         self.assertEqual(tracker.slugify("Nestl" + chr(233) + " S.A."), "nestle-s-a")
         self.assertEqual(tracker.slugify("  Acme   Corp!  "), "acme-corp")
@@ -224,6 +257,189 @@ class TrackerTestCase(unittest.TestCase):
         self.assertEqual(d["fit_strengths"], [])
         self.assertEqual(d["fit_gaps"], [])
 
+    # -- correcting an event's type ----------------------------------------
+
+    def test_an_event_filed_under_the_wrong_type_can_be_corrected(self):
+        # An import maps a Notion label it does not recognise to `other`, and
+        # the row then says nothing about how far the application got.
+        row = self.add()
+        with self.conn:
+            ev = tracker.add_event(self.conn, self.cfg, row["slug"], "other",
+                                   "2026-08-19")
+        with self.conn:
+            fixed = tracker.set_event_type(
+                self.conn, self.cfg, int(ev["id"]), "rejection", outcome="failed"
+            )
+        self.assertEqual(fixed["type"], "rejection")
+        self.assertEqual(fixed["outcome"], "failed")
+
+    def test_the_outcome_is_left_alone_when_not_given(self):
+        row = self.add()
+        with self.conn:
+            ev = tracker.add_event(self.conn, self.cfg, row["slug"], "other",
+                                   "2026-08-19", None, "passed")
+        with self.conn:
+            fixed = tracker.set_event_type(
+                self.conn, self.cfg, int(ev["id"]), "follow_up"
+            )
+        self.assertEqual(fixed["type"], "follow_up")
+        self.assertEqual(fixed["outcome"], "passed")
+
+    def test_an_unknown_type_is_refused(self):
+        row = self.add()
+        with self.conn:
+            ev = tracker.add_event(self.conn, self.cfg, row["slug"], "other",
+                                   "2026-08-19")
+        with self.assertRaises(TrackerError):
+            tracker.set_event_type(self.conn, self.cfg, int(ev["id"]), "not_a_type")
+
+    def test_correcting_an_event_that_is_not_there_is_an_error(self):
+        with self.assertRaises(TrackerError):
+            tracker.set_event_type(self.conn, self.cfg, 9999, "rejection")
+
+    def test_an_event_recorded_twice_can_be_deleted(self):
+        row = self.add()
+        with self.conn:
+            keep = tracker.add_event(self.conn, self.cfg, row["slug"],
+                                     "tech_interview", "2026-08-25T14:00",
+                                     outcome="passed")
+            drop = tracker.add_event(self.conn, self.cfg, row["slug"],
+                                     "tech_interview", "2026-08-25T14:00",
+                                     outcome="pending")
+        with self.conn:
+            gone = tracker.delete_event(self.conn, int(drop["id"]))
+        # The whole row comes back, so the caller can show what it removed.
+        self.assertEqual(gone["outcome"], "pending")
+        left = [
+            int(e["id"])
+            for e in self.conn.execute(
+                "SELECT id FROM events WHERE application_id = ?", (row["id"],)
+            )
+        ]
+        self.assertEqual(left, [int(keep["id"])])
+
+    def test_deleting_an_event_that_is_not_there_is_an_error(self):
+        with self.assertRaises(TrackerError):
+            tracker.delete_event(self.conn, 9999)
+
+    def test_the_delete_report_keeps_a_page_another_event_still_uses(self):
+        # The duplicate case: two rows collapsed onto one Notion page. Telling
+        # the user to delete that page would cost them the surviving event.
+        row = self.add()
+        with self.conn:
+            keep = tracker.add_event(self.conn, self.cfg, row["slug"],
+                                     "tech_interview", "2026-08-25T14:00")
+            drop = tracker.add_event(self.conn, self.cfg, row["slug"],
+                                     "tech_interview", "2026-08-25T14:00")
+            self.conn.execute(
+                "UPDATE events SET notion_page_id = 'shared' WHERE id IN (?, ?)",
+                (keep["id"], drop["id"]),
+            )
+        with self.conn:
+            gone = dict(tracker.delete_event(self.conn, int(drop["id"])))
+        report = tracker.deleted_event_report(self.conn, self.cfg, gone)
+        self.assertIn("stays", report)
+        self.assertNotIn("delete that page too", report)
+
+    def test_the_delete_report_says_when_a_notion_page_is_left_orphaned(self):
+        row = self.add()
+        with self.conn:
+            ev = tracker.add_event(self.conn, self.cfg, row["slug"], "other",
+                                   "2026-08-19", notes="only copy of this")
+            self.conn.execute(
+                "UPDATE events SET notion_page_id = 'lonely' WHERE id = ?",
+                (ev["id"],),
+            )
+        with self.conn:
+            gone = dict(tracker.delete_event(self.conn, int(ev["id"])))
+        report = tracker.deleted_event_report(self.conn, self.cfg, gone)
+        self.assertIn("delete that page too", report)
+        # And the notes are in the report, since nothing else holds them now.
+        self.assertIn("only copy of this", report)
+
+    def test_deleting_an_event_touches_its_application(self):
+        row = self.add()
+        with self.conn:
+            ev = tracker.add_event(self.conn, self.cfg, row["slug"], "other",
+                                   "2026-08-19")
+            self.conn.execute(
+                "UPDATE applications SET updated_at = '2000-01-01 00:00:00' "
+                "WHERE id = ?", (row["id"],)
+            )
+        with self.conn:
+            tracker.delete_event(self.conn, int(ev["id"]))
+        after = self.conn.execute(
+            "SELECT updated_at FROM applications WHERE id = ?", (row["id"],)
+        ).fetchone()["updated_at"]
+        self.assertNotEqual(after, "2000-01-01 00:00:00")
+
+    # -- staleness ---------------------------------------------------------
+
+    def stale_slugs(self):
+        return [
+            r["slug"]
+            for r in tracker.list_applications(self.conn, self.cfg, stale=True)
+        ]
+
+    def age(self, row, days=400):
+        """Backdate an application so it counts as silent."""
+        old = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).isoformat(sep=" ", timespec="seconds")
+        with self.conn:
+            self.conn.execute(
+                "UPDATE applications SET created_at = ?, updated_at = ? WHERE id = ?",
+                (old, old, row["id"]),
+            )
+
+    def test_an_interview_gone_quiet_is_stale(self):
+        # The costly kind of silence: they replied, a call happened, and then
+        # nothing. Restricting --stale to the `applications` stage hid every
+        # status under `processing`, which is exactly this one.
+        row = self.add(company="Acme")
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+        self.age(row)
+        self.assertEqual(self.stale_slugs(), [row["slug"]])
+
+    def test_a_closed_application_is_never_stale(self):
+        row = self.add(company="Globex")
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, row["slug"], "rejected")
+        self.age(row)
+        self.assertEqual(self.stale_slugs(), [])
+
+    def test_a_recent_application_is_not_stale(self):
+        self.add(company="Initech")
+        self.assertEqual(self.stale_slugs(), [])
+
+    def test_a_terminal_status_outside_the_rejected_stage_is_never_stale(self):
+        # Nothing stops a user from filing "accepted" under `processing` and
+        # marking it terminal. Testing the stage alone chased it forever.
+        self.cfg.data["statuses"].append(
+            {"id": "accepted", "stage": "processing", "terminal": True,
+             "labels": {"en": "Accepted"}}
+        )
+        row = self.add(company="Hooli")
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, row["slug"], "accepted")
+        self.age(row)
+        self.assertEqual(self.stale_slugs(), [])
+
+    def test_an_application_whose_status_is_not_in_config_is_not_stale(self):
+        # enrich() leaves stage None for these, and None != "rejected" was true,
+        # so every orphan read as silent -- renaming the `rejected` status id
+        # would have made every closed application permanently "Silent" in
+        # /triage, which only ever proposes closing them again.
+        row = self.add(company="Vandelay")
+        self.age(row)
+        with self.conn:
+            self.conn.execute(
+                "UPDATE applications SET status = 'gone_from_config' WHERE id = ?",
+                (row["id"],),
+            )
+        self.assertEqual(self.stale_slugs(), [])
+
     # -- migrations --------------------------------------------------------
 
     def test_fresh_database_records_migrations_without_running_them(self):
@@ -233,6 +449,109 @@ class TrackerTestCase(unittest.TestCase):
         recorded = {r["name"] for r in self.conn.execute("SELECT name FROM migrations")}
         on_disk = {p.name for p in tracker.MIGRATIONS_DIR.glob("*.sql")}
         self.assertEqual(recorded, on_disk)
+
+    def columns(self, table="applications"):
+        return {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+
+    def use_migrations(self, sql, name="900_test.sql"):
+        """Point the module at a throwaway migrations directory."""
+        d = self.tmp / "migrations"
+        d.mkdir(exist_ok=True)
+        (d / name).write_text(sql, encoding="utf-8")
+        self.addCleanup(setattr, tracker, "MIGRATIONS_DIR", tracker.MIGRATIONS_DIR)
+        tracker.MIGRATIONS_DIR = d
+        return d
+
+    def test_a_migration_that_fails_halfway_leaves_nothing_behind(self):
+        # executescript() commits before it runs, so `with conn:` rolled back
+        # nothing: the statements before the failure stayed, the migrations row
+        # never landed, and every later init replayed the file and died on the
+        # duplicate column -- unrecoverable without hand-editing the database.
+        self.use_migrations(
+            "ALTER TABLE applications ADD COLUMN probe_one TEXT;\n"
+            "ALTER TABLE applications ADD COLUMN probe_two TEXT;\n"
+            "ALTER TABLE applications ADD COLUMN probe_one TEXT;\n"
+        )
+        with self.assertRaises(Exception):
+            tracker.apply_migrations(self.conn)
+
+        cols = self.columns()
+        self.assertNotIn("probe_one", cols)
+        self.assertNotIn("probe_two", cols)
+        recorded = {r["name"] for r in self.conn.execute("SELECT name FROM migrations")}
+        self.assertNotIn("900_test.sql", recorded)
+
+    def test_the_repaired_migration_then_applies_cleanly(self):
+        d = self.use_migrations(
+            "ALTER TABLE applications ADD COLUMN probe_one TEXT;\n"
+            "ALTER TABLE applications ADD COLUMN probe_one TEXT;\n"
+        )
+        with self.assertRaises(Exception):
+            tracker.apply_migrations(self.conn)
+
+        (d / "900_test.sql").write_text(
+            "ALTER TABLE applications ADD COLUMN probe_one TEXT;\n", encoding="utf-8"
+        )
+        self.assertEqual(tracker.apply_migrations(self.conn), ["900_test.sql"])
+        self.assertIn("probe_one", self.columns())
+
+    def test_a_good_migration_records_itself(self):
+        self.use_migrations("ALTER TABLE applications ADD COLUMN probe_one TEXT;\n")
+        self.assertEqual(tracker.apply_migrations(self.conn), ["900_test.sql"])
+        recorded = {r["name"] for r in self.conn.execute("SELECT name FROM migrations")}
+        self.assertIn("900_test.sql", recorded)
+        # And it runs exactly once.
+        self.assertEqual(tracker.apply_migrations(self.conn), [])
+
+    # -- the schema document -----------------------------------------------
+
+    CONSTRAINT_KEYWORDS = {"UNIQUE", "PRIMARY", "FOREIGN", "CHECK", "CONSTRAINT"}
+    DOCUMENTED_TABLES = ("companies", "applications", "events", "attachments")
+
+    def schema_tables(self):
+        text = tracker.SCHEMA_PATH.read_text(encoding="utf-8")
+        tables = {}
+        for match in re.finditer(
+            r"CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\);", text, re.S
+        ):
+            columns = []
+            for line in match.group(2).splitlines():
+                line = line.strip()
+                if not line or line.startswith("--"):
+                    continue
+                # Split on the bracket too: "UNIQUE(a, b)" has no space in it.
+                first = re.split(r"[\s(]", line, maxsplit=1)[0]
+                if first.upper() in self.CONSTRAINT_KEYWORDS:
+                    continue
+                columns.append(first)
+            tables[match.group(1)] = columns
+        return tables
+
+    def test_the_schema_doc_describes_every_table_and_column(self):
+        # The doc is what someone reads before opening the database in
+        # datasette or DB Browser, so a column missing from it is a column
+        # they do not know they have. Migration 002 added seven and none of
+        # them were written down.
+        doc = (REPO / "docs" / "tracker-schema.md").read_text(encoding="utf-8")
+        tables = self.schema_tables()
+        self.assertTrue(tables, "no CREATE TABLE statements parsed from schema.sql")
+
+        for table in tables:
+            self.assertIn(f"`{table}`", doc, f"table {table} is not in the doc")
+
+        for table in self.DOCUMENTED_TABLES:
+            for column in tables[table]:
+                self.assertIn(
+                    f"`{column}`", doc,
+                    f"{table}.{column} is in schema.sql but not in tracker-schema.md",
+                )
+
+    def test_the_schema_doc_describes_the_view(self):
+        doc = (REPO / "docs" / "tracker-schema.md").read_text(encoding="utf-8")
+        text = tracker.SCHEMA_PATH.read_text(encoding="utf-8")
+        view = text.split("CREATE VIEW", 1)[1]
+        for alias in re.findall(r"\bAS (\w+)\b", view):
+            self.assertIn(f"`{alias}`", doc, f"view column {alias} is not in the doc")
 
     # -- .env --------------------------------------------------------------
 

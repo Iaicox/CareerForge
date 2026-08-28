@@ -71,6 +71,29 @@ python tools/tracker.py event add <slug> --type screening \
 Use `--outcome pending` for anything scheduled in the future. Add new names to
 the record with `note --append`, never overwriting what is there.
 
+## Correcting the record
+
+An event is a record of what happened, so it does not get rewritten. Two things
+can still be wrong about it:
+
+```bash
+python tools/tracker.py event set-type <event-id> --type tech_interview
+python tools/tracker.py event delete <event-id>
+```
+
+`set-type` fixes a classification — an import that could not map a label files
+the event as `other`, and the row then says nothing about how far the
+application got. `delete` is for a row that records nothing that happened: the
+same interview logged twice, once when it was scheduled and again with its
+outcome, or a meeting that moved and left its old slot behind. Both take the
+event id from `show <slug>`.
+
+Do not use `delete` to erase history. An interview that went badly happened.
+
+`delete` prints everything the row held, and says whether the event's Notion
+page is now orphaned — if it is, delete that page too, or the next
+`notion_sync.py import` brings the event back.
+
 ## Never
 
 - Do not write to the database with anything but `tools/tracker.py`.

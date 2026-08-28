@@ -142,7 +142,54 @@ class UrlDomainTest(unittest.TestCase):
         self.assertEqual(mailsync.domain_of("not a url"), "")
 
 
+class DomainBoundaryTest(unittest.TestCase):
+    """A domain has labels. Suffix comparison does not know that."""
+
+    def test_a_shorter_domain_is_not_a_suffix_match(self):
+        # "acme.com".endswith("me.com") is True, so a personal iCloud address
+        # was attributed to the Acme application.
+        self.assertFalse(mailsync.domain_matches("acme.com", "me.com"))
+        self.assertFalse(mailsync.domain_matches("me.com", "acme.com"))
+
+    def test_a_lookalike_domain_does_not_match(self):
+        self.assertFalse(mailsync.domain_matches("evil-acme.com", "acme.com"))
+
+    def test_a_real_subdomain_still_matches(self):
+        self.assertTrue(mailsync.domain_matches("careers.acme.com", "acme.com"))
+        self.assertTrue(mailsync.domain_matches("acme.com", "acme.com"))
+
+    def test_an_empty_side_never_matches(self):
+        self.assertFalse(mailsync.domain_matches("", "acme.com"))
+        self.assertFalse(mailsync.domain_matches("acme.com", ""))
+
+    def test_an_icloud_sender_does_not_match_a_company_site(self):
+        app, why = mailsync.match_application(
+            message("Lunch on Friday?", "see you then", domain="me.com"), APPS
+        )
+        self.assertIsNone(app, f"matched anyway: {why}")
+
+    def test_a_job_board_lookalike_is_not_filtered_as_that_board(self):
+        # NOISE_DOMAINS is compared the same way; "joinindeed.com" is a real
+        # employer domain that ends with "indeed.com".
+        self.assertFalse(mailsync.domain_matches("joinindeed.com", "indeed.com"))
+        self.assertTrue(mailsync.domain_matches("mail.indeed.com", "indeed.com"))
+
+
+class FakeConfig:
+    """Just the one method suggested_status calls."""
+
+    def __init__(self, ids):
+        self.ids = set(ids)
+
+    def status(self, status_id):
+        if status_id not in self.ids:
+            raise mailsync.TrackerError(f"unknown status {status_id!r}")
+        return {"id": status_id}
+
+
 class StatusProposalTest(unittest.TestCase):
+    ALL = FakeConfig(["draft", "applied", "screening", "assignment", "offer", "rejected"])
+
     def test_only_actionable_kinds_propose_a_status(self):
         self.assertEqual(mailsync.SUGGESTED_STATUS["rejection"], "rejected")
         self.assertEqual(mailsync.SUGGESTED_STATUS["interview"], "screening")
@@ -150,6 +197,22 @@ class StatusProposalTest(unittest.TestCase):
         # An automated "we got it" is not a funnel stage.
         self.assertIsNone(mailsync.SUGGESTED_STATUS["acknowledgement"])
         self.assertIsNone(mailsync.SUGGESTED_STATUS["unknown"])
+
+    def test_a_configured_status_is_proposed(self):
+        self.assertEqual(mailsync.suggested_status(self.ALL, "rejection"), "rejected")
+        self.assertEqual(mailsync.suggested_status(self.ALL, "interview"), "screening")
+
+    def test_a_status_the_user_does_not_have_proposes_nothing(self):
+        # Renaming `screening` to `phone_screen` is the user's prerogative;
+        # proposing an id set-status will reject is not a suggestion.
+        renamed = FakeConfig(["draft", "applied", "phone_screen", "offer", "rejected"])
+        self.assertIsNone(mailsync.suggested_status(renamed, "interview"))
+        self.assertIsNone(mailsync.suggested_status(renamed, "assignment"))
+        self.assertEqual(mailsync.suggested_status(renamed, "offer"), "offer")
+
+    def test_a_kind_with_no_mapping_never_consults_the_config(self):
+        self.assertIsNone(mailsync.suggested_status(FakeConfig([]), "acknowledgement"))
+        self.assertIsNone(mailsync.suggested_status(FakeConfig([]), "unknown"))
 
 
 if __name__ == "__main__":
