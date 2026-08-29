@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """CareerForge board: a local kanban over the tracker database.
 
-    python tools/board.py            # serve on 127.0.0.1:8765 and open a browser
+    python tools/board.py                  # serve on 127.0.0.1:8765 and open a browser
+    python tools/board.py --view postings  # open on the postings table instead
     python tools/board.py --port 9000 --no-browser
+
+Two pages on one server: `/` is the applications kanban, `/postings` is a table
+of every posting seen, with its status as a select.
 
 Standard library only. All data access goes through tools/tracker.py, so the
 board and the agent share one set of rules -- including the one that moves an
@@ -28,6 +32,7 @@ import tracker
 from tracker import TrackerError
 
 INDEX = Path(__file__).resolve().parent / "board" / "index.html"
+POSTINGS = Path(__file__).resolve().parent / "board" / "postings.html"
 MAX_BODY = 1 << 20  # 1 MiB is far more than any card edit needs
 
 
@@ -82,8 +87,16 @@ class BoardHandler(BaseHTTPRequestHandler):
             return self._send(
                 200, INDEX.read_bytes(), "text/html; charset=utf-8"
             )
+        if path == "/postings":
+            if not POSTINGS.exists():
+                return self._error(f"missing {POSTINGS}", 500)
+            return self._send(
+                200, POSTINGS.read_bytes(), "text/html; charset=utf-8"
+            )
         if path == "/api/board":
             return self._with_db(lambda conn, cfg: tracker.board_data(conn, cfg))
+        if path == "/api/postings":
+            return self._with_db(lambda conn, cfg: tracker.postings_table_data(conn, cfg))
         self._error("not found", 404)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -94,6 +107,8 @@ class BoardHandler(BaseHTTPRequestHandler):
             "/api/status": self._set_status,
             "/api/event": self._add_event,
             "/api/note": self._set_note,
+            "/api/posting/status": self._set_posting_status,
+            "/api/posting/note": self._set_posting_note,
         }
         handler = routes.get(path)
         if handler is None:
@@ -170,11 +185,50 @@ class BoardHandler(BaseHTTPRequestHandler):
         )
         return {"board": tracker.board_data(conn, cfg)}
 
+    # -- postings ----------------------------------------------------------
+
+    @staticmethod
+    def _posting_id(payload: dict) -> int:
+        ident = payload.get("id")
+        if ident is None or not str(ident).isdigit():
+            raise TrackerError("id is required")
+        return int(ident)
+
+    def _set_posting_status(self, conn, cfg, payload: dict) -> dict:
+        status = str(payload.get("status") or "")
+        if not status:
+            raise TrackerError("status is required")
+        row = tracker.mark_posting(
+            conn,
+            cfg,
+            self._posting_id(payload),
+            status,
+            note=payload.get("note"),
+            expected_updated_at=payload.get("updated_at"),
+        )
+        return {
+            "posting": tracker.enrich_posting(dict(row), cfg),
+            "table": tracker.postings_table_data(conn, cfg),
+        }
+
+    def _set_posting_note(self, conn, cfg, payload: dict) -> dict:
+        row = tracker.set_posting_note(
+            conn, self._posting_id(payload), payload.get("text") or ""
+        )
+        return {
+            "posting": tracker.enrich_posting(dict(row), cfg),
+            "table": tracker.postings_table_data(conn, cfg),
+        }
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="CareerForge kanban board")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument(
+        "--view", choices=["board", "postings"], default="board",
+        help="which page to open: the applications kanban or the postings table",
+    )
     args = ap.parse_args()
 
     # Fail before binding a port if the tracker is not set up yet.
@@ -183,7 +237,9 @@ def main() -> int:
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), BoardHandler)
     url = f"http://127.0.0.1:{args.port}/"
-    print(f"CareerForge board: {url}")
+    if args.view == "postings":
+        url += "postings"
+    print(f"CareerForge board: http://127.0.0.1:{args.port}/  (postings: /postings)")
     print(f"database: {tracker.rel(paths.DB)}")
     print("Ctrl+C to stop.")
     if not args.no_browser:

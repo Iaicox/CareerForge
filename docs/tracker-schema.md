@@ -79,6 +79,31 @@ you got there.
 `UNIQUE(application_id, kind, path)`, so attaching the same file twice is not
 an error and not a duplicate row.
 
+
+### `postings`
+
+Every job posting ever seen — scraped by `/scrape`, scored by `/rank`,
+evaluated in `/apply`, applied to, or skipped with a reason. One table, so the
+scraper's deduplication and `/apply`'s memory of what was declined are the same
+thing. Written through `tools/shortlist.py`; `tracker.py add` marks the posting
+an application came from `applied` on its own.
+
+| Column | Notes |
+|---|---|
+| `id` | |
+| `url` | As found |
+| `url_key` | `normalize_url(url)` — scheme, `www.`, fragment, tracking parameters and a trailing slash dropped — or `company::title` when there is no URL. Unique: the deduplication key |
+| `title`, `company` | As the posting writes them |
+| `location`, `source`, `summary` | From the scrape; `source` is `apply` for a posting first seen in `/apply` |
+| `deadline` | ISO date or null, like `applications.deadline` |
+| `first_seen` | Date |
+| `status` | An id from `[[posting_statuses]]`: `new`, `ranked`, `maybe`, `applied`, `skipped`, `expired` by default |
+| `note` | Why it was skipped, or the caveat behind `maybe` |
+| `score`, `verdict`, `strengths`, `gaps`, `location_verdict`, `language_verdict`, `reason`, `scored_at` | What `/rank` wrote; `strengths` and `gaps` are JSON arrays |
+| `application_id` | → `applications`, set to null if the application is deleted |
+| `notion_page_id` | Set if this row is mirrored |
+| `created_at`, `updated_at` | |
+
 ### `meta` and `migrations`
 
 Bookkeeping, two columns each. `meta` holds `schema_version`; `migrations`
@@ -142,7 +167,10 @@ retried once fixed.
 
 Not every migration adds a column. `004_attachments_data_dir.sql` rewrites the
 rows of `attachments`: their paths are repo-relative, and the stage directories
-moved from the repo root to `data/pipeline/`.
+moved from the repo root to `data/pipeline/`. `005_postings.sql` creates the
+`postings` table on an existing database; `tracker.py init` then gives every
+application its `applied` row, and `shortlist.py import-json` brings the old
+`seen_jobs.json` in.
 
 ## Backups
 

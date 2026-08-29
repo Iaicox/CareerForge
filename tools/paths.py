@@ -33,7 +33,6 @@ PROFILE: Path
 PROFILE_EXAMPLE: Path
 DOCUMENTS: Path
 PIPELINE: Path
-JOB_SCRAPER: Path
 STATE: Path
 DB: Path
 NOTION_IDS: Path
@@ -58,8 +57,7 @@ def _layout(repo: Path) -> dict[str, Path]:
         "PROFILE_EXAMPLE": data / "profile.example",
         "DOCUMENTS": data / "documents",
         "PIPELINE": data / "pipeline",
-        "JOB_SCRAPER": data / "job_scraper",
-        "STATE": state,
+            "STATE": state,
         "DB": state / "careerforge.db",
         "NOTION_IDS": state / "notion.json",
         "GEMINI_LOG": state / "gemini-log",

@@ -11,7 +11,7 @@ framework, and daily work never writes there.
 | `profile.example/` | The templates that tell `/setup` what to collect | the framework — committed |
 | `documents/` | Raw material you drop in: old CVs, certificates, reviews. Read by `/setup` and `/expand`, never moved | you |
 | `pipeline/applications/` `pipeline/processing/` `pipeline/rejected/` | One folder per application, moved between the three by its status | `/apply`, `tools/tracker.py` |
-| `state/` | What the tools keep for themselves: `careerforge.db`, `notion.json`, Gemini logs and scratch, session digests. **Never edit by hand** — use `tools/tracker.py` | the tools |
+| `state/` | What the tools keep for themselves: `careerforge.db` (applications, and every posting ever seen), `notion.json`, Gemini logs and scratch, session digests. **Never edit by hand** — use `tools/tracker.py` and `tools/shortlist.py` | the tools |
 
 Two rules make the layout work:
 
