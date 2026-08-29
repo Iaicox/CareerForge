@@ -42,7 +42,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -55,11 +55,27 @@ EXIT_OK, EXIT_ERROR, EXIT_UNAVAILABLE, EXIT_TIMEOUT, EXIT_BAD_OUTPUT = 0, 1, 3, 
 
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
 
-# One retry on a rate limit the API says will clear within this many seconds;
-# a daily quota says "try again in hours" and is not worth waiting for.
-RETRY_DELAY_CEILING = 30
-# "High demand" (503) clears in seconds or not at all; two more tries, then stop.
+# Which models to try, in order. Two pools, because Google Search grounding
+# is a quota of its own: on a free-tier key 3.7 Flash answers a plain prompt
+# and refuses the same request with the search tool attached, while 2.5 Flash
+# grounds fine. Set [gemini] models / search_models in config.toml to change
+# them; a single `model` there is a preference that goes first.
+DEFAULT_MODELS = (
+    "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash",
+    "gemini-2.5-flash",
+)
+DEFAULT_SEARCH_MODELS = ("gemini-2.5-flash", "gemini-2.5-flash-lite")
+
+# "High demand" (503) clears in seconds or not at all; two more tries, then
+# the next model.
 OVERLOAD_BACKOFF = (5, 15)
+
+# Models the key does not know (404). Skipped until the process ends; the
+# next run asks again, in case the key gained access.
+UNKNOWN_MODELS: set[str] = set()
+
+# The model that answered the last successful call, for `check` and logs.
+LAST_MODEL: str | None = None
 
 
 class GeminiUnavailable(Exception):
@@ -81,14 +97,39 @@ class GeminiBadOutput(Exception):
 # ---------------------------------------------------------------------------
 
 
+def _pool(value: Any) -> list[str]:
+    """A comma-separated string or a list -> distinct model names, in order."""
+    if isinstance(value, str):
+        items = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        items = [str(v) for v in value]
+    else:
+        return []
+    out: list[str] = []
+    for item in items:
+        name = item.strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
 def settings() -> dict:
     try:
         cfg = load_config().data.get("gemini", {})
     except TrackerError:
         cfg = {}
+    models = _pool(cfg.get("models"))
+    if not models:
+        # A single `model` in config is a preference: it goes first, the
+        # defaults follow, so an older config keeps working with a pool behind it.
+        preferred = str(cfg.get("model") or "").strip()
+        models = ([preferred] if preferred else []) + [m for m in DEFAULT_MODELS if m != preferred]
+    search_models = _pool(cfg.get("search_models")) or list(DEFAULT_SEARCH_MODELS)
     return {
         "enabled": cfg.get("enabled", False),
-        "model": cfg.get("model", "gemini-2.5-flash"),
+        "models": models,
+        "search_models": search_models,
+        "model": models[0],
         "timeout_seconds": int(cfg.get("timeout_seconds", 120)),
         "cache_days": int(cfg.get("cache_days", 30)),
         "tasks": list(cfg.get("tasks", ["research", "extract", "rank", "summarize"])),
@@ -192,75 +233,149 @@ def retry_delay(error: dict) -> float | None:
     return float(m.group(1)) if m else None
 
 
-def call(prompt: str, *, kind: str = "call", model: str | None = None,
-         timeout: int | None = None, payload: str | None = None,
-         search: bool = False, json_mode: bool = False) -> str:
-    """Run one prompt and return the text of the answer.
+# ---------------------------------------------------------------------------
+# Cooldowns: a model that refused stays out of the rotation for a while
+# ---------------------------------------------------------------------------
 
-    `prompt` is the instruction; `payload` is bulk input -- a posting, a
-    document, a transcript -- and goes first, so instructions read as though
-    they follow the data. `search` attaches Google Search as a tool.
-    `json_mode` asks the API for JSON; it cannot be combined with a tool, so
-    a search call relies on the prompt and extract_json() instead.
-    """
-    s = settings()
-    if not s["enabled"]:
-        raise GeminiUnavailable("gemini is disabled in data/config/config.toml ([gemini] enabled)")
-    model = (model or s["model"]).strip()
-    limit = timeout or s["timeout_seconds"]
 
-    text = f"{payload}\n\n{prompt}" if payload else prompt
-    body: dict[str, Any] = {
-        "contents": [{"role": "user", "parts": [{"text": text}]}],
-        "generationConfig": {},
+def now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def cooldowns_path() -> Path:
+    return paths.GEMINI_COOLDOWNS
+
+
+def load_cooldowns() -> dict[str, dict]:
+    try:
+        data = json.loads(cooldowns_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_cooldowns(data: dict[str, dict]) -> None:
+    try:
+        cooldowns_path().parent.mkdir(parents=True, exist_ok=True)
+        cooldowns_path().write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass  # a cooldown that cannot be written costs one more refusal, no worse
+
+
+def cooling_until(model: str) -> datetime | None:
+    entry = load_cooldowns().get(model) or {}
+    try:
+        until = datetime.fromisoformat(entry["until"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=timezone.utc)
+    return until if until > now() else None
+
+
+def cool_down(model: str, until: datetime, reason: str) -> None:
+    data = load_cooldowns()
+    data[model] = {
+        "until": until.isoformat(timespec="seconds"),
+        "reason": reason,
+        "since": now().isoformat(timespec="seconds"),
     }
-    if search:
-        body["tools"] = [{"google_search": {}}]
-    elif json_mode:
-        body["generationConfig"]["responseMimeType"] = "application/json"
-    url = f"{API_ROOT}/models/{model}:generateContent"
+    save_cooldowns(data)
 
-    started = time.monotonic()
+
+def pacific_midnight_after(when: datetime) -> datetime:
+    """The next 00:00 in America/Los_Angeles after `when`, as UTC.
+
+    Gemini's daily free-tier quotas reset then. With no tz database at hand,
+    PST/PDT is worked out by the US rule: second Sunday of March to first
+    Sunday of November.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo("America/Los_Angeles")
+        local = when.astimezone(tz)
+        next_day = (local + timedelta(days=1)).date()
+        return datetime.combine(next_day, datetime.min.time(), tzinfo=tz).astimezone(timezone.utc)
+    except Exception:
+        pass
+
+    def offset_hours(utc: datetime) -> int:
+        def nth_sunday(month: int, n: int) -> datetime:
+            first = datetime(utc.year, month, 1, tzinfo=timezone.utc)
+            return first + timedelta(days=(6 - first.weekday()) % 7 + 7 * (n - 1))
+        start = nth_sunday(3, 2) + timedelta(hours=10)   # 02:00 PST = 10:00 UTC
+        end = nth_sunday(11, 1) + timedelta(hours=9)     # 02:00 PDT = 09:00 UTC
+        return -7 if start <= utc < end else -8
+
+    utc = when.astimezone(timezone.utc)
+    local = utc + timedelta(hours=offset_hours(utc))
+    wall = datetime.combine(local.date() + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    guess = wall - timedelta(hours=offset_hours(utc))
+    return wall - timedelta(hours=offset_hours(guess))
+
+
+def quota_kind(error: dict) -> str:
+    """'minute' or 'daily', from the quota the API names; the retry delay decides otherwise."""
+    blob = json.dumps(error, ensure_ascii=False).lower()
+    if re.search(r"per_?day|daily", blob):
+        return "daily"
+    if re.search(r"per_?minute", blob):
+        return "minute"
+    delay = retry_delay(error)
+    if delay is not None and delay <= 600:
+        return "minute"
+    return "daily"
+
+
+def cooldown_for(error: dict, at: datetime) -> tuple[datetime, str]:
+    """When a model that just answered 429 may be asked again, and why."""
+    kind = quota_kind(error)
+    delay = retry_delay(error)
+    if kind == "minute":
+        return at + timedelta(seconds=delay if delay is not None else 60), "per-minute limit"
+    if delay is not None:
+        return at + timedelta(seconds=delay), "daily quota (retryDelay)"
+    return pacific_midnight_after(at), "daily quota (resets at midnight America/Los_Angeles)"
+
+
+def _attempt(model: str, body: dict, limit: int, kind: str, prompt: str,
+             payload: str | None, search: bool, started: float) -> tuple[str, str]:
+    """One model. Returns ("ok", answer) or ("next", why); raises when no model would do better."""
+    url = f"{API_ROOT}/models/{model}:generateContent"
     overload_tries = 0
-    limit_retried = False
     while True:
         try:
             status, data = http_post(url, body, limit)
         except TimeoutError:
-            log_call(kind, prompt, {"error": f"timed out after {limit}s"}, payload)
-            raise GeminiTimeout(f"gemini timed out after {limit}s")
+            log_call(kind, prompt, {"error": f"{model}: timed out after {limit}s"}, payload)
+            return "next", f"timed out after {limit}s"
         error = data.get("error") if isinstance(data, dict) else None
         if status < 400 and not error:
             break
         error = error or {"code": status, "message": f"HTTP {status}"}
         message = str(error.get("message", "")).strip()
         if status == 429:
-            delay = retry_delay(error)
-            if delay is not None and delay <= RETRY_DELAY_CEILING and not limit_retried:
-                limit_retried = True
-                sleep(delay)
+            until, reason = cooldown_for(error, now())
+            cool_down(model, until, reason)
+            log_call(kind, prompt, {"error": {"model": model, **error}}, payload)
+            hint = " -- likely no Google Search grounding quota for this model" if search else ""
+            return "next", f"{reason}, back at {until:%Y-%m-%d %H:%M} UTC{hint}"
+        if status == 404:
+            UNKNOWN_MODELS.add(model)
+            log_call(kind, prompt, {"error": {"model": model, **error}}, payload)
+            return "next", "unknown to this key (404), skipped until restart"
+        if status in (500, 502, 503, 504):
+            if overload_tries < len(OVERLOAD_BACKOFF):
+                sleep(OVERLOAD_BACKOFF[overload_tries])
+                overload_tries += 1
                 continue
-            log_call(kind, prompt, {"error": error}, payload)
-            hint = (
-                " (a key that answers this model without search but not with it has "
-                "no Google Search grounding quota for it -- gemini-2.5-flash has some "
-                "on the free tier, or enable billing)" if search else ""
-            )
-            raise GeminiUnavailable(
-                f"quota exhausted for {model}{hint}: {message[:200]} -- work falls back to Claude"
-            )
-        if status in (500, 502, 503, 504) and overload_tries < len(OVERLOAD_BACKOFF):
-            sleep(OVERLOAD_BACKOFF[overload_tries])
-            overload_tries += 1
-            continue
-        log_call(kind, prompt, {"error": error}, payload)
+            log_call(kind, prompt, {"error": {"model": model, **error}}, payload)
+            return "next", f"overloaded (HTTP {status})"
+        log_call(kind, prompt, {"error": {"model": model, **error}}, payload)
         if status in (401, 403):
             raise GeminiUnavailable(f"not authenticated: {message[:200]}")
-        if status == 404:
-            raise GeminiUnavailable(f"model {model!r} is not available to this key: {message[:200]}")
-        if status in (500, 502, 503, 504):
-            raise GeminiUnavailable(f"{model} is overloaded (HTTP {status}): {message[:200]}")
-        raise GeminiUnavailable(f"gemini error (HTTP {status}): {message[:300]}")
+        raise GeminiUnavailable(f"gemini error (HTTP {status}) from {model}: {message[:300]}")
 
     candidates = data.get("candidates") or []
     parts = (candidates[0].get("content") or {}).get("parts") or [] if candidates else []
@@ -273,12 +388,68 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
         "grounded": bool(candidates and candidates[0].get("groundingMetadata")),
     }
     log_call(kind, prompt, {"response": answer, "stats": stats}, payload)
-
     if not answer.strip():
         blocked = (data.get("promptFeedback") or {}).get("blockReason")
-        why = blocked or stats["finish"] or "no candidates"
-        raise GeminiBadOutput(f"gemini returned nothing usable ({why})")
-    return answer
+        return "next", f"nothing usable ({blocked or stats['finish'] or 'no candidates'})"
+    return "ok", answer
+
+
+def call(prompt: str, *, kind: str = "call", model: str | None = None,
+         timeout: int | None = None, payload: str | None = None,
+         search: bool = False, json_mode: bool = False) -> str:
+    """Run one prompt through the pool and return the text of the answer.
+
+    `prompt` is the instruction; `payload` is bulk input -- a posting, a
+    document, a transcript -- and goes first, so instructions read as though
+    they follow the data. `search` attaches Google Search as a tool and picks
+    the search pool. `json_mode` asks the API for JSON; it cannot be combined
+    with a tool, so a search call relies on the prompt and extract_json().
+
+    A 429 puts the model on cooldown and moves on at once: a per-minute limit
+    for its retryDelay (a minute when it gives none), a daily quota until the
+    retryDelay it names or else the next midnight in Los Angeles. A 404 marks
+    the model unknown to this key until the process ends. An explicit `model`
+    is tried alone.
+    """
+    global LAST_MODEL
+    s = settings()
+    if not s["enabled"]:
+        raise GeminiUnavailable("gemini is disabled in data/config/config.toml ([gemini] enabled)")
+    limit = timeout or s["timeout_seconds"]
+    if model:
+        pool = [model.strip()]
+    else:
+        pool = list(s.get("search_models" if search else "models") or [s["model"]])
+
+    text = f"{payload}\n\n{prompt}" if payload else prompt
+    body: dict[str, Any] = {
+        "contents": [{"role": "user", "parts": [{"text": text}]}],
+        "generationConfig": {},
+    }
+    if search:
+        body["tools"] = [{"google_search": {}}]
+    elif json_mode:
+        body["generationConfig"]["responseMimeType"] = "application/json"
+
+    started = time.monotonic()
+    reasons: list[str] = []
+    for candidate in pool:
+        if candidate in UNKNOWN_MODELS:
+            reasons.append(f"{candidate}: unknown to this key, skipped")
+            continue
+        until = cooling_until(candidate)
+        if until:
+            reasons.append(f"{candidate}: cooling down until {until:%Y-%m-%d %H:%M} UTC")
+            continue
+        verdict, detail = _attempt(candidate, body, limit, kind, prompt, payload, search, started)
+        if verdict == "ok":
+            LAST_MODEL = candidate
+            return detail
+        reasons.append(f"{candidate}: {detail}")
+    which = "search pool" if search else "pool"
+    raise GeminiUnavailable(
+        f"no model in the {which} could answer -- " + "; ".join(reasons) + " -- work falls back to Claude"
+    )
 
 
 def extract_json(text: str) -> Any:
@@ -516,8 +687,12 @@ def read_input(path: str | None, inline: str | None) -> str:
 def cmd_check() -> int:
     s = settings()
     print(f"  enabled   {s['enabled']}")
-    print(f"  model     {s['model']}")
+    print(f"  models    {', '.join(s['models'])}")
+    print(f"  search    {', '.join(s['search_models'])}")
     print(f"  tasks     {', '.join(s['tasks']) or '(none)'}")
+    cooling = {m: e for m, e in load_cooldowns().items() if cooling_until(m)}
+    for m, e in cooling.items():
+        print(f"  cooling   {m}: {e.get('reason')} until {e.get('until')}")
     try:
         api_key()
         print("  key       GEMINI_API_KEY present")
@@ -527,17 +702,20 @@ def cmd_check() -> int:
     if not s["enabled"]:
         print("\n  set [gemini] enabled = true in data/config/config.toml to use it")
         return EXIT_UNAVAILABLE
-    started = time.monotonic()
-    try:
-        # The configured timeout, not a shorter one: a thinking model can take
-        # a minute over one word, and "timed out" would be the wrong verdict.
-        reply = call("Reply with exactly: OK", kind="check")
-    except (GeminiUnavailable, GeminiBadOutput) as exc:
-        print(f"\n  NOT USABLE: {exc}")
-        return getattr(exc, "exit_code", EXIT_UNAVAILABLE)
-    print(f"  live      yes ({reply.strip()[:40]}, {time.monotonic() - started:.1f}s)")
+    code = EXIT_OK
+    for label, search in (("plain", False), ("search", True)):
+        started = time.monotonic()
+        try:
+            # The configured timeout, not a shorter one: a thinking model can
+            # take a minute over one word, and "timed out" would be the wrong verdict.
+            reply = call("Reply with exactly: OK", kind="check", search=search)
+        except (GeminiUnavailable, GeminiBadOutput) as exc:
+            print(f"  {label:<9} NOT USABLE: {exc}")
+            code = getattr(exc, "exit_code", EXIT_UNAVAILABLE)
+            continue
+        print(f"  {label:<9} yes via {LAST_MODEL} ({reply.strip()[:20]}, {time.monotonic() - started:.1f}s)")
     print(f"  log       {rel(paths.GEMINI_LOG)}")
-    return EXIT_OK
+    return code
 
 
 def main() -> int:

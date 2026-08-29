@@ -37,6 +37,7 @@ STATE: Path
 DB: Path
 NOTION_IDS: Path
 GEMINI_LOG: Path
+GEMINI_COOLDOWNS: Path
 SESSION_DIGEST: Path
 MANUAL_ARTIFACT: Path
 ENV: Path
@@ -60,6 +61,7 @@ def _layout(repo: Path) -> dict[str, Path]:
         "DB": state / "careerforge.db",
         "NOTION_IDS": state / "notion.json",
         "GEMINI_LOG": state / "gemini-log",
+        "GEMINI_COOLDOWNS": state / "gemini-cooldowns.json",
         "SESSION_DIGEST": state / "session-digest",
         "MANUAL_ARTIFACT": repo / "docs" / "manual-artifact.html",
         "ENV": repo / ".env",

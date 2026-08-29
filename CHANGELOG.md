@@ -4,6 +4,17 @@
 
 ### Changed
 
+- **Gemini has two pools of models and sets a refused one aside.**
+  `[gemini] models` (everything without search) and `search_models`
+  (company research and salary figures, with Google Search attached) in
+  `config.toml`, tried in order. A 429 puts the model on cooldown and the next
+  one is asked at once: a per-minute limit for the API's retry delay or a
+  minute, a daily quota until the retry delay it names or the next midnight
+  in Los Angeles; a 404 skips the model for the rest of the run. Cooldowns
+  live in `data/state/gemini-cooldowns.json` and `gemini.py check` lists
+  them. Defaults: 3.7 → 3.6 → 3.5 → 3 → 2.5 Flash, and 2.5 Flash → 2.5 Flash
+  Lite for search; a single `model` in an older config goes first.
+
 - **Gemini is called over its REST API; the CLI is gone.** `tools/gemini.py`
   used to shell out to `gemini`. Version 0.56/0.57 of that CLI rewrites every
   model whose name ends in `flash` — `gemini-2.5-flash`, `gemini-3.7-flash` —
