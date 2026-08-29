@@ -574,10 +574,12 @@ Schema:
     if not isinstance(data, dict):
         raise GeminiBadOutput("research did not come back as an object")
     data.setdefault("name", name)
-    data["salary"] = []
     if role:
         # Its own call, so a refusal here costs the salary block, not the
         # research; the reason is kept where the reader of the cache sees it.
+        # The key is written only when the question was actually answered:
+        # research.get() refreshes an entry that has none, so a refusal is
+        # asked again tomorrow instead of standing for cache_days.
         try:
             data["salary"] = salary_figures(name, role, location)
         except (GeminiUnavailable, GeminiBadOutput) as exc:

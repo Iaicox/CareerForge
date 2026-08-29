@@ -323,8 +323,17 @@ class RestTransportTest(unittest.TestCase):
                           self.quota(None, "GenerateRequestsPerDayPerProjectPerModel-FreeTier")]
         data = gemini.research_company("Acme", role="Dev", location="Lisbon")
         self.assertEqual(data["what_they_do"], "x")
-        self.assertEqual(data["salary"], [])
         self.assertIn("no model in the search pool", data["salary_error"])
+        # No `salary` key: the question was asked and not answered, which is
+        # what research.get() reads to know the entry is worth refreshing. An
+        # empty list here would freeze a quota blip in for cache_days.
+        self.assertNotIn("salary", data)
+
+    def test_research_without_a_role_claims_nothing_about_pay(self):
+        # /interview researches with no --role. Writing salary: [] there would
+        # tell the later /apply that pay had been looked into.
+        self.responses = [(200, self.ok('{"name": "Acme", "what_they_do": "x"}'))]
+        self.assertNotIn("salary", gemini.research_company("Acme"))
 
     # -- 429: cooldown and move on ------------------------------------------
 
