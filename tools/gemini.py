@@ -241,8 +241,13 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
                 sleep(delay)
                 continue
             log_call(kind, prompt, {"error": error}, payload)
+            hint = (
+                " (a key that answers this model without search but not with it has "
+                "no Google Search grounding quota for it -- gemini-2.5-flash has some "
+                "on the free tier, or enable billing)" if search else ""
+            )
             raise GeminiUnavailable(
-                f"quota exhausted for {model}: {message[:200]} -- work falls back to Claude"
+                f"quota exhausted for {model}{hint}: {message[:200]} -- work falls back to Claude"
             )
         if status in (500, 502, 503, 504) and overload_tries < len(OVERLOAD_BACKOFF):
             sleep(OVERLOAD_BACKOFF[overload_tries])
@@ -524,7 +529,9 @@ def cmd_check() -> int:
         return EXIT_UNAVAILABLE
     started = time.monotonic()
     try:
-        reply = call("Reply with exactly: OK", kind="check", timeout=60)
+        # The configured timeout, not a shorter one: a thinking model can take
+        # a minute over one word, and "timed out" would be the wrong verdict.
+        reply = call("Reply with exactly: OK", kind="check")
     except (GeminiUnavailable, GeminiBadOutput) as exc:
         print(f"\n  NOT USABLE: {exc}")
         return getattr(exc, "exit_code", EXIT_UNAVAILABLE)

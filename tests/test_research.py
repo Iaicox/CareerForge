@@ -301,8 +301,18 @@ class RestTransportTest(unittest.TestCase):
             gemini.call("instruction")
         self.assertIn("quota", str(ctx.exception))
         self.assertIn("gemini-3.7-flash", str(ctx.exception))
+        self.assertNotIn("grounding", str(ctx.exception))
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(self.sleeps, [])
+
+    def test_a_quota_refusal_on_a_search_call_names_grounding(self):
+        # Seen live: gemini-3.7-flash answers a plain prompt and refuses the
+        # same key with google_search attached -- the free tier has no
+        # grounding quota for that model, and the message has to say so.
+        self.responses = [self.quota(None)]
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+            gemini.call("instruction", search=True)
+        self.assertIn("Google Search grounding", str(ctx.exception))
 
     def test_a_short_rate_limit_is_waited_out_once(self):
         self.responses = [self.quota("5s"), (200, self.ok("OK"))]
