@@ -123,6 +123,10 @@ class Config:
             ]
         return rows
 
+    def items(self, key: str) -> list[dict]:
+        """A config table by name, with the built-in defaults where they apply."""
+        return self._table(key)
+
     @property
     def statuses(self) -> list[dict]:
         return self._table("statuses")

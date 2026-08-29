@@ -58,6 +58,30 @@ P_HR_EMAIL = "Contact email"
 P_CV = "CV"
 P_COVER = "Cover letter"
 
+# The Postings database: every posting seen, mirrored from the `postings` table.
+PP_NAME = "Name"
+PP_COMPANY = "Company"
+PP_URL = "URL"
+PP_STATUS = "Status"
+PP_SCORE = "Score"
+PP_VERDICT = "Verdict"
+PP_DEADLINE = "Deadline"
+PP_SOURCE = "Source"
+PP_FIRST_SEEN = "First seen"
+PP_NOTE = "Note"
+PP_APPLICATION = "Application"
+
+# What a hand-kept database may already call these, for `adopt`. The title,
+# the one url and the one select are claimed by type first; these by name.
+ADOPT_ALIASES = {
+    PP_COMPANY: ("Company", "Компания"),
+    PP_NOTE: ("Note", "Notes", "Ньюансы", "Нюансы", "Заметки", "Комментарий"),
+    PP_SOURCE: ("Source", "Источник"),
+    PP_SCORE: ("Score", "Оценка"),
+    PP_DEADLINE: ("Deadline", "Дедлайн"),
+    PP_FIRST_SEEN: ("First seen", "Найдена"),
+}
+
 _last_call = 0.0
 
 
@@ -243,6 +267,12 @@ def plain(prop: dict | None) -> str:
     return ""
 
 
+def number_of(prop: dict | None) -> float | None:
+    if not prop or prop.get("type") != "number":
+        return None
+    return prop.get("number")
+
+
 def first_relation(prop: dict | None) -> str | None:
     if not prop or prop.get("type") != "relation":
         return None
@@ -250,16 +280,26 @@ def first_relation(prop: dict | None) -> str | None:
     return rel[0]["id"] if rel else None
 
 
+def fold_label(value: str) -> str:
+    """A label without its leading emoji or punctuation, case-folded.
+
+    Config labels carry an emoji ("📞 Скрининг"); a select typed by hand in
+    Notion usually does not ("Скрининг"). They are the same status.
+    """
+    return re.sub(r"^[^\w]+", "", (value or "").strip()).casefold()
+
+
 def match_by_label(cfg: tracker.Config, kind: str, label: str) -> str | None:
     """Map a Notion select label back to a configured id."""
     if not label:
         return None
     label = label.strip()
-    for item in cfg.data.get(kind, []):
+    wanted = fold_label(label)
+    for item in cfg.items(kind):
         if item["id"] == label:
             return item["id"]
         for value in (item.get("labels") or {}).values():
-            if value.strip() == label:
+            if value.strip() == label or fold_label(value) == wanted:
                 return item["id"]
     return None
 
@@ -270,7 +310,40 @@ def match_by_label(cfg: tracker.Config, kind: str, label: str) -> str | None:
 
 
 def status_options(cfg: tracker.Config, kind: str) -> list[dict]:
-    return [{"name": cfg.label(kind, item["id"])} for item in cfg.data.get(kind, [])]
+    return [{"name": cfg.label(kind, item["id"])} for item in cfg.items(kind)]
+
+
+def relation_to(entry: dict) -> dict:
+    """A relation's target, in whichever API shape this workspace exposes.
+
+    The data_sources endpoint wants a data_source_id and rejects a
+    database_id; the classic endpoint is the other way round.
+    """
+    if entry.get("data_source_id"):
+        return {"data_source_id": entry["data_source_id"], "single_property": {}}
+    return {"database_id": entry["database_id"], "single_property": {}}
+
+
+def postings_props(cfg: tracker.Config, applications: dict | None = None) -> dict:
+    """The Postings database schema; the relation only once Applications exists.
+
+    `applications` is its notion.json entry ({database_id, data_source_id}).
+    """
+    props: dict[str, Any] = {
+        PP_NAME: {"title": {}},
+        PP_COMPANY: {"rich_text": {}},
+        PP_URL: {"url": {}},
+        PP_STATUS: {"select": {"options": status_options(cfg, "posting_statuses")}},
+        PP_SCORE: {"number": {}},
+        PP_VERDICT: {"select": {"options": [{"name": v} for v in tracker.VERDICT_ORDER]}},
+        PP_DEADLINE: {"date": {}},
+        PP_SOURCE: {"rich_text": {}},
+        PP_FIRST_SEEN: {"date": {}},
+        PP_NOTE: {"rich_text": {}},
+    }
+    if applications:
+        props[PP_APPLICATION] = {"relation": relation_to(applications)}
+    return props
 
 
 # The select properties provision() fills from config, as
@@ -280,6 +353,7 @@ CONFIG_SELECTS = (
     ("applications", P_MODE, "work_modes"),
     ("events", "Type", "event_types"),
     ("events", "Outcome", "outcomes"),
+    ("postings", PP_STATUS, "posting_statuses"),
 )
 
 
@@ -373,13 +447,15 @@ def provision(parent_page: str, dry_run: bool) -> dict:
         ("companies", "Companies", companies_props),
         ("applications", "Applications", applications_props),
         ("events", "Events", events_props),
+        ("postings", "Postings", postings_props(cfg)),
     ]
     if dry_run:
         print("would create under page", parent["page_id"])
         for key, title, props in plan:
             print(f"  {title}: {', '.join(props)}")
-        print(f"  then link {P_COMPANY} (Applications -> Companies) "
-              "and Application (Events -> Applications)")
+        print(f"  then link {P_COMPANY} (Applications -> Companies), "
+              f"Application (Events -> Applications) and {PP_APPLICATION} "
+              "(Postings -> Applications)")
         return {}
 
     ids: dict[str, Any] = {"parent_page_id": parent["page_id"], "api_version": API_VERSION}
@@ -412,6 +488,12 @@ def provision(parent_page: str, dry_run: bool) -> dict:
         {"properties": {"Application": {"relation": {
             "database_id": created["applications"], "single_property": {}}}}},
     )
+    request(
+        "PATCH",
+        f"/databases/{created['postings']}",
+        {"properties": {PP_APPLICATION: {"relation": {
+            "database_id": created["applications"], "single_property": {}}}}},
+    )
     print("linked relations")
 
     save_ids(ids)
@@ -421,8 +503,206 @@ def provision(parent_page: str, dry_run: bool) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# adopt: an existing database becomes part of the mirror
+# ---------------------------------------------------------------------------
+
+
+def adopt_plan(cfg: tracker.Config, existing: dict, applications: dict | None
+               ) -> tuple[dict[str, str], dict[str, dict]]:
+    """How a hand-kept database becomes the Postings mirror, without losing a row.
+
+    Returns (renames {old name: new name}, additions {name: schema}). Properties
+    are renamed, never replaced, so what is in them stays. The title, the one
+    url and the one select are claimed by type; a second url or select is
+    refused rather than guessed at.
+    """
+    wanted = postings_props(cfg, applications)
+    types = {name: p.get("type") for name, p in existing.items()}
+    renames: dict[str, str] = {}
+    claimed: set[str] = set(name for name in existing if name in wanted)
+
+    def by_type(kind: str, target: str) -> None:
+        if target in existing:
+            return
+        candidates = [n for n, t in types.items() if t == kind and n not in claimed]
+        if len(candidates) > 1:
+            raise TrackerError(
+                f"{len(candidates)} {kind} properties ({', '.join(candidates)}); "
+                f"rename all but the one that is the {target} and retry"
+            )
+        if candidates:
+            renames[candidates[0]] = target
+            claimed.add(candidates[0])
+
+    by_type("title", PP_NAME)
+    by_type("url", PP_URL)
+    by_type("select", PP_STATUS)
+    for target, aliases in ADOPT_ALIASES.items():
+        if target in existing:
+            continue
+        expected = next(iter(wanted[target]))
+        for alias in aliases:
+            if alias in existing and alias not in claimed and types[alias] == expected:
+                renames[alias] = target
+                claimed.add(alias)
+                break
+
+    for name, schema in wanted.items():
+        expected = next(iter(schema))
+        if name in existing:
+            if types[name] != expected:
+                raise TrackerError(f"{name} is a {types[name]} in Notion; expected {expected}")
+    for old, new in renames.items():
+        expected = next(iter(wanted[new]))
+        if types[old] != expected:
+            raise TrackerError(f"{old} is a {types[old]} in Notion; {new} must be {expected}")
+
+    additions = {
+        name: schema for name, schema in wanted.items()
+        if name not in existing and name not in renames.values()
+    }
+    return renames, additions
+
+
+def do_adopt(kind: str, database: str, dry_run: bool) -> int:
+    if kind != "postings":
+        raise TrackerError("only the postings database can be adopted")
+    cfg = tracker.load_config()
+    ids = load_ids() if paths.NOTION_IDS.exists() else {"api_version": API_VERSION}
+    db = request("GET", f"/databases/{normalise_id(database)}")
+    entry: dict[str, str] = {"database_id": db["id"]}
+    sources = db.get("data_sources") or []
+    if sources:
+        entry["data_source_id"] = sources[0]["id"]
+    existing = request("GET", schema_path(entry)).get("properties", {})
+    apps = ids.get("applications") or None
+    renames, additions = adopt_plan(cfg, existing, apps)
+
+    title = "".join(t.get("plain_text", "") for t in db.get("title", [])) or db["id"]
+    print(f"adopting {title} as the Postings mirror")
+    for old, new in renames.items():
+        print(f"  rename  {old} -> {new}")
+    for name, schema in additions.items():
+        print(f"  add     {name} ({next(iter(schema))})")
+    if not renames and not additions:
+        print("  schema already matches")
+    if not apps:
+        print(f"  {PP_APPLICATION} relation skipped: no applications database in "
+              f"{tracker.rel(paths.NOTION_IDS)}")
+    if dry_run:
+        print("dry run: nothing written")
+        return 0
+
+    payload: dict[str, Any] = {old: {"name": new} for old, new in renames.items()}
+    payload.update(additions)
+    if payload:
+        request("PATCH", schema_path(entry), {"properties": payload})
+    ids["postings"] = entry
+    save_ids(ids)
+    print(f"wrote {tracker.rel(paths.NOTION_IDS)}")
+    print("Next: `notion_sync.py sync-options` (adds the status options the select "
+          "is missing), then `import --postings-only`, then `push`.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # import  (Notion -> SQLite)
 # ---------------------------------------------------------------------------
+
+
+def import_postings(conn, cfg: tracker.Config, ids: dict, dry_run: bool,
+                    mapping: dict[str, str] | None = None) -> None:
+    """Bring the Postings database in. Identity: page id, then the URL key.
+
+    A row already here keeps a terminal status and adopts the page's note where
+    it had none. A page whose URL matches an application is `applied` whatever
+    its label says. A label neither config nor --map knows lands as `new` with
+    the label kept at the front of the note, and is reported.
+    """
+    mapping = {k.strip(): v.strip() for k, v in (mapping or {}).items()}
+    pages = list(query_source(ids["postings"]))
+    print(f"postings in Notion: {len(pages)}")
+    added = present = unusable = 0
+    unmapped: set[str] = set()
+    for page in pages:
+        props = page.get("properties", {})
+        url = plain(props.get(PP_URL) or props.get("Ссылка")) or None
+        title = plain(props.get(PP_NAME) or props.get("Название")) or None
+        company = plain(props.get(PP_COMPANY) or props.get("Компания")) or None
+        note = plain(props.get(PP_NOTE) or props.get("Ньюансы") or props.get("Нюансы")) or None
+        label = plain(props.get(PP_STATUS) or props.get("Статус")).strip()
+        try:
+            key = tracker.posting_key(url, company, title)
+        except TrackerError:
+            unusable += 1
+            continue
+
+        status = mapping.get(label) if label else None
+        if status is None and label:
+            status = match_by_label(cfg, "posting_statuses", label)
+        apps = tracker.find_applications(conn, url=url) if url else []
+        application_id = int(apps[0]["id"]) if apps else None
+        if application_id:
+            status = "applied"
+        if status is None:
+            if label:
+                unmapped.add(label)
+                note = f"[{label}] {note}" if note else f"[{label}]"
+            status = "new"
+        try:
+            cfg.posting_status(status)
+        except TrackerError:
+            unmapped.add(status)
+            status = "new"
+
+        row = conn.execute(
+            "SELECT * FROM postings WHERE notion_page_id = ?", (page["id"],)
+        ).fetchone() or tracker.posting_by_key(conn, key)
+        if row is not None:
+            present += 1
+            if dry_run:
+                continue
+            sets: list[str] = []
+            params: list[Any] = []
+            if not row["notion_page_id"]:
+                sets.append("notion_page_id = ?"); params.append(page["id"])
+            if not row["note"] and note:
+                sets.append("note = ?"); params.append(note)
+            if not cfg.posting_is_terminal(row["status"]) and status != "new":
+                sets.append("status = ?"); params.append(status)
+            if application_id and not row["application_id"]:
+                sets.append("application_id = ?"); params.append(application_id)
+            if sets:
+                sets.append("updated_at = ?"); params.append(tracker.now())
+                params.append(row["id"])
+                with conn:
+                    conn.execute(f"UPDATE postings SET {', '.join(sets)} WHERE id = ?", params)
+            continue
+
+        added += 1
+        if dry_run:
+            continue
+        with conn:
+            tracker.insert_posting(conn, cfg, {
+                "url": url, "title": title, "company": company, "note": note,
+                "status": status, "application_id": application_id,
+                "notion_page_id": page["id"],
+                "first_seen": (page.get("created_time") or "")[:10] or None,
+                "score": number_of(props.get(PP_SCORE)),
+                "verdict": plain(props.get(PP_VERDICT)) or None,
+                "deadline": plain(props.get(PP_DEADLINE)) or None,
+                "source": plain(props.get(PP_SOURCE)) or None,
+            })
+
+    verb = "would import" if dry_run else "imported"
+    print(f"{verb}: {added} posting(s); already present: {present}")
+    if unusable:
+        print(f"  {unusable} page(s) had neither a URL nor a company and title, skipped")
+    if unmapped:
+        print("posting statuses with no match in [[posting_statuses]] or --map "
+              "(stored as 'new', label kept in the note):")
+        for s in sorted(unmapped):
+            print(f"  - {s}")
 
 
 def page_body_text(page_id: str) -> str:
@@ -525,10 +805,20 @@ def existing_event_id(
     return None
 
 
-def do_import(dry_run: bool, with_bodies: bool) -> int:
+def do_import(dry_run: bool, with_bodies: bool, with_postings: bool = True,
+              postings_only: bool = False, mapping: dict[str, str] | None = None) -> int:
     cfg = tracker.load_config()
     ids = load_ids()
     conn = tracker.connect()
+
+    if postings_only:
+        if "postings" not in ids:
+            conn.close()
+            raise TrackerError(f"no postings database in {tracker.rel(paths.NOTION_IDS)}; "
+                               "run `adopt postings <url>` or `provision` first")
+        import_postings(conn, cfg, ids, dry_run, mapping)
+        conn.close()
+        return 0
 
     companies: dict[str, dict] = {}
     for page in query_source(ids["companies"]):
@@ -655,7 +945,6 @@ def do_import(dry_run: bool, with_bodies: bool) -> int:
                 )
             events += 1
 
-    conn.close()
     verb = "would import" if dry_run else "imported"
     print(f"{verb}: {imported} application(s), {events} event(s)")
     print(f"already present: {skipped} application(s), {events_present} event(s)")
@@ -663,6 +952,9 @@ def do_import(dry_run: bool, with_bodies: bool) -> int:
         print("statuses with no match in data/config/config.toml (stored as 'draft'):")
         for s in sorted(unmapped_statuses):
             print(f"  - {s}")
+    if with_postings and "postings" in ids:
+        import_postings(conn, cfg, ids, dry_run, mapping)
+    conn.close()
     return 0
 
 
@@ -852,6 +1144,110 @@ def push_events(conn, ids: dict, detail: dict, app_page_id: str,
     return created, updated
 
 
+def posting_props(cfg: tracker.Config, row: dict, app_page_id: str | None,
+                  with_title: bool) -> dict:
+    """One posting as Notion properties.
+
+    Status, company, URL, source and score are the tracker's to overwrite. Note
+    is written when the tracker has one and never cleared, and Name is set only
+    on create -- the same reasons as an event's Outcome and title: a page typed
+    by hand says something the tracker cannot reproduce.
+    """
+    props: dict[str, Any] = {
+        PP_STATUS: {"select": {"name": cfg.label("posting_statuses", row["status"])}},
+        PP_COMPANY: {"rich_text": rich_text(row.get("company"))},
+        PP_URL: {"url": row.get("url") or None},
+        PP_SOURCE: {"rich_text": rich_text(row.get("source"))},
+        PP_SCORE: {"number": row.get("score")},
+    }
+    if row.get("first_seen"):
+        props[PP_FIRST_SEEN] = {"date": {"start": row["first_seen"]}}
+    if row.get("deadline"):
+        props[PP_DEADLINE] = {"date": {"start": row["deadline"]}}
+    if row.get("verdict"):
+        props[PP_VERDICT] = {"select": {"name": row["verdict"]}}
+    if row.get("note"):
+        props[PP_NOTE] = {"rich_text": rich_text(row["note"])}
+    if app_page_id:
+        props[PP_APPLICATION] = {"relation": [{"id": app_page_id}]}
+    if with_title:
+        props[PP_NAME] = {"title": [{"type": "text", "text": {
+            "content": row.get("title") or row.get("url") or "(untitled)"}}]}
+    return props
+
+
+def posting_index(ids: dict) -> dict[str, str]:
+    """Every page already in the Postings database, keyed like the table.
+
+    A hand-kept list holds pages the tracker never wrote; keyed on the same
+    normalised URL they are adopted, not duplicated.
+    """
+    index: dict[str, str] = {}
+    for page in query_source(ids["postings"]):
+        props = page.get("properties", {})
+        url = plain(props.get(PP_URL) or props.get("Ссылка"))
+        title = plain(props.get(PP_NAME) or props.get("Название"))
+        company = plain(props.get(PP_COMPANY) or props.get("Компания"))
+        try:
+            key = tracker.posting_key(url, company, title)
+        except TrackerError:
+            continue
+        index.setdefault(key, page["id"])
+    return index
+
+
+def push_postings(conn, cfg: tracker.Config, ids: dict, dry_run: bool) -> tuple[int, int]:
+    """Mirror the postings table. Returns (created, updated)."""
+    rows = tracker.list_postings(conn, cfg, all=True)
+    if not rows:
+        return 0, 0
+    app_pages = {
+        r["id"]: r["notion_page_id"]
+        for r in conn.execute("SELECT id, notion_page_id FROM applications")
+    }
+    index = posting_index(ids)
+    used: set[str] = set()
+    created = updated = 0
+    for row in rows:
+        page_id = row.get("notion_page_id")
+        if page_id and page_id in used:
+            print(f"  warning: posting #{row['id']} shares Notion page {page_id} with an "
+                  "earlier posting; only one of them can survive there. Clear one "
+                  "notion_page_id to give it a page of its own.")
+        if not page_id:
+            candidate = index.get(row["url_key"])
+            if candidate and candidate not in used:
+                page_id = candidate
+        if page_id:
+            used.add(page_id)
+        if dry_run:
+            if page_id:
+                updated += 1
+            else:
+                created += 1
+            continue
+
+        app_page = app_pages.get(row["application_id"]) if row.get("application_id") else None
+        props = posting_props(cfg, row, app_page, with_title=not page_id)
+        if page_id:
+            request("PATCH", f"/pages/{page_id}", {"properties": props})
+            updated += 1
+        else:
+            page = request("POST", "/pages",
+                           {"parent": source_parent(ids["postings"]), "properties": props})
+            page_id = page["id"]
+            used.add(page_id)
+            created += 1
+        if row.get("notion_page_id") != page_id:
+            with conn:
+                conn.execute(
+                    "UPDATE postings SET notion_page_id = ?, updated_at = updated_at WHERE id = ?",
+                    (page_id, row["id"]),
+                )
+        index[row["url_key"]] = page_id
+    return created, updated
+
+
 def company_page(conn, ids: dict, cache: dict, name: str, website: str | None,
                  description: str | None) -> str:
     if name in cache:
@@ -875,7 +1271,7 @@ def company_page(conn, ids: dict, cache: dict, name: str, website: str | None,
 
 
 def do_push(slug: str | None, with_files: bool, dry_run: bool,
-            with_events: bool = True) -> int:
+            with_events: bool = True, with_postings: bool = True) -> int:
     cfg = tracker.load_config()
     ids = load_ids()
     conn = tracker.connect()
@@ -964,20 +1360,44 @@ def do_push(slug: str | None, with_files: bool, dry_run: bool,
             print(f"  events: {ev_created - before[0]} created, "
                   f"{ev_updated - before[1]} updated")
 
-    conn.close()
     print(f"{'would push' if dry_run else 'pushed'}: {pushed} application(s)")
     if mirror_events:
         print(f"events: {'would create' if dry_run else 'created'} {ev_created}, "
               f"{'would update' if dry_run else 'updated'} {ev_updated}")
     elif with_events:
-        print("events: skipped -- no Events database in config/notion.json. "
+        print(f"events: skipped -- no Events database in {tracker.rel(paths.NOTION_IDS)}. "
               "Run `notion_sync.py provision` to create one.")
+
+    # Postings go across after the applications, so a posting can point at the
+    # page its application just got. One application (--slug) leaves them alone.
+    if with_postings and not slug:
+        if "postings" in ids:
+            p_created, p_updated = push_postings(conn, cfg, ids, dry_run)
+            print(f"postings: {'would create' if dry_run else 'created'} {p_created}, "
+                  f"{'would update' if dry_run else 'updated'} {p_updated}")
+        else:
+            print(f"postings: skipped -- no Postings database in {tracker.rel(paths.NOTION_IDS)}. "
+                  "Run `notion_sync.py provision`, or `adopt postings <url>` for an existing one.")
+    conn.close()
     return 0
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+
+def parse_map(value: str | None) -> dict[str, str]:
+    """`--map "Label=status,Other=status"` -> {label: status}."""
+    mapping: dict[str, str] = {}
+    for item in (value or "").split(","):
+        if not item.strip():
+            continue
+        if "=" not in item:
+            raise TrackerError(f"--map entries look like Label=status; got {item.strip()!r}")
+        label, status = item.split("=", 1)
+        mapping[label.strip()] = status.strip()
+    return mapping
 
 
 def main() -> int:
@@ -993,16 +1413,29 @@ def main() -> int:
         help="bring the mirror's select options back in step with config")
     so.add_argument("--dry-run", action="store_true")
 
+    ad = sub.add_parser("adopt", help="make an existing Notion database part of the mirror")
+    ad.add_argument("kind", choices=["postings"])
+    ad.add_argument("database", help="database id or URL")
+    ad.add_argument("--dry-run", action="store_true")
+
     im = sub.add_parser("import", help="copy Notion into the local tracker")
     im.add_argument("--dry-run", action="store_true")
     im.add_argument("--no-bodies", action="store_true",
                     help="skip page bodies (much faster, loses posting/letter text)")
+    im.add_argument("--postings-only", action="store_true",
+                    help="only the Postings database")
+    im.add_argument("--no-postings", action="store_true",
+                    help="leave the Postings database alone")
+    im.add_argument("--map", help='posting status labels config does not know, '
+                                  'as "Label=status,Other label=status"')
 
     pu = sub.add_parser("push", help="copy the local tracker into Notion")
     pu.add_argument("--slug", help="one application instead of all")
     pu.add_argument("--files", action="store_true", help="also upload the built PDFs")
     pu.add_argument("--no-events", action="store_true",
                     help="applications and companies only, leave event pages alone")
+    pu.add_argument("--no-postings", action="store_true",
+                    help="leave the Postings database alone")
     pu.add_argument("--dry-run", action="store_true")
 
     args = ap.parse_args()
@@ -1011,9 +1444,14 @@ def main() -> int:
         return 0
     if args.command == "sync-options":
         return do_sync_options(args.dry_run)
+    if args.command == "adopt":
+        return do_adopt(args.kind, args.database, args.dry_run)
     if args.command == "import":
-        return do_import(args.dry_run, not args.no_bodies)
-    return do_push(args.slug, args.files, args.dry_run, not args.no_events)
+        mapping = parse_map(args.map)
+        return do_import(args.dry_run, not args.no_bodies, not args.no_postings,
+                         args.postings_only, mapping)
+    return do_push(args.slug, args.files, args.dry_run, not args.no_events,
+                   not args.no_postings)
 
 
 if __name__ == "__main__":

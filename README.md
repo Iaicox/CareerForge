@@ -146,10 +146,12 @@ python tools/notion_sync.py provision --parent-page <page URL>   # creates the d
 python tools/notion_sync.py push --files                         # local -> Notion
 ```
 
-`provision` builds the three linked databases from your own configured statuses,
-so there is no template to duplicate by hand. SQLite stays the source of truth;
-Notion is a mirror. `import` runs the other way, for moving an existing Notion
-tracker in.
+`provision` builds the four linked databases — companies, applications,
+events, and every posting seen — from your own configured statuses, so there
+is no template to duplicate by hand. SQLite stays the source of truth; Notion
+is a mirror. `import` runs the other way, for moving an existing Notion tracker
+in; `adopt postings <database URL>` turns a list of postings you already keep
+in Notion into the mirror in place.
 
 ## How your data is kept separate
 

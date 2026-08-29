@@ -43,9 +43,9 @@ python tools/notion_sync.py provision --parent-page <page URL> --dry-run
 python tools/notion_sync.py provision --parent-page <page URL>
 ```
 
-This creates three linked databases — Companies, Applications, Events —
-**with the statuses, work modes, event types and outcomes from your own
-`data/config/config.toml`**. There is no template to duplicate and no ids to
+This creates four linked databases — Companies, Applications, Events,
+Postings — **with the statuses, work modes, event types, outcomes and posting
+statuses from your own `data/config/config.toml`**. There is no template to duplicate and no ids to
 transcribe; the ids it gets back are written to `data/state/notion.json`
 (gitignored).
 
@@ -73,10 +73,11 @@ you are sure nothing uses it.
 
 ```bash
 python tools/notion_sync.py sync-options       # after editing data/config/config.toml
-python tools/notion_sync.py push               # applications, companies, events
+python tools/notion_sync.py push               # applications, companies, events, postings
 python tools/notion_sync.py push --files       # also upload the built PDFs
-python tools/notion_sync.py push --slug acme   # just one application
+python tools/notion_sync.py push --slug acme   # just one application (postings left alone)
 python tools/notion_sync.py push --no-events   # leave event pages alone
+python tools/notion_sync.py push --no-postings # leave the Postings database alone
 python tools/notion_sync.py push --dry-run     # counts only, writes nothing
 ```
 
@@ -118,6 +119,55 @@ authoritative" would have thrown all of it away.
 Event `notes` stay local: the Events database `provision` creates has no field
 for them, so there is nowhere to put them.
 
+## The postings list
+
+Every posting the tracker has seen — scraped, scored, declined, applied to —
+goes across too, as the Postings database: title, company, URL, status, score
+and verdict from `/rank`, deadline, source, first seen, the note, and a
+relation to the application it became. One page per row, keyed by
+`postings.notion_page_id` and, for a page that has none, by the posting URL
+with tracking parameters stripped — so a page you typed by hand is adopted,
+not duplicated.
+
+The tracker owns status, company, URL, source, score, verdict and the dates,
+and overwrites them. Two things follow the events' rules: **the title is set
+once, on create**, and **the note is written when the tracker has one and
+never cleared** — a nuance typed on the phone says something the tracker
+cannot reproduce. Status is edited locally, in `/board postings` or with
+`shortlist.py mark`; the phone reads.
+
+A full push sends every row, one request each at Notion's pace — about a
+minute per two hundred postings. `--slug` pushes never touch postings.
+
+### Adopting a list you already keep
+
+If you already have a Notion database of postings — a title, a company, a
+link, a status select, a notes column — it becomes the mirror in place rather
+than being replaced:
+
+```bash
+python tools/notion_sync.py adopt postings <database URL> --dry-run
+python tools/notion_sync.py adopt postings <database URL>
+python tools/notion_sync.py sync-options
+python tools/notion_sync.py import --postings-only --map "Есть ньюанс=maybe,Дубль=skipped" --dry-run
+python tools/notion_sync.py import --postings-only --map "Есть ньюанс=maybe,Дубль=skipped"
+python tools/notion_sync.py push
+```
+
+`adopt` **renames** the properties it recognises — the title, the one url, the
+one select, and a text column called Company/Компания or Note/Ньюансы — to the
+mirror's names, keeping every row, and **adds** the ones that are missing. A
+database with two url or two select properties is refused rather than guessed
+at. `sync-options` then adds the status options the select lacks; your old
+options stay, and are reported.
+
+`import --postings-only` brings the rows in. A label your config knows — with
+or without its emoji — maps to that status; a label it does not is mapped with
+`--map`, or lands as `new` with the label kept at the front of the note. A page
+whose URL matches an application is `applied` whatever its label says. A row
+already in the tracker keeps a terminal status it has and adopts the page's
+note where it had none.
+
 `--dry-run` reports what it would create and update without writing, and it
 accounts for the pages it would have claimed, so its numbers match the real run.
 
@@ -133,9 +183,12 @@ If you already track applications in Notion and want to move to CareerForge:
 {
   "applications": { "database_id": "…", "data_source_id": "…" },
   "companies":    { "database_id": "…" },
-  "events":       { "database_id": "…" }
+  "events":       { "database_id": "…" },
+  "postings":     { "database_id": "…", "data_source_id": "…" }
 }
 ```
+
+`postings` is optional; without it, postings are skipped with a message.
 
 `data_source_id` is optional — the adapter falls back to the classic
 `/databases/{id}/query` endpoint when it is absent or rejected.
@@ -181,7 +234,7 @@ across. `--no-bodies` is much faster if you do not need them.
   `tracker.py attach` records them.
 - **Rollups and formulas.** `last_event_date` is computed by the local view
   instead.
-- **Page comments and anything outside the three databases.**
+- **Page comments and anything outside the four databases.**
 
 ## After migrating
 

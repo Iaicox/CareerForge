@@ -142,8 +142,9 @@ Statuses come from `[[posting_statuses]]` in `data/config/config.toml`
 Only when `data/config/config.toml` has `notion.enabled = true`:
 
 ```bash
-python tools/notion_sync.py push          # local -> Notion, including PDFs
+python tools/notion_sync.py push          # local -> Notion: applications, events, postings (and PDFs with --files)
 python tools/notion_sync.py import        # Notion -> local (one-time migration)
+python tools/notion_sync.py adopt postings <database url>   # an existing Notion list of postings becomes the mirror
 ```
 
 SQLite stays the source of truth. If the two disagree, local wins.
