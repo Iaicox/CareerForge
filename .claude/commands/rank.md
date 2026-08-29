@@ -8,8 +8,9 @@ argument-hint: "[--all] [--min-score N]"
 `/scrape` finds postings. This decides which of them deserve the hour that
 `/apply` costs.
 
-Scores persist into `data/job_scraper/seen_jobs.json`. A triage finding that only
-ever reached the console is one you pay for again next week.
+Scores persist into the tracker's `postings` table, and a scored posting moves
+from `new` to `ranked`. A triage finding that only ever reached the console is
+one you pay for again next week.
 
 `$ARGUMENTS`:
 
@@ -36,14 +37,14 @@ Report how many, then leave them alone unless `--all` was passed.
 Write the selection to a file — step 3 scores that file and nothing else.
 
 ```bash
-python tools/shortlist.py show --unscored --json        > /tmp/to_rank.json  # default
-python tools/shortlist.py show --include-expired --json > /tmp/to_rank.json  # with --all
+python tools/shortlist.py show --unscored --json > /tmp/to_rank.json  # default
+python tools/shortlist.py show --all --json      > /tmp/to_rank.json  # with --all
 ```
 
 If the file is an empty list, say so and stop. Do not invent work.
 
-Entries marked `verdict` with a trailing `*` in the table carry a coarse rating
-inherited from before this command existed — they still count as unscored.
+A verdict without a score is a coarse rating inherited from before this
+command existed — such a posting still counts as unscored.
 
 ## Step 3: score
 
@@ -56,10 +57,10 @@ python tools/gemini.py rank \
   --criteria data/profile/evaluation.md > /tmp/ranking.json
 ```
 
-**Score the file from step 2, never `data/job_scraper/seen_jobs.json`.** That file
-is every posting ever seen: passing it re-scores the whole history on every
-run, expired entries included, and `merge-scores` then overwrites scores that
-were already good. Step 1 exists to take expired postings out of the run.
+**Score the file from step 2, never `show --all`.** That is every posting ever
+seen: passing it re-scores the whole history on every run, applied and expired
+entries included, and `merge-scores` then overwrites scores that were already
+good. Step 1 exists to take expired postings out of the run.
 
 Exit code 3 means Gemini is unavailable — not an error. Score them yourself
 instead, using `.claude/skills/job-application-assistant/references/job-evaluation.md`

@@ -26,7 +26,6 @@ CareerForge/
     ├── profile.example/          templates that tell /setup what to collect  (committed)
     ├── documents/                raw material you dropped in
     ├── pipeline/                 applications/ processing/ rejected/
-    ├── job_scraper/              seen postings
     └── state/                    careerforge.db, notion.json, logs  <- what the tools write
 ```
 
@@ -111,10 +110,16 @@ verification checklist (CLAUDE.md)          reported pass/fail
 
 ## The tracker as shared layer
 
-`tools/tracker.py` is both the CLI and the data-access module. `board.py` and
-`notion_sync.py` import it rather than opening the database themselves, so the
-rules — deduplication, validation against the configured ids, folder movement,
-optimistic locking — hold no matter which surface is used.
+`tools/tracker.py` is both the CLI and the data-access module. `board.py`,
+`shortlist.py` and `notion_sync.py` import it rather than opening the database
+themselves, so the rules — deduplication, validation against the configured
+ids, folder movement, optimistic locking — hold no matter which surface is used.
+
+The same database holds every posting ever seen (`postings`), keyed on a
+normalised URL. The scraper used to keep that in a JSON file of its own, with
+its own idea of what made two URLs the same; `/apply` never wrote to it, so a
+posting declined there came back on the next scrape. One table, one key,
+written by `shortlist.py` and by `tracker.py add` itself.
 
 ```
              tracker.py  (CLI + module)
@@ -132,7 +137,8 @@ instead of silently overwriting.
 
 ## The board
 
-`tools/board.py` serves one HTML page and a small JSON API on `127.0.0.1` only.
+`tools/board.py` serves two HTML pages — the kanban and the postings table —
+and a small JSON API on `127.0.0.1` only.
 It writes to disk — a drag moves folders — so it also rejects any request whose
 `Host` header is not loopback, which is what stops a web page you happen to have
 open from driving it via DNS rebinding.

@@ -4,6 +4,28 @@
 
 ### Changed
 
+- **Every posting ever seen is a row in the tracker.** The scraper kept its
+  own JSON file, keyed on the raw URL; `/apply` never wrote to it, and the
+  tracker compared URLs with its own bare `strip()` — so a LinkedIn link with a
+  different `?trk=` was a new posting, and a role declined in `/apply` came
+  back on the next scrape at full price. Now a `postings` table (migration
+  `005`) holds scraped, ranked, evaluated and applied-to postings alike, keyed
+  on a normalised URL (scheme, `www.`, fragment, tracking parameters and the
+  trailing slash dropped). `tracker.py add` marks the posting an application
+  came from `applied`; `/apply` records a decline as `skipped` with the reason;
+  `/scrape` asks `shortlist.py check` before fetching anything. Statuses are
+  configuration — `[[posting_statuses]]`, with `maybe` for a posting kept in
+  view with a caveat — and fall back to the defaults when the block is absent.
+
+  `tools/shortlist.py` keeps its verbs (`show`, `add`, `merge-scores`, `sweep`)
+  over the table and gains `check`, `mark` and a one-time `import-json` for the
+  old file, which re-keys its hand-made slugs on the URL and keeps every
+  `skipped` note. `data/job_scraper/` is gone with it.
+
+  `/board postings` opens a second page on the board server: the table with the
+  status as a select, the note editable in place, filters for status, score
+  and text. The kanban links to it.
+
 - **Everything yours now lives under `data/`.** Seven user directories used to
   sit at the repo root between the framework's own; finding an application
   meant scanning three of them, and `.gitignore` needed seven blocks to draw the

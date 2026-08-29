@@ -172,6 +172,43 @@ labels = { en = "Withdrawn", ru = "🚫 Отозвал" }
 
 
 # ---------------------------------------------------------------------------
+# Posting statuses: where a job posting stands, from the moment it is seen.
+# Every posting /scrape found, /rank scored, /apply evaluated or you applied to
+# lives in the tracker's `postings` table with one of these. `terminal` ones are
+# hidden from the shortlist by default. Leave the block out and these defaults
+# apply; edit it to rename or translate.
+# ---------------------------------------------------------------------------
+
+[[posting_statuses]]
+id = "new"
+labels = { en = "New", ru = "🆕 Новая" }
+
+[[posting_statuses]]
+id = "ranked"
+labels = { en = "Ranked", ru = "📊 Оценена" }
+
+# Evaluated, with a caveat, not decided.
+[[posting_statuses]]
+id = "maybe"
+labels = { en = "Maybe", ru = "🤔 Есть нюанс" }
+
+[[posting_statuses]]
+id = "applied"
+terminal = true
+labels = { en = "Applied", ru = "📤 Откликнулся" }
+
+[[posting_statuses]]
+id = "skipped"
+terminal = true
+labels = { en = "Skipped", ru = "⏭ Не подходит" }
+
+[[posting_statuses]]
+id = "expired"
+terminal = true
+labels = { en = "Expired", ru = "⌛ Истекла" }
+
+
+# ---------------------------------------------------------------------------
 # Work modes
 # ---------------------------------------------------------------------------
 

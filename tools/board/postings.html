@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CareerForge postings</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #16181d;
+    --muted: #6b7280;
+    --line: #e2e5ea;
+    --accent: #3b6ef5;
+    --danger: #c0392b;
+    --ok: #1e7f4f;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --panel: #1c1f25;
+      --ink: #e8eaed;
+      --muted: #9aa1ac;
+      --line: #2b2f37;
+      --accent: #6d93ff;
+      --danger: #ff6b5b;
+      --ok: #4cc38a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 14px;
+    padding: 14px 18px; border-bottom: 1px solid var(--line);
+    background: var(--panel); position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .01em; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  header a.nav { color: var(--muted); text-decoration: none; font-size: 13px; }
+  header a.nav:hover { color: var(--accent); }
+  header button {
+    margin-left: auto; font: inherit; padding: 5px 11px; cursor: pointer;
+    background: transparent; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 7px;
+  }
+  header button:hover { border-color: var(--accent); color: var(--accent); }
+
+  #filters {
+    display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+    padding: 12px 18px; border-bottom: 1px solid var(--line);
+  }
+  #filters label { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
+  input, select, button { font: inherit; color: inherit; }
+  input, select {
+    padding: 5px 8px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  #filters input[type=search] { min-width: 220px; }
+  #filters input[type=number] { width: 70px; }
+
+  .wrap { padding: 12px 18px 40px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; background: var(--panel);
+          border: 1px solid var(--line); border-radius: var(--radius); }
+  th, td { text-align: left; vertical-align: top; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+       font-weight: 650; white-space: nowrap; position: sticky; top: 49px; background: var(--panel); }
+  tbody tr:hover { background: var(--bg); }
+  tbody tr.terminal td { color: var(--muted); }
+  td.co { font-weight: 620; white-space: nowrap; }
+  td.title { min-width: 220px; }
+  td.title a { color: var(--accent); text-decoration: none; }
+  td.title a:hover { text-decoration: underline; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.status select { padding: 3px 6px; }
+  td.note { min-width: 260px; max-width: 460px; color: var(--muted); cursor: text; }
+  td.note:hover { color: var(--ink); }
+  td.note.editing { padding: 3px 6px; }
+  td.note textarea { width: 100%; min-height: 60px; padding: 5px 7px; background: var(--bg);
+                     border: 1px solid var(--accent); border-radius: 6px; resize: vertical; }
+  td.app { white-space: nowrap; font-size: 12px; color: var(--muted); }
+  .badge {
+    font-size: 10.5px; padding: 1px 6px; border-radius: 999px;
+    border: 1px solid currentColor; white-space: nowrap;
+  }
+  .badge.strong, .badge.good { color: var(--ok); }
+  .badge.weak, .badge.poor { color: var(--danger); }
+  .badge.warn { color: var(--danger); }
+  #toast {
+    position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+    max-width: 620px; padding: 10px 14px; border-radius: 8px;
+    background: var(--panel); border: 1px solid var(--danger); color: var(--danger);
+    box-shadow: 0 6px 22px rgba(0,0,0,.18); z-index: 20; display: none;
+  }
+  #toast.ok { border-color: var(--ok); color: var(--ok); }
+  .empty { color: var(--muted); padding: 40px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CareerForge</h1>
+  <a class="nav" href="/">Applications</a>
+  <span class="meta">Postings</span>
+  <span class="meta" id="meta"></span>
+  <button id="refresh">Refresh</button>
+</header>
+
+<div id="filters">
+  <label>Status <select id="fStatus"></select></label>
+  <label>Min score <input id="fScore" type="number" min="0" max="100" step="5"></label>
+  <label><input id="fSearch" type="search" placeholder="company or title"></label>
+</div>
+
+<div class="wrap"><div id="table"><p class="empty">Loading&hellip;</p></div></div>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+const tableEl = document.getElementById("table");
+const metaEl  = document.getElementById("meta");
+const toastEl = document.getElementById("toast");
+const fStatus = document.getElementById("fStatus");
+const fScore  = document.getElementById("fScore");
+const fSearch = document.getElementById("fSearch");
+
+let state = null;
+let toastTimer = null;
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function toast(message, ok = false) {
+  toastEl.textContent = message;
+  toastEl.classList.toggle("ok", ok);
+  toastEl.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastEl.style.display = "none"; }, ok ? 3200 : 8000);
+}
+
+async function api(path, body) {
+  const res = await fetch(path, body ? {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  } : undefined);
+  const data = await res.json().catch(() => ({ error: res.statusText }));
+  if (!res.ok) throw new Error(data.error || "request failed");
+  return data;
+}
+
+// The status filter remembers itself per browser; everything else is per load.
+function rememberedFilter() {
+  try { return localStorage.getItem("postings.status") || "open"; } catch (e) { return "open"; }
+}
+function rememberFilter(value) {
+  try { localStorage.setItem("postings.status", value); } catch (e) { /* private mode */ }
+}
+
+async function load() {
+  try {
+    state = await api("/api/postings");
+    if (!fStatus.options.length) {
+      fStatus.innerHTML = [
+        `<option value="open">open (not applied, skipped or expired)</option>`,
+        `<option value="all">everything</option>`,
+      ].concat(state.statuses.map((s) => `<option value="${esc(s.id)}">${esc(s.label)}</option>`)).join("");
+      fStatus.value = rememberedFilter();
+      if (!fStatus.value) fStatus.value = "open";
+    }
+    render();
+  } catch (err) {
+    tableEl.innerHTML = `<p class="empty">${esc(err.message)}</p>`;
+  }
+}
+
+function visibleRows() {
+  const filter = fStatus.value;
+  const min = fScore.value === "" ? null : Number(fScore.value);
+  const q = fSearch.value.trim().toLowerCase();
+  return state.rows.filter((r) => {
+    if (filter === "open" && r.terminal) return false;
+    if (filter !== "open" && filter !== "all" && r.status !== filter) return false;
+    if (min !== null && (r.score ?? -1) < min) return false;
+    if (q && !(`${r.company ?? ""} ${r.title ?? ""}`.toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+
+function statusSelect(row) {
+  const opts = state.statuses
+    .map((s) => `<option value="${esc(s.id)}"${s.id === row.status ? " selected" : ""}>${esc(s.label)}</option>`)
+    .join("");
+  return `<select data-id="${row.id}">${opts}</select>`;
+}
+
+function render() {
+  const rows = visibleRows();
+  metaEl.textContent = `${rows.length} of ${state.total} posting${state.total === 1 ? "" : "s"}`;
+  if (!rows.length) {
+    tableEl.innerHTML = `<p class="empty">Nothing matches.</p>`;
+    return;
+  }
+  const body = rows.map((r) => {
+    const title = r.url
+      ? `<a href="${esc(r.url)}" target="_blank" rel="noreferrer">${esc(r.title || r.url)}</a>`
+      : esc(r.title || "—");
+    const verdict = r.verdict ? `<span class="badge ${esc(r.verdict)}">${esc(r.verdict)}</span>` : "";
+    const expired = r.is_expired && !r.terminal ? ` <span class="badge warn">past deadline</span>` : "";
+    const app = r.application_slug ? `&rarr; ${esc(r.application_slug)}` : "";
+    return `<tr class="${r.terminal ? "terminal" : ""}" data-id="${r.id}">
+      <td class="co">${esc(r.company || "—")}</td>
+      <td class="title">${title}${expired}</td>
+      <td class="status">${statusSelect(r)}</td>
+      <td class="num">${r.score ?? ""}</td>
+      <td>${verdict}</td>
+      <td class="num">${esc(r.deadline || "")}</td>
+      <td>${esc(r.source || "")}</td>
+      <td class="num">${esc(r.first_seen || "")}</td>
+      <td class="note" data-id="${r.id}" title="click to edit">${esc(r.note || "")}</td>
+      <td class="app">${app}</td>
+    </tr>`;
+  }).join("");
+  tableEl.innerHTML = `<table>
+    <thead><tr>
+      <th>Company</th><th>Title</th><th>Status</th><th>Score</th><th>Verdict</th>
+      <th>Deadline</th><th>Source</th><th>First seen</th><th>Note</th><th></th>
+    </tr></thead>
+    <tbody>${body}</tbody></table>`;
+
+  tableEl.querySelectorAll("td.status select").forEach((sel) => {
+    sel.addEventListener("change", () => setStatus(Number(sel.dataset.id), sel.value));
+  });
+  tableEl.querySelectorAll("td.note").forEach((td) => {
+    td.addEventListener("click", () => editNote(td, Number(td.dataset.id)));
+  });
+}
+
+function rowById(id) {
+  return state.rows.find((r) => r.id === id) || null;
+}
+
+async function setStatus(id, status) {
+  const row = rowById(id);
+  if (!row || row.status === status) return;
+  try {
+    const res = await api("/api/posting/status", { id, status, updated_at: row.updated_at });
+    state = res.table;
+    render();
+    toast(`${row.company || "Posting"}: ${res.posting.status_label}`, true);
+  } catch (err) {
+    toast(err.message);
+    load();  // the server refused; show the truth rather than our stale copy
+  }
+}
+
+function editNote(td, id) {
+  if (td.classList.contains("editing")) return;
+  const row = rowById(id);
+  if (!row) return;
+  td.classList.add("editing");
+  td.innerHTML = `<textarea>${esc(row.note || "")}</textarea>`;
+  const area = td.querySelector("textarea");
+  area.focus();
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    const text = area.value.trim();
+    if (!save || text === (row.note || "")) { render(); return; }
+    try {
+      const res = await api("/api/posting/note", { id, text });
+      state = res.table;
+      render();
+      toast("Note saved", true);
+    } catch (err) { toast(err.message); load(); }
+  };
+  area.addEventListener("blur", () => finish(true));
+  area.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") finish(false);
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) finish(true);
+  });
+}
+
+fStatus.addEventListener("change", () => { rememberFilter(fStatus.value); render(); });
+fScore.addEventListener("input", render);
+fSearch.addEventListener("input", render);
+document.getElementById("refresh").addEventListener("click", load);
+// The agent may change the table while this tab sits in the background.
+window.addEventListener("focus", load);
+load();
+</script>
+</body>
+</html>

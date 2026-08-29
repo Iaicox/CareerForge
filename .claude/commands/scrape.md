@@ -15,26 +15,30 @@ Run the **job-scraper** skill (`.claude/skills/job-scraper/SKILL.md`) with
 If `data/profile/search-queries.md` does not exist, stop and offer
 `/setup --section search`.
 
-## Deduplicate against both sources
+## Deduplicate
 
-Before presenting anything, drop what is already known:
+Every posting ever seen — scraped, ranked, declined in `/apply`, applied to —
+is in the tracker's `postings` table. Before fetching or presenting anything:
 
 ```bash
-python tools/shortlist.py show --include-expired --json   # already seen
-python tools/tracker.py list --json                       # already applied to
+python tools/shortlist.py check <url> [<url> ...]
 ```
+
+Anything it reports as known is dropped; a `skipped` one comes with the reason.
 
 ## Record what was found
 
-Do not hand-edit `seen_jobs.json`. Feed the postings in:
+Never write to the table directly. Feed the postings in:
 
 ```bash
 python tools/shortlist.py add --file <postings.json>
 ```
 
 Each posting: `title`, `company`, `url`, `location`, `source`, `deadline`,
-`summary`. Free-text deadlines (`ASAP`, `rolling`) are stored as none rather
-than as unsortable text; the wording belongs in the summary if it matters.
+`summary`; a posting you filtered out yourself carries `"status": "skipped"`
+and a `"note"` saying why. Free-text deadlines (`ASAP`, `rolling`) are stored
+as none rather than as unsortable text; the wording belongs in the summary if
+it matters.
 
 Extraction from a fetched page is worth delegating:
 
@@ -48,6 +52,6 @@ Exit code 3 means Gemini is unavailable — parse it yourself instead, and say s
 
 Report how many are new, then suggest `/rank` to score them. Scoring is a
 separate step so a scrape stays cheap and the shortlist keeps its findings
-between runs.
+between runs. `/board postings` shows the whole table in the browser.
 
 Never present a posting that WebSearch and WebFetch did not actually return.

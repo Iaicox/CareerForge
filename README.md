@@ -82,6 +82,7 @@ separate](#how-your-data-is-kept-separate).
 /scrape                                   # find matching postings
 /apply https://example.com/jobs/senior-fe # the full pipeline on one of them
 /board                                    # see your pipeline as a kanban
+/board postings                           # every posting seen, as a table
 ```
 
 ## Commands
@@ -94,7 +95,7 @@ separate](#how-your-data-is-kept-separate).
 | `/apply <url or text>` | Evaluate, draft, review, revise, build, check, track |
 | `/interview <company> [stage]` | Prepare for a specific round; `--mock` to rehearse |
 | `/track` | Look at or update the tracker |
-| `/board` | Open the pipeline as a drag-and-drop kanban at `127.0.0.1:8765` |
+| `/board` | Open the pipeline as a drag-and-drop kanban at `127.0.0.1:8765`; `/board postings` for the table of every posting seen |
 | `/mailsync` | Find employer replies in your mailbox and reconcile the pipeline |
 | `/triage` | Find folders out of sync and applications gone silent |
 | `/expand` | Grow the profile from new documents and public sources |
@@ -114,7 +115,12 @@ python tools/tracker.py set-status acme screening   # also moves the folder
 python tools/tracker.py list --stale                # gone quiet past your cutoff
 python tools/tracker.py report --board              # kanban in the terminal
 python tools/board.py                               # kanban in the browser
+python tools/shortlist.py check <url>               # seen this posting before? why was it dropped?
 ```
+
+The same database holds every posting you have seen — scraped, scored,
+declined in `/apply` with the reason, applied to — keyed on the URL with
+tracking parameters stripped. `/scrape` never surfaces one twice.
 
 **Status drives the folder.** Each status maps to a stage directory, and
 changing the status moves the application's documents with it:

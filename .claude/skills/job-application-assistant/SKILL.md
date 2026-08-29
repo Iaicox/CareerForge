@@ -25,9 +25,17 @@ document must be traceable to it.
 - Score it with `references/job-evaluation.md`, using the user's own match
   areas, goals and deal-breakers from `data/profile/evaluation.md`.
 - Check for a duplicate before doing any work:
+  `python tools/shortlist.py check <url>` (evaluated or declined before? the
+  note says why) and
   `python tools/tracker.py find --url <url> --company "<Company>" --role "<Role>"`
 - Present the evaluation table and verdict, then ask whether to proceed and
   whether a cover letter is wanted.
+- **Every posting evaluated and not pursued is recorded with its reason**, so
+  it never comes back through `/scrape` and is never evaluated twice:
+  `python tools/shortlist.py mark --url <url> --status skipped --note "<the deciding gap>" --company "<Company>" --title "<Role>"`
+  (`--status maybe` for one kept in view with a caveat). A batch evaluation
+  marks each posting; the skipped-roles table shown to the user is the
+  presentation, the table is the record.
 
 ### 2. Tailor the CV
 

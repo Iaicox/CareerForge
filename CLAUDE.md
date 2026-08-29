@@ -23,8 +23,7 @@ read; `state/` is what the tools write.
 | `data/profile/` | The user's data. Written by `/setup` and `/expand`. |
 | `data/documents/` | Career materials the user dropped in for `/setup` and `/expand` to read. Never moved or renamed. |
 | `data/pipeline/applications/`, `processing/`, `rejected/` | Per-application folders, moved by status. |
-| `data/state/` | The tracker database, Notion ids, logs, scratch. **Never edit by hand** — use `tools/tracker.py`. |
-| `data/job_scraper/` | Scraper state. |
+| `data/state/` | The tracker database (applications, and every posting seen), Notion ids, logs, scratch. **Never edit by hand** — use `tools/tracker.py` and `tools/shortlist.py`. |
 | `data/config/config.example.toml`, `data/profile.example/` | The framework's templates, kept beside the files they are templates for. Committed — never put real data in them. |
 | everything else | The framework. Do not modify it during normal work. |
 
@@ -57,7 +56,7 @@ Everything you claim about the user must be traceable to one of these:
 | `/apply <url\|text>` | Full pipeline: evaluate, draft, review, build, check, track |
 | `/interview <company> [stage]` | Stage-specific prep; `--mock` to rehearse |
 | `/track` | Look at or update the tracker |
-| `/board` | Open the pipeline as a kanban in the browser |
+| `/board` | Open the pipeline as a kanban in the browser; `/board postings` for the table of every posting seen |
 | `/mailsync` | Match employer replies in the mailbox to open applications |
 | `/triage` | Find folders out of sync and applications gone silent |
 | `/expand` | Grow the profile from `data/documents/` and public sources |

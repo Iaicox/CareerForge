@@ -7,7 +7,8 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch, Agent, 
 # Job scraper
 
 Searches the boards configured in `data/profile/search-queries.md`, drops anything
-already seen or already in the tracker, and presents what is left.
+already seen — scraped, ranked, evaluated, applied to or skipped — and presents
+what is left.
 
 ## Before anything
 
@@ -16,21 +17,17 @@ Requires `data/profile/search-queries.md`. If it is missing, say so and offer
 
 ## Step 0: load state
 
-`data/job_scraper/seen_jobs.json` is owned by `tools/shortlist.py`. Read it through
-the tool and write it only through the tool — never by hand. It carries the
-scores `/rank` produced, and hand-editing loses them.
+Every posting ever seen lives in the tracker database, in the `postings`
+table, owned by `tools/shortlist.py`. It holds what earlier scrapes found, what
+`/rank` scored, what `/apply` evaluated and declined (with the reason), and
+every application — so it is the only dedup source there is.
 
-1. The shortlist, as the first dedup source:
+1. `data/profile/search-queries.md` — the query set, geography tiers and exclusions.
+2. A look at what is already open, so the presentation can say what is new
+   versus what was already waiting:
    ```bash
-   python tools/shortlist.py show --include-expired --json
+   python tools/shortlist.py show --json
    ```
-   The tool creates the file if it does not exist yet.
-2. `data/profile/search-queries.md` — the query set, geography tiers and exclusions.
-3. Everything already tracked, as the second dedup source:
-   ```bash
-   python tools/tracker.py list --json
-   ```
-   Collect the `url` and `company_name` + `role` pairs.
 
 ## Step 1: search
 
@@ -45,9 +42,17 @@ Postings from the last 14 days, within the configured geography tiers.
 For each promising hit, WebFetch the posting and extract title, company,
 location, posting date, URL, key requirements and any deadline.
 
-Skip it if the URL, or the company + title pair, is already in the shortlist
-from step 0 or already in the tracker. Pre-filter on titles and snippets — do
-not fetch every search result.
+Before fetching, ask the tool whether the URLs are known — it normalises them,
+so a link with a different `?trk=` or `utm_` parameter is still the same
+posting:
+
+```bash
+python tools/shortlist.py check <url> [<url> ...]
+```
+
+Skip everything it reports as known: `applied`, `skipped` (the note says why),
+`expired`, or simply already in the shortlist. Pre-filter on titles and
+snippets — do not fetch every search result.
 
 ## Step 3: quick fit
 
@@ -64,7 +69,8 @@ Scoring is `/rank`'s job, and it is the only thing that writes a score. The old
 
 ## Step 4: record
 
-Add every job fetched, presented or skipped. Write a JSON list and feed it in:
+Add every job fetched, presented or filtered out. Write a JSON list and feed
+it in:
 
 ```bash
 python tools/shortlist.py add --file <postings.json>
@@ -77,14 +83,19 @@ that has a `deadline`. Free-text deadlines (`ASAP`, `rolling`) are stored as
 none rather than as unsortable text; put the wording in the summary if it
 matters.
 
-`add` keys on the URL, sets `first_seen` and `status`, and skips what is
-already there, so it is safe to pass the whole batch. Present only what it
-reports as new.
+A posting you filtered out yourself — wrong country, a required language, a
+closed listing — goes in with `"status": "skipped"` and a one-line `"note"`
+saying why, so the next scrape does not fetch it again and the reason is there
+when it comes up.
+
+`add` keys on the normalised URL, sets `first_seen` and `status`, and skips
+what is already there, so it is safe to pass the whole batch. Present only
+what it reports as new.
 
 ## Step 5: present
 
-Save the shortlist to `data/job_scraper/runs/YYYY-MM-DD.md` (suffix `-2` if today's
-file exists), then show the same table:
+The table is the record of the run — `/board postings` shows it in the
+browser, `shortlist.py show` in the terminal. Present:
 
 ```
 ## New matches — YYYY-MM-DD
@@ -100,9 +111,11 @@ check, any red flag. Then ask which ones to evaluate in detail, and run
 ## Rules
 
 1. **Never fabricate a posting.** Only what WebSearch and WebFetch actually returned.
-2. **Always dedup against both sources** before presenting anything.
+2. **Always `check` before fetching and before presenting.** The postings table
+   is the one source: applications, verdicts and earlier scrapes alike.
 3. **Respect the configured geography and the sector exclusions** in `search-queries.md`.
 4. **Open positions only** — skip expired or closed listings.
 5. **Be frugal with WebFetch**; parallel searches are fine, mass fetching is not.
-6. **Never hand-edit `seen_jobs.json`.** It goes through `tools/shortlist.py`,
-   which owns the key, the deadline parsing and the scores `/rank` wrote.
+6. **Never write to the `postings` table directly.** It goes through
+   `tools/shortlist.py`, which owns the URL key, the deadline parsing and the
+   scores `/rank` wrote.

@@ -257,9 +257,11 @@ has to defend it in the interview.
 /scrape fintech         # prioritise one category
 ```
 
-Searches the boards in `data/profile/search-queries.md`, drops anything already in
-`data/job_scraper/seen_jobs.json` or already in your tracker, and records what is
-new.
+Searches the boards in `data/profile/search-queries.md`, drops anything already
+seen — scraped before, scored, declined in `/apply`, applied to — and records
+what is new. Everything seen lives in one table in the tracker, keyed on the
+posting URL with tracking parameters stripped, so the same link copied two
+ways is one posting.
 
 Scraping is deliberately cheap. It does not score anything.
 
@@ -271,9 +273,9 @@ Scraping is deliberately cheap. It does not score anything.
 /rank --min-score 60    # show only these
 ```
 
-Scores each posting and **writes the result back** into the shortlist:
-strengths, gaps, verdict, deadline. A finding that only reached the console is
-one you pay for again next week.
+Scores each posting and **writes the result back** into the table: strengths,
+gaps, verdict, deadline, and the status moves from `new` to `ranked`. A finding
+that only reached the console is one you pay for again next week.
 
 Two things are gates rather than deductions:
 
@@ -287,15 +289,18 @@ in passing that it requires relocation wastes your attention.
 
 Postings past their deadline are swept out automatically.
 
-You can also read the shortlist directly:
+You can also read the shortlist directly, or record a verdict yourself:
 
 ```bash
 python tools/shortlist.py show --min-score 60
 python tools/shortlist.py show --unscored
+python tools/shortlist.py check <url>                  # seen before? which status? why?
+python tools/shortlist.py mark --id 12 --status skipped --note "React only"
 ```
 
-Entries with a `*` beside the verdict carry a coarse rating from before `/rank`
-existed. They still count as unscored.
+A verdict without a score is a coarse rating from before `/rank` existed; the
+posting still counts as unscored. `/board postings` shows the same table in
+the browser, with the status as a select.
 
 ---
 
@@ -313,8 +318,9 @@ works identically.
 ### What happens, step by step
 
 **0 — Deduplicate.** Before anything else, it checks whether you have already
-applied here. If so it shows you the existing application rather than starting a
-second one.
+applied here, or already looked at this posting and declined it. An existing
+application is shown rather than started twice; a declined posting is shown
+with the reason you gave, and you are asked whether to reconsider.
 
 **1 — Evaluate fit.** Skills, experience, behavioural fit, location, career
 alignment, weighted into a score with a verdict. If salary data is configured,
@@ -326,7 +332,9 @@ work with the company. That goes into the letter, the job snapshot and the
 tracker note.
 
 **A weak verdict is a real answer.** Not applying is the correct outcome for
-most postings, and the time saved is the point.
+most postings, and the time saved is the point. Declining records the posting as
+`skipped` with the deciding gap in one line, so `/scrape` never brings it back
+and `/apply` never evaluates it twice.
 
 **2 — Draft.** Creates `data/pipeline/applications/<slug>/` with:
 
@@ -419,14 +427,21 @@ not done silently.
 Statuses are yours: `python tools/tracker.py statuses` lists what is configured,
 and `data/config/config.toml` is where you rename, add or translate them.
 
-### `/board` — the kanban
+### `/board` — the kanban, and the postings table
 
 ```
 /board
+/board postings
 ```
 
 Opens `http://127.0.0.1:8765` — columns by status, drag a card to change it.
 Dragging moves the folder too.
+
+`/board postings` opens the second page on the same server: every posting ever
+seen, as a table. Company, title, the status as a select you change in place,
+score and verdict from `/rank`, deadline, source, a note that edits in place,
+and the application it became. Filters for status (open postings by default),
+minimum score, and a search box.
 
 Loopback only, and it refuses requests whose `Host` header is not loopback,
 because it writes to disk.
@@ -740,7 +755,7 @@ Commands orchestrate; these do the work. Each runs standalone and each takes
 |---|---|
 | `tracker.py` | The tracker: applications, companies, events, attachments. Also the shared data layer the board and the Notion adapter import |
 | `board.py` | The kanban server |
-| `shortlist.py` | The scraper shortlist: what was found, what it scored, what expired |
+| `shortlist.py` | The shortlist: every posting seen, what `/rank` scored, what was decided and why |
 | `research.py` | Cached company research, with or without Gemini |
 | `atscheck.py` | Reads a built PDF's text layer back out and checks it survives |
 | `pagecount.py` | Page counts without Word: pypdf, then `pdfinfo`, then an approximate fallback that says so |

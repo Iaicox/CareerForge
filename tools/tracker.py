@@ -29,6 +29,7 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import paths
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
@@ -44,8 +45,20 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 #     to the text, so a missing final semicolon glues it onto the last statement
 #     and the syntax error points at the INSERT rather than at the file.
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 STAGES = paths.STAGES
+
+# Where a posting stands, from the moment it is seen. config.toml may carry a
+# [[posting_statuses]] table with the same shape; when it does not, these apply,
+# so a config written before postings existed keeps working.
+DEFAULT_POSTING_STATUSES: tuple[dict, ...] = (
+    {"id": "new", "labels": {"en": "New", "ru": "🆕 Новая"}},
+    {"id": "ranked", "labels": {"en": "Ranked", "ru": "📊 Оценена"}},
+    {"id": "maybe", "labels": {"en": "Maybe", "ru": "🤔 Есть нюанс"}},
+    {"id": "applied", "terminal": True, "labels": {"en": "Applied", "ru": "📤 Откликнулся"}},
+    {"id": "skipped", "terminal": True, "labels": {"en": "Skipped", "ru": "⏭ Не подходит"}},
+    {"id": "expired", "terminal": True, "labels": {"en": "Expired", "ru": "⌛ Истекла"}},
+)
 
 
 class TrackerError(Exception):
@@ -103,7 +116,12 @@ class Config:
         return self.data.get("locale", "en")
 
     def _table(self, key: str) -> list[dict]:
-        return list(self.data.get(key, []))
+        rows = list(self.data.get(key, []))
+        if not rows and key == "posting_statuses":
+            return [
+                {**s, "labels": dict(s["labels"])} for s in DEFAULT_POSTING_STATUSES
+            ]
+        return rows
 
     @property
     def statuses(self) -> list[dict]:
@@ -120,6 +138,25 @@ class Config:
     @property
     def outcomes(self) -> list[dict]:
         return self._table("outcomes")
+
+    @property
+    def posting_statuses(self) -> list[dict]:
+        return self._table("posting_statuses")
+
+    def posting_status(self, status_id: str) -> dict:
+        for s in self.posting_statuses:
+            if s["id"] == status_id:
+                return s
+        raise TrackerError(
+            f"unknown posting status {status_id!r}; configured: "
+            + ", ".join(s["id"] for s in self.posting_statuses)
+        )
+
+    def posting_is_terminal(self, status_id: str | None) -> bool:
+        for s in self.posting_statuses:
+            if s["id"] == status_id:
+                return bool(s.get("terminal"))
+        return False
 
     def status_ids(self) -> list[str]:
         return [s["id"] for s in self.statuses]
@@ -249,6 +286,11 @@ def init_db() -> tuple[str, list[str]]:
                 (SCHEMA_VERSION,),
             )
         applied = apply_migrations(conn, baseline=fresh)
+        # Applications recorded before the postings table existed have no
+        # posting row; give each one its `applied` row so /scrape's dedup sees
+        # the whole history from the first run.
+        with conn:
+            backfill_postings(conn, load_config())
     finally:
         conn.close()
     return ("created" if fresh else "updated"), applied
@@ -368,10 +410,17 @@ def find_applications(
     role: str | None = None,
 ) -> list[sqlite3.Row]:
     """Deduplication lookup used by /apply and /scrape."""
-    if url:
-        rows = conn.execute(
-            "SELECT * FROM applications_view WHERE url = ?", (url.strip(),)
-        ).fetchall()
+    key = normalize_url(url)
+    if key:
+        # Compared in Python: the table holds a few hundred rows at most, and a
+        # normalised column would be a second copy of the URL to keep in step.
+        rows = [
+            r
+            for r in conn.execute(
+                "SELECT * FROM applications_view WHERE url IS NOT NULL AND url != ''"
+            ).fetchall()
+            if normalize_url(r["url"]) == key
+        ]
         if rows:
             return rows
     if company:
@@ -514,7 +563,9 @@ def add_application(
             notes,
         ),
     )
-    return resolve(conn, str(cur.lastrowid))
+    row = resolve(conn, str(cur.lastrowid))
+    link_posting(conn, cfg, row)
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -730,6 +781,399 @@ def set_note(
         "UPDATE applications SET notes = ?, updated_at = ? WHERE id = ?",
         (text, now(), row["id"]),
     )
+
+
+# ---------------------------------------------------------------------------
+# Postings: every job posting ever seen
+# ---------------------------------------------------------------------------
+#
+# Scraped, ranked, evaluated, applied to, skipped -- one table, keyed on a
+# normalised URL. It is the scraper's dedup source and /apply's memory of what
+# was declined and why, so a posting judged once is never judged again.
+
+
+VERDICT_ORDER = {"strong": 0, "good": 1, "moderate": 2, "weak": 3, "poor": 4}
+
+# Query parameters that identify the click, not the posting. Everything else
+# stays: some boards name the posting in a parameter (gh_jid, jobId).
+TRACKING_PARAMS = {
+    "ref", "refid", "trk", "trkinfo", "trackingid", "ebp", "position", "pagenum",
+    "refresh", "original_referer", "source", "src", "gh_src", "lever-source",
+    "lever-origin", "fbclid", "gclid", "msclkid", "mc_cid", "mc_eid", "igshid",
+}
+
+POSTING_SCORE_FIELDS = (
+    "score", "verdict", "strengths", "gaps", "location_verdict", "language_verdict", "reason",
+)
+
+
+def normalize_url(url: str | None) -> str:
+    """One key for one posting, however the link was copied.
+
+    Scheme, `www.`, the fragment, tracking parameters and a trailing slash all
+    vary between the scraper's link and the one the user pastes into /apply;
+    none of them changes which posting it is.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = "https://" + raw
+    parts = urlsplit(raw)
+    host = (parts.hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    if port and port not in (80, 443):
+        host = f"{host}:{port}"
+    path = re.sub(r"/{2,}", "/", parts.path).rstrip("/")
+    query = sorted(
+        (k, v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if not (k.lower().startswith("utm_") or k.lower() in TRACKING_PARAMS)
+    )
+    key = host + path
+    if query:
+        key += "?" + urlencode(query)
+    return key
+
+
+def posting_key(url: str | None, company: str | None = None, title: str | None = None) -> str:
+    key = normalize_url(url)
+    if key:
+        return key
+    if company and title and title.strip():
+        return f"{slugify(company)}::{title.strip().lower()}"
+    raise TrackerError("a posting needs a URL, or a company and a title")
+
+
+def today() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def posting_by_key(conn: sqlite3.Connection, key: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM postings WHERE url_key = ?", (key,)).fetchone()
+
+
+def resolve_posting(conn: sqlite3.Connection, ident: str | int) -> sqlite3.Row:
+    """Accept a row id or a posting URL."""
+    row = None
+    if isinstance(ident, int) or str(ident).isdigit():
+        row = conn.execute("SELECT * FROM postings WHERE id = ?", (int(ident),)).fetchone()
+    else:
+        key = normalize_url(str(ident))
+        row = posting_by_key(conn, key) if key else None
+    if not row:
+        raise TrackerError(f"no posting matches {ident!r}")
+    return row
+
+
+def insert_posting(conn: sqlite3.Connection, cfg: Config, p: dict) -> int:
+    key = posting_key(p.get("url"), p.get("company"), p.get("title"))
+    status = p.get("status") or "new"
+    cfg.posting_status(status)
+    cur = conn.execute(
+        """INSERT INTO postings
+           (url, url_key, title, company, location, source, summary, deadline,
+            first_seen, status, note, score, verdict, strengths, gaps,
+            location_verdict, language_verdict, reason, scored_at,
+            application_id, notion_page_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            (p.get("url") or "").strip() or None,
+            key,
+            p.get("title"),
+            p.get("company"),
+            p.get("location"),
+            p.get("source"),
+            p.get("summary"),
+            parse_deadline(p.get("deadline")),
+            p.get("first_seen") or today(),
+            status,
+            p.get("note"),
+            p.get("score"),
+            p.get("verdict"),
+            as_json_list(p.get("strengths")),
+            as_json_list(p.get("gaps")),
+            p.get("location_verdict"),
+            p.get("language_verdict"),
+            p.get("reason"),
+            p.get("scored_at"),
+            p.get("application_id"),
+            p.get("notion_page_id"),
+        ),
+    )
+    return int(cur.lastrowid)
+
+
+def upsert_postings(conn: sqlite3.Connection, cfg: Config, postings: Iterable[dict]) -> tuple[int, int]:
+    """Record what a scrape found. Returns (added, already known)."""
+    added = known = 0
+    for p in postings:
+        key = posting_key(p.get("url"), p.get("company"), p.get("title"))
+        if posting_by_key(conn, key):
+            known += 1
+            continue
+        insert_posting(conn, cfg, p)
+        added += 1
+    return added, known
+
+
+def mark_posting(
+    conn: sqlite3.Connection,
+    cfg: Config,
+    ident: str | int,
+    status: str,
+    note: str | None = None,
+    application_id: int | None = None,
+    stub: dict | None = None,
+    expected_updated_at: str | None = None,
+) -> sqlite3.Row:
+    """Record a verdict on a posting: skipped with a reason, applied, maybe.
+
+    `ident` is a row id or a URL. A URL nobody has seen yet is recorded on the
+    spot when `stub` (title, company, ...) is given -- /apply usually runs on a
+    link that was never scraped, and losing the verdict there would lose the
+    cases that matter most.
+    """
+    cfg.posting_status(status)
+    if isinstance(ident, int) or str(ident).isdigit():
+        row = resolve_posting(conn, ident)
+    else:
+        key = normalize_url(str(ident))
+        if not key:
+            raise TrackerError(f"not a URL: {ident!r}")
+        row = posting_by_key(conn, key)
+        if row is None:
+            if stub is None:
+                raise TrackerError(
+                    f"no posting matches {ident!r}; pass --company and --title to record it"
+                )
+            pid = insert_posting(
+                conn, cfg,
+                {**stub, "url": str(ident), "status": status, "note": note,
+                 "application_id": application_id},
+            )
+            return resolve_posting(conn, pid)
+
+    if expected_updated_at is not None and row["updated_at"] != expected_updated_at:
+        raise TrackerError(
+            "this posting changed since you loaded it (now "
+            f"{row['updated_at']}, you had {expected_updated_at}). Reload and retry."
+        )
+    sets = ["status = ?", "updated_at = ?"]
+    params: list[Any] = [status, now()]
+    if note is not None:
+        sets.append("note = ?")
+        params.append(note)
+    if application_id is not None:
+        sets.append("application_id = ?")
+        params.append(application_id)
+    params.append(row["id"])
+    conn.execute(f"UPDATE postings SET {', '.join(sets)} WHERE id = ?", params)
+    return resolve_posting(conn, int(row["id"]))
+
+
+def set_posting_note(conn: sqlite3.Connection, ident: str | int, text: str) -> sqlite3.Row:
+    row = resolve_posting(conn, ident)
+    conn.execute(
+        "UPDATE postings SET note = ?, updated_at = ? WHERE id = ?",
+        (text or None, now(), row["id"]),
+    )
+    return resolve_posting(conn, int(row["id"]))
+
+
+def merge_scores(conn: sqlite3.Connection, cfg: Config, results: Iterable[dict]) -> tuple[int, int]:
+    """Write /rank's results back. Returns (merged, ids that matched nothing)."""
+    merged = unknown = 0
+    for r in results:
+        row = None
+        ident = r.get("id")
+        try:
+            if ident is not None and str(ident).strip():
+                row = resolve_posting(conn, ident)
+        except TrackerError:
+            row = None
+        if row is None and r.get("url"):
+            row = posting_by_key(conn, normalize_url(r["url"]))
+        if row is None:
+            unknown += 1
+            continue
+        sets = ["scored_at = ?", "updated_at = ?"]
+        params: list[Any] = [today(), now()]
+        for field in POSTING_SCORE_FIELDS:
+            if r.get(field) is None:
+                continue
+            value = r[field]
+            if field in ("strengths", "gaps"):
+                value = as_json_list(value)
+            sets.append(f"{field} = ?")
+            params.append(value)
+        if r.get("deadline"):
+            sets.append("deadline = ?")
+            params.append(parse_deadline(r["deadline"]))
+        if row["status"] == "new":
+            cfg.posting_status("ranked")
+            sets.append("status = ?")
+            params.append("ranked")
+        params.append(row["id"])
+        conn.execute(f"UPDATE postings SET {', '.join(sets)} WHERE id = ?", params)
+        merged += 1
+    return merged, unknown
+
+
+def sweep_postings(conn: sqlite3.Connection, cfg: Config) -> list[str]:
+    """Expire open postings whose deadline has passed. Returns what it expired."""
+    cfg.posting_status("expired")
+    open_ids = [s["id"] for s in cfg.posting_statuses if not s.get("terminal")]
+    if not open_ids:
+        return []
+    rows = conn.execute(
+        "SELECT id, company, title FROM postings WHERE deadline IS NOT NULL "
+        f"AND deadline < ? AND status IN ({','.join('?' * len(open_ids))}) ORDER BY id",
+        [today(), *open_ids],
+    ).fetchall()
+    for r in rows:
+        conn.execute(
+            "UPDATE postings SET status = 'expired', updated_at = ? WHERE id = ?",
+            (now(), r["id"]),
+        )
+    return [f"{r['company']} - {r['title']}" for r in rows]
+
+
+def posting_sort_key(e: dict):
+    # Highest score first; unscored last, since they still need a decision.
+    score = e.get("score")
+    return (
+        0 if score is not None else 1,
+        -(score or 0),
+        VERDICT_ORDER.get(e.get("verdict") or "", 9),
+        e.get("company") or "",
+        e.get("id") or 0,
+    )
+
+
+def enrich_posting(row: dict, cfg: Config) -> dict:
+    for key in ("strengths", "gaps"):
+        raw = row.get(key)
+        try:
+            row[key] = json.loads(raw) if raw else []
+        except (TypeError, ValueError):
+            row[key] = [raw] if raw else []
+    row["status_label"] = cfg.label("posting_statuses", row.get("status"))
+    row["terminal"] = cfg.posting_is_terminal(row.get("status"))
+    row["is_expired"] = bool(row.get("deadline")) and row["deadline"] < today()
+    return row
+
+
+def list_postings(
+    conn: sqlite3.Connection,
+    cfg: Config,
+    *,
+    status: str | None = None,
+    all: bool = False,
+    unscored: bool = False,
+    min_score: int | None = None,
+    limit: int | None = None,
+) -> list[dict]:
+    """The shortlist: open postings by default, everything with all=True."""
+    sql = (
+        "SELECT p.*, a.slug AS application_slug FROM postings p "
+        "LEFT JOIN applications a ON a.id = p.application_id"
+    )
+    where: list[str] = []
+    params: list[Any] = []
+    if status:
+        cfg.posting_status(status)
+        where.append("p.status = ?")
+        params.append(status)
+    elif not all:
+        terminal = [s["id"] for s in cfg.posting_statuses if s.get("terminal")]
+        if terminal:
+            where.append(f"p.status NOT IN ({','.join('?' * len(terminal))})")
+            params.extend(terminal)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    rows = [enrich_posting(dict(r), cfg) for r in conn.execute(sql, params).fetchall()]
+    if unscored:
+        rows = [r for r in rows if r.get("score") is None]
+    if min_score is not None:
+        rows = [r for r in rows if (r.get("score") or 0) >= min_score]
+    rows.sort(key=posting_sort_key)
+    if limit:
+        rows = rows[:limit]
+    return rows
+
+
+def postings_table_data(conn: sqlite3.Connection, cfg: Config) -> dict:
+    """Rows plus the status options, for the browser table. Used by tools/board.py."""
+    rows = list_postings(conn, cfg, all=True)
+    return {
+        "locale": cfg.locale,
+        "statuses": [
+            {
+                "id": s["id"],
+                "label": cfg.label("posting_statuses", s["id"]),
+                "terminal": bool(s.get("terminal")),
+            }
+            for s in cfg.posting_statuses
+        ],
+        "rows": rows,
+        "total": len(rows),
+    }
+
+
+def link_posting(
+    conn: sqlite3.Connection, cfg: Config, app: sqlite3.Row | dict, first_seen: str | None = None
+) -> int | None:
+    """An application exists, so the posting it came from is `applied`.
+
+    Creates the posting row when nothing scraped it first, so the dedup table is
+    complete whichever way a posting arrived.
+    """
+    try:
+        key = posting_key(app["url"], app["company_name"], app["role"])
+    except TrackerError:
+        return None
+    cfg.posting_status("applied")
+    row = posting_by_key(conn, key)
+    if row is None:
+        return insert_posting(
+            conn, cfg,
+            {
+                "url": app["url"],
+                "title": app["role"],
+                "company": app["company_name"],
+                "location": app["location"],
+                "source": app["source"] or "apply",
+                "deadline": app["deadline"],
+                "first_seen": first_seen or today(),
+                "status": "applied",
+                "application_id": app["id"],
+            },
+        )
+    if row["status"] != "applied" or row["application_id"] != app["id"]:
+        conn.execute(
+            "UPDATE postings SET status = 'applied', application_id = ?, updated_at = ? "
+            "WHERE id = ?",
+            (app["id"], now(), row["id"]),
+        )
+    return int(row["id"])
+
+
+def backfill_postings(conn: sqlite3.Connection, cfg: Config) -> int:
+    """One `applied` posting per application that has none yet. Idempotent."""
+    rows = conn.execute(
+        "SELECT * FROM applications_view WHERE id NOT IN "
+        "(SELECT application_id FROM postings WHERE application_id IS NOT NULL) "
+        "ORDER BY id"
+    ).fetchall()
+    for r in rows:
+        link_posting(conn, cfg, r, first_seen=(r["created_at"] or "")[:10] or None)
+    return len(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -1242,6 +1686,7 @@ def main(argv: list[str] | None = None) -> int:
                     application_detail(conn, cfg, str(r["id"]))
                     for r in conn.execute("SELECT id FROM applications ORDER BY id")
                 ],
+                "postings": list_postings(conn, cfg, all=True),
             }
             print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
 

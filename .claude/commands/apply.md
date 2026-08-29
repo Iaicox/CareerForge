@@ -27,10 +27,13 @@ Read `data/config/config.toml` for the document filename patterns and page limit
   **posting language**.
 - **Deduplicate before doing any work:**
   ```
+  python tools/shortlist.py check "<url>"
   python tools/tracker.py find --url "<url>" --company "<Company>" --role "<Role>" --json
   ```
-  A hit means this application already exists. Show it to the user and ask
-  whether to update it instead of starting over.
+  `find` matching means this application already exists: show it to the user
+  and ask whether to update it instead of starting over. `check` reporting
+  `skipped` means this posting was evaluated before and declined — show the
+  note and ask whether to reconsider before spending anything on it.
 
 ---
 
@@ -54,7 +57,17 @@ Then gate on the user:
   extra context the user will supply (a referral, a contact on the team, past
   collaboration) / CV only / don't proceed.
 
-**If the user declines, stop.**
+**If the user declines, record why and stop** — the reason is what saves the
+next `/scrape` from surfacing this posting again, and you from evaluating it
+twice:
+
+```
+python tools/shortlist.py mark --url "<url>" --status skipped --note "<one line: the deciding gap>" \
+  --company "<Company>" --title "<Role>"
+```
+
+Use `--status maybe` for a posting the user wants to keep in view with a caveat
+rather than drop.
 
 Extra context goes into the letter, into `job.md` notes, and into the tracker
 note. Facts the user states about their own relationships need no external
@@ -170,7 +183,8 @@ python tools/tracker.py add \
 ```
 
 If the slug it assigns differs from the folder you created, rename the folder
-to match.
+to match. The posting itself is marked `applied` in the `postings` table by
+`add` — nothing to do there.
 
 Attachments stay empty for now. The PDFs go up when the user confirms the
 application was actually sent, so the tracker holds the version the employer

@@ -4,7 +4,7 @@
     python tools/gemini.py check
     python tools/gemini.py research-company --name "Acme" --url https://acme.example
     python tools/gemini.py extract-posting --file data/pipeline/applications/acme/raw.html
-    python tools/gemini.py rank --input data/job_scraper/seen_jobs.json --criteria data/profile/evaluation.md
+    python tools/gemini.py rank --input to_rank.json --criteria data/profile/evaluation.md
     python tools/gemini.py summarize --file long.html --question "What is their tech stack?"
 
 Gemini gathers and compresses. It never decides what is honest to claim about
@@ -450,7 +450,7 @@ def main() -> int:
     ep.add_argument("--text")
 
     rk = sub.add_parser("rank", help="score a batch of postings against criteria")
-    rk.add_argument("--input", required=True, help="JSON list, or seen_jobs.json")
+    rk.add_argument("--input", required=True, help="JSON list of postings, e.g. from shortlist.py show --json")
     rk.add_argument("--criteria", required=True, help="file describing what the candidate wants")
 
     sm = sub.add_parser("summarize", help="answer a question from a long document")

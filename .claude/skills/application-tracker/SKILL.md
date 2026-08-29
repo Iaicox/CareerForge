@@ -117,6 +117,26 @@ python tools/tracker.py show <slug>                 # one application in full
 The `/triage` command uses `--stale` and the `folder_in_sync` flag to propose
 fixes. `/board` opens the same data as a drag-and-drop kanban in the browser.
 
+## Postings: everything seen, not only what was applied to
+
+The `postings` table holds every posting `/scrape` found, `/rank` scored,
+`/apply` evaluated, and every application — keyed on a normalised URL, so the
+same link with a different tracking parameter is one row. `tracker.py add`
+marks the posting an application came from `applied` on its own. Everything
+else goes through `tools/shortlist.py`:
+
+```bash
+python tools/shortlist.py check <url>                       # known? which status? why?
+python tools/shortlist.py mark --url <url> --status skipped --note "<why>" --company "<C>" --title "<R>"
+python tools/shortlist.py mark --id <n> --status maybe --note "<the caveat>"
+python tools/shortlist.py show                              # open postings, best first
+python tools/shortlist.py show --all --json                 # everything, for tooling
+```
+
+Statuses come from `[[posting_statuses]]` in `data/config/config.toml`
+(`new`, `ranked`, `maybe`, `applied`, `skipped`, `expired` by default).
+`/board postings` shows the table in the browser with the status as a select.
+
 ## Optional: mirroring to Notion
 
 Only when `data/config/config.toml` has `notion.enabled = true`:
