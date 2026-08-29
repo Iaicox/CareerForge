@@ -283,11 +283,14 @@ def check_gemini() -> Check:
     """Optional: bulk gathering delegated off Claude's context."""
     cfg_path = paths.CONFIG
     enabled = False
+    timeout = 120
     if cfg_path.exists():
         try:
             import tomllib
             with cfg_path.open("rb") as fh:
-                enabled = bool(tomllib.load(fh).get("gemini", {}).get("enabled"))
+                gemini_cfg = tomllib.load(fh).get("gemini", {})
+            enabled = bool(gemini_cfg.get("enabled"))
+            timeout = int(gemini_cfg.get("timeout_seconds", timeout))
         except Exception:
             enabled = False
     if not enabled:
@@ -296,7 +299,7 @@ def check_gemini() -> Check:
     try:
         probe = subprocess.run(
             [sys.executable, str(REPO / "tools" / "gemini.py"), "check"],
-            capture_output=True, text=True, timeout=90,
+            capture_output=True, text=True, timeout=timeout + 30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return Check("Gemini delegation", WARN, f"probe failed: {exc}",
