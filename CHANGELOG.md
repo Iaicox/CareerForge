@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Changed
+
+- **Everything yours now lives under `data/`.** Seven user directories used to
+  sit at the repo root between the framework's own; finding an application
+  meant scanning three of them, and `.gitignore` needed seven blocks to draw the
+  line. Now: `data/config/` (what you write), `data/profile/`, `data/documents/`,
+  `data/pipeline/{applications,processing,rejected}/` and `data/state/` (what
+  the tools write — the database, `notion.json`, Gemini logs, session digests).
+  A framework template sits beside the file it is a template for, so
+  `config.example.toml` and `profile.example/` moved in too; `data/.gitignore`
+  ignores everything else. The published manual, a build product of framework
+  docs, moved out to `docs/manual-artifact.html`.
+
+  `tools/paths.py` is now the one place that knows the layout; the tools that
+  each derived `REPO / "profile"` on their own read it instead, and the tests
+  point it at a throwaway root with `paths.configure()`. Migration `004`
+  prefixes stored attachment paths, which are repo-relative, with
+  `data/pipeline/`.
+
+  Moving an existing workspace: move the contents of the old directories into
+  their new homes (`tracker/*` → `data/state/`, `config/notion.json` →
+  `data/state/`, the rest by name), then `python tools/tracker.py init`.
+
 ### Fixed
 
 - **The Notion import no longer duplicates events.** `notion_sync.py import`

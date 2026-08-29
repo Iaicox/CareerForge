@@ -19,12 +19,13 @@ REPO = Path(__file__).resolve().parent.parent.parent
 
 def main() -> int:
     missing = []
-    if not (REPO / "profile" / "candidate.md").exists():
-        missing.append("your profile (profile/candidate.md)")
-    if not (REPO / "config" / "config.toml").exists():
-        missing.append("your configuration (config/config.toml)")
-    if not (REPO / "tracker" / "careerforge.db").exists():
-        missing.append("the tracker database (tracker/careerforge.db)")
+    data = REPO / "data"
+    if not (data / "profile" / "candidate.md").exists():
+        missing.append("your profile (data/profile/candidate.md)")
+    if not (data / "config" / "config.toml").exists():
+        missing.append("your configuration (data/config/config.toml)")
+    if not (data / "state" / "careerforge.db").exists():
+        missing.append("the tracker database (data/state/careerforge.db)")
 
     if not missing:
         return 0

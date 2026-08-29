@@ -30,8 +30,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-REPO = Path(__file__).resolve().parent.parent
-DB_PATH = REPO / "tracker" / "careerforge.db"
+import paths
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 # What a file in here may contain. apply_migrations() wraps it in BEGIN/COMMIT
 # together with the row that records it, so:
@@ -46,7 +45,7 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 #     and the syntax error points at the INSERT rather than at the file.
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 SCHEMA_VERSION = "3"
-STAGES = ("applications", "processing", "rejected")
+STAGES = paths.STAGES
 
 
 class TrackerError(Exception):
@@ -57,7 +56,7 @@ _dotenv_loaded = False
 
 
 def load_dotenv() -> None:
-    """Load REPO/.env into os.environ, once, without overriding anything.
+    """Load .env from the repo root into os.environ, once, without overriding anything.
 
     The standard library does not read .env files, and the secrets consumers
     (Gemini key, Notion token, mail password) all live there now. Real
@@ -68,7 +67,7 @@ def load_dotenv() -> None:
     if _dotenv_loaded:
         return
     _dotenv_loaded = True
-    path = REPO / ".env"
+    path = paths.ENV
     if not path.exists():
         return
     try:
@@ -193,8 +192,8 @@ def load_config(force: bool = False) -> Config:
     if _config is not None and not force:
         return _config
     candidates = (
-        REPO / "config" / "config.toml",
-        REPO / "config" / "config.example.toml",
+        paths.CONFIG,
+        paths.CONFIG_EXAMPLE,
     )
     for candidate in candidates:
         if candidate.exists():
@@ -213,13 +212,13 @@ def load_config(force: bool = False) -> Config:
 
 
 def connect(create: bool = False) -> sqlite3.Connection:
-    if not DB_PATH.exists() and not create:
+    if not paths.DB.exists() and not create:
         raise TrackerError(
-            f"tracker database not found at {rel(DB_PATH)}; "
+            f"tracker database not found at {rel(paths.DB)}; "
             "run: python tools/tracker.py init"
         )
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    paths.DB.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(paths.DB)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     # WAL lets the board read while the agent writes.
@@ -235,7 +234,7 @@ def init_db() -> tuple[str, list[str]]:
     An older database gets there through tools/migrations/*.sql, applied in
     filename order and recorded so they run exactly once.
     """
-    fresh = not DB_PATH.exists()
+    fresh = not paths.DB.exists()
     conn = connect(create=True)
     try:
         with conn:
@@ -295,7 +294,7 @@ def apply_migrations(conn: sqlite3.Connection, baseline: bool = False) -> list[s
 
 def rel(path: Path) -> str:
     try:
-        return str(path.relative_to(REPO)).replace("\\", "/")
+        return str(path.relative_to(paths.REPO)).replace("\\", "/")
     except ValueError:
         return str(path)
 
@@ -526,7 +525,7 @@ def add_application(
 def folder_for(slug: str) -> tuple[Path | None, str | None]:
     """Where the application's documents currently live."""
     for stage in STAGES:
-        candidate = REPO / stage / slug
+        candidate = paths.stage_dir(stage) / slug
         if candidate.is_dir():
             return candidate, stage
     return None, None
@@ -545,7 +544,7 @@ def move_folder(slug: str, target_stage: str) -> str:
     if current_stage == target_stage:
         return f"folder already in {target_stage}/"
 
-    target = REPO / target_stage / slug
+    target = paths.stage_dir(target_stage) / slug
     if target.exists():
         raise TrackerError(
             f"cannot move {current_stage}/{slug} -> {target_stage}/{slug}: "
@@ -707,7 +706,7 @@ def add_event(
 def add_attachment(conn: sqlite3.Connection, ident: str, kind: str, path: str) -> str:
     row = resolve(conn, ident)
     p = Path(path)
-    abs_path = p if p.is_absolute() else (REPO / p)
+    abs_path = p if p.is_absolute() else (paths.REPO / p)
     if not abs_path.exists():
         raise TrackerError(f"file not found: {path}")
     stored = rel(abs_path.resolve())
@@ -1049,7 +1048,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "init":
         what, migrations = init_db()
         cfg = load_config()
-        print(f"tracker database {what}: {rel(DB_PATH)}")
+        print(f"tracker database {what}: {rel(paths.DB)}")
         for name in migrations:
             print(f"  migration applied: {name}")
         print(

@@ -30,8 +30,8 @@ a completed `screening` event means the next one is probably `tech`. State
 what you inferred and let the user correct it — guessing wrong here wastes
 the whole preparation.
 
-If the application is still in `applications/`, an interview invitation means
-it belongs in `processing/`. Move it by changing the status; the folder
+If the application is still in `data/pipeline/applications/`, an interview invitation means
+it belongs in `data/pipeline/processing/`. Move it by changing the status; the folder
 follows:
 
 ```bash
@@ -55,8 +55,8 @@ python tools/research.py put "<Company>" --file <json>
 
 **The role**: `job.md` in the application folder holds the posting as captured.
 
-**The candidate**: `profile/interview-prep.md` for STAR material,
-`profile/candidate.md` for the facts, `profile/behavioral.md` for how they work.
+**The candidate**: `data/profile/interview-prep.md` for STAR material,
+`data/profile/candidate.md` for the facts, `data/profile/behavioral.md` for how they work.
 
 ## Step 2: prepare for this stage
 
@@ -77,7 +77,7 @@ For every stage produce:
      --question "What interview questions would a hiring manager ask for this role? List 15."
    ```
    Then cut the ones that do not fit and add what the research suggests.
-2. **The answer**, per question, grounded in `profile/interview-prep.md`.
+2. **The answer**, per question, grounded in `data/profile/interview-prep.md`.
    **Never invent a story.** If nothing in the profile fits a likely question,
    say so plainly and mark it as a gap to prepare — a fabricated anecdote
    collapses the moment it is probed.

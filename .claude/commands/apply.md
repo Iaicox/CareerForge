@@ -16,10 +16,10 @@ Follow the steps in order. Do not skip any.
 
 ## Step 0: check the workspace, parse the input
 
-If `profile/candidate.md` is missing, stop and offer `/setup`. Everything below
+If `data/profile/candidate.md` is missing, stop and offer `/setup`. Everything below
 depends on it.
 
-Read `config/config.toml` for the document filename patterns and page limits.
+Read `data/config/config.toml` for the document filename patterns and page limits.
 
 - URL → `WebFetch` it. If the fetch is blocked, ask the user to paste the text
   rather than guessing at the content.
@@ -37,10 +37,10 @@ Read `config/config.toml` for the document filename patterns and page limits.
 ## Step 1: evaluate fit
 
 Read `.claude/skills/job-application-assistant/references/job-evaluation.md`
-for the framework and `profile/evaluation.md` for the user's own match areas,
+for the framework and `data/profile/evaluation.md` for the user's own match areas,
 goals, location rules and deal-breakers.
 
-If `profile/salary_data.json` exists, add a benchmark:
+If `data/profile/salary_data.json` exists, add a benchmark:
 `python tools/salary_lookup.py "<Company>" --json` (add `--city` when the posting
 names one). Skip the benchmark silently if the tool is not configured.
 
@@ -64,7 +64,7 @@ verification — but write only what they actually said.
 
 ## Step 2: draft
 
-Create the folder `applications/<slug>/`, where `<slug>` is what
+Create the folder `data/pipeline/applications/<slug>/`, where `<slug>` is what
 `tracker.py add` assigns in step 6 — derive it the same way (company slug;
 `<company>_<role>` if that company already has an application).
 
@@ -86,12 +86,12 @@ Create the folder `applications/<slug>/`, where `<slug>` is what
 <salary range, stack, red flags, source, contacts>
 ```
 
-**CV** — copy `profile/cv_master.md` to the filename from `config.toml`
+**CV** — copy `data/profile/cv_master.md` to the filename from `config.toml`
 (`documents.cv_filename`). Never edit the master. Follow
 `references/cv-format.md`; keep the pandoc markup exactly as it is in the
 master. Tailor the profile statement and bullet order to the posting.
 
-**Cover letter** (if chosen) — copy `profile/cover_letter_master.md`, replace
+**Cover letter** (if chosen) — copy `data/profile/cover_letter_master.md`, replace
 every placeholder, follow `references/cover-letter-format.md` and
 `references/writing-style.md`. Match the posting's language unless
 `cover_letter_language` in the config says otherwise. Address a named person if
@@ -147,8 +147,8 @@ restate them here.
 ## Step 5: build
 
 ```
-tools\build.ps1 -Path applications\<slug>          # Windows
-tools/build.sh applications/<slug>                 # macOS / Linux
+tools\build.ps1 -Path data\pipeline\applications\<slug>          # Windows
+tools/build.sh data/pipeline/applications/<slug>                 # macOS / Linux
 ```
 
 Over the page limit means cutting the least relevant content and rebuilding.
@@ -165,8 +165,8 @@ python tools/tracker.py add \
   --company "<Company>" --role "<Role>" --url "<url>" \
   --status draft --work-mode <remote|hybrid|onsite> \
   --website "<site>" --company-description "<1-2 sentences>" \
-  --posting-file applications/<slug>/job.md \
-  --cover-file applications/<slug>/<cover filename>.md
+  --posting-file data/pipeline/applications/<slug>/job.md \
+  --cover-file data/pipeline/applications/<slug>/<cover filename>.md
 ```
 
 If the slug it assigns differs from the folder you created, rename the folder

@@ -1,7 +1,7 @@
 # profile.example
 
-Templates for everything in `profile/`. `/setup` reads them to know what to
-collect and what shape to write.
+Templates for everything in `profile/`, which sits right beside this
+directory. `/setup` reads them to know what to collect and what shape to write.
 
 `profile/` is gitignored; this directory is not. So:
 
@@ -10,5 +10,5 @@ collect and what shape to write.
 - **Never put real data here.** It would be committed.
 
 If you would rather fill things in by hand than run `/setup`, copy this
-directory to `profile/` and edit. Every file is optional except
+directory to `../profile/` and edit. Every file is optional except
 `candidate.md` and `cv_master.md`.

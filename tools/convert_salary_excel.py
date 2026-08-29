@@ -13,7 +13,7 @@ Usage:
     python tools/convert_salary_excel.py <path-to-excel-file> --source "My Union Stats 2025"
     python tools/convert_salary_excel.py <path-to-excel-file> --baseline 100 --baseline-desc "Index 100 = median salary"
 
-The output file is written to profile/salary_data.json, alongside the rest of
+The output file is written to data/profile/salary_data.json, alongside the rest of
 your own data.
 
 Expected Excel format:
@@ -31,6 +31,10 @@ import re
 import sys
 import argparse
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import paths  # noqa: E402
 
 
 # Column name patterns for auto-detection
@@ -255,7 +259,7 @@ def main():
     parser.add_argument("excel_file", help="Path to the Excel file with salary data")
     parser.add_argument(
         "--output", default=None,
-        help="Output JSON file path (default: profile/salary_data.json)",
+        help="Output JSON file path (default: data/profile/salary_data.json)",
     )
     parser.add_argument(
         "--source", default=None,
@@ -284,8 +288,7 @@ def main():
         print(f"Error: File not found: {excel_path}", file=sys.stderr)
         sys.exit(1)
 
-    repo = Path(__file__).resolve().parent.parent
-    output_path = Path(args.output) if args.output else repo / "profile" / "salary_data.json"
+    output_path = Path(args.output) if args.output else paths.PROFILE / "salary_data.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"Reading: {excel_path}")

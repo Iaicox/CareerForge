@@ -19,6 +19,10 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import paths  # noqa: E402
+
 IS_WINDOWS = platform.system() == "Windows"
 
 OK, MISSING, WARN = "ok", "missing", "warning"
@@ -168,43 +172,43 @@ def check_templates() -> Check:
 
 
 def check_config() -> Check:
-    cfg = REPO / "config" / "config.toml"
+    cfg = paths.CONFIG
     if not cfg.exists():
-        return Check("configuration", MISSING, "config/config.toml not found",
-                     "run /setup, or copy config/config.example.toml")
+        return Check("configuration", MISSING, "data/config/config.toml not found",
+                     "run /setup, or copy data/config/config.example.toml")
     try:
         import tomllib
         with cfg.open("rb") as fh:
             data = tomllib.load(fh)
     except Exception as exc:
-        return Check("configuration", MISSING, f"config/config.toml is invalid: {exc}",
-                     "fix the syntax, or restore from config/config.example.toml")
+        return Check("configuration", MISSING, f"data/config/config.toml is invalid: {exc}",
+                     "fix the syntax, or restore from data/config/config.example.toml")
     n = len(data.get("statuses", []))
     if not n:
         return Check("configuration", MISSING, "no statuses configured",
-                     "copy the [[statuses]] blocks from config/config.example.toml")
+                     "copy the [[statuses]] blocks from data/config/config.example.toml")
     return Check("configuration", OK, f"locale {data.get('locale', 'en')}, {n} statuses")
 
 
 def check_profile() -> Check:
     required = ["candidate.md", "cv_master.md"]
-    present = [f for f in required if (REPO / "profile" / f).exists()]
+    present = [f for f in required if (paths.PROFILE / f).exists()]
     if len(present) == len(required):
         extras = [
             f for f in ("behavioral.md", "evaluation.md", "interview-prep.md",
                         "search-queries.md", "cover_letter_master.md")
-            if (REPO / "profile" / f).exists()
+            if (paths.PROFILE / f).exists()
         ]
-        return Check("profile", OK, f"{len(present) + len(extras)} files in profile/")
+        return Check("profile", OK, f"{len(present) + len(extras)} files in data/profile/")
     return Check("profile", MISSING,
                  f"missing {', '.join(f for f in required if f not in present)}",
                  "run /setup to build your profile")
 
 
 def check_tracker() -> Check:
-    db = REPO / "tracker" / "careerforge.db"
+    db = paths.DB
     if not db.exists():
-        return Check("tracker database", MISSING, "tracker/careerforge.db not found",
+        return Check("tracker database", MISSING, "data/state/careerforge.db not found",
                      "run: python tools/tracker.py init")
     try:
         import sqlite3
@@ -218,7 +222,7 @@ def check_tracker() -> Check:
 
 
 def check_notion() -> Check:
-    cfg = REPO / "config" / "config.toml"
+    cfg = paths.CONFIG
     enabled = False
     if cfg.exists():
         try:
@@ -236,14 +240,14 @@ def check_notion() -> Check:
         or os.environ.get("NOTION_TOKEN")
         or (REPO / ".notion_token").exists()
     )
-    ids = (REPO / "config" / "notion.json").exists()
+    ids = paths.NOTION_IDS.exists()
     if token and ids:
         return Check("Notion mirror", OK, "token and database ids present", required=False)
     what = []
     if not token:
         what.append("no token (NOTION_KEY in .env, or .notion_token)")
     if not ids:
-        what.append("no config/notion.json")
+        what.append("no data/state/notion.json")
     return Check("Notion mirror", WARN, "; ".join(what),
                  "python tools/notion_sync.py provision", required=False)
 
@@ -259,7 +263,7 @@ def _load_dotenv() -> None:
 
 
 def check_dotenv() -> Check:
-    path = REPO / ".env"
+    path = paths.ENV
     if not path.exists():
         return Check(".env", WARN, "not present",
                      "optional; holds GEMINI_API_KEY, NOTION_KEY, MAIL_PASSWORD",
@@ -277,7 +281,7 @@ def check_dotenv() -> Check:
 
 def check_gemini() -> Check:
     """Optional: bulk gathering delegated off Claude's context."""
-    cfg_path = REPO / "config" / "config.toml"
+    cfg_path = paths.CONFIG
     enabled = False
     if cfg_path.exists():
         try:

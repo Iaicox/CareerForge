@@ -6,7 +6,7 @@ argument-hint: "[--documents | --public | --github <user> | --site <url>]"
 # /expand — fill gaps in the profile
 
 `/setup` builds the profile once. This goes back over it when there is more
-material: a document you dropped into `documents/`, a repository you shipped, a
+material: a document you dropped into `data/documents/`, a repository you shipped, a
 certificate you earned.
 
 `$ARGUMENTS` narrows the source: `--documents`, `--public`, `--github <user>`,
@@ -17,7 +17,7 @@ certificate you earned.
 ## The rule
 
 **Everything found here is a proposal, not a fact.** Present it, let the user
-confirm or correct it, and only then write to `profile/`.
+confirm or correct it, and only then write to `data/profile/`.
 
 An inferred skill is exactly the claim that has to be defended in an interview.
 "You have Terraform in three repositories" is a reasonable thing to notice and a
@@ -27,7 +27,7 @@ terrible thing to write into a CV unprompted.
 
 ## Step 0: know what is already there
 
-Read `profile/candidate.md`. If it does not exist, this is the wrong command —
+Read `data/profile/candidate.md`. If it does not exist, this is the wrong command —
 offer `/setup`.
 
 Note what is thin: roles with one bullet, skills with no context, years with
@@ -35,10 +35,10 @@ nothing in them.
 
 ## Step 1: documents (`--documents`)
 
-List `documents/`, then read anything not yet reflected in the profile.
+List `data/documents/`, then read anything not yet reflected in the profile.
 
 ```bash
-ls documents/
+ls data/documents/
 ```
 
 For each file, extract what the profile is missing:
@@ -53,7 +53,7 @@ For each file, extract what the profile is missing:
 Long PDFs are worth delegating:
 
 ```bash
-python tools/gemini.py summarize --file documents/<file> \
+python tools/gemini.py summarize --file data/documents/<file> \
   --question "List every role, project, technology and measurable outcome mentioned. Quote the wording used."
 ```
 
@@ -62,7 +62,7 @@ Exit code 3 means Gemini is unavailable — read it yourself.
 ## Step 2: public sources (`--public`)
 
 Only sources the user names or that are already listed in
-`profile/candidate.md`. Do not go looking for them by name across the web.
+`data/profile/candidate.md`. Do not go looking for them by name across the web.
 
 - **GitHub** — public repositories, primary languages, what each project does,
   activity. Distinguish a maintained project from a one-weekend experiment;
@@ -94,8 +94,8 @@ which phrasing to avoid.
 
 ## Step 4: write what was confirmed
 
-Only the confirmed items, into `profile/candidate.md`, `profile/behavioral.md`
-or `profile/interview-prep.md` as appropriate. Keep the existing structure.
+Only the confirmed items, into `data/profile/candidate.md`, `data/profile/behavioral.md`
+or `data/profile/interview-prep.md` as appropriate. Keep the existing structure.
 
 If new material suggests search terms the user is not currently searching for,
 say so and offer `/setup --section search`.

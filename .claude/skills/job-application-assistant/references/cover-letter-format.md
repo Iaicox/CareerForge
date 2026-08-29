@@ -5,8 +5,8 @@
 Cover letters are written in Markdown and built into styled DOCX + PDF, matching the CV's visual design (Roboto fonts) via pandoc reference-doc `templates/reference_cover.docx`.
 
 **Master reference:** `templates/cover_letter_master.md` - skeleton with `[PLACEHOLDERS]`. **Copy it as the starting point; never edit the master itself.**
-**Output file:** `applications/<company-slug>/cover_letter_{slug}.md`
-**Build:** `powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1 -Path applications\<company-slug>` (same command with `processing\<company-slug>` once the folder has moved there)
+**Output file:** `data/pipeline/applications/<company-slug>/cover_letter_{slug}.md`
+**Build:** `powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1 -Path data\pipeline\applications\<company-slug>` (same command with `data\pipeline\processing\<company-slug>` once the folder has moved there)
 
 ## Structure (from the master)
 

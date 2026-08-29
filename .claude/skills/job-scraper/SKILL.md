@@ -6,17 +6,17 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch, Agent, 
 
 # Job scraper
 
-Searches the boards configured in `profile/search-queries.md`, drops anything
+Searches the boards configured in `data/profile/search-queries.md`, drops anything
 already seen or already in the tracker, and presents what is left.
 
 ## Before anything
 
-Requires `profile/search-queries.md`. If it is missing, say so and offer
+Requires `data/profile/search-queries.md`. If it is missing, say so and offer
 `/setup --section search`. Never invent search criteria for the user.
 
 ## Step 0: load state
 
-`job_scraper/seen_jobs.json` is owned by `tools/shortlist.py`. Read it through
+`data/job_scraper/seen_jobs.json` is owned by `tools/shortlist.py`. Read it through
 the tool and write it only through the tool — never by hand. It carries the
 scores `/rank` produced, and hand-editing loses them.
 
@@ -25,7 +25,7 @@ scores `/rank` produced, and hand-editing loses them.
    python tools/shortlist.py show --include-expired --json
    ```
    The tool creates the file if it does not exist yet.
-2. `profile/search-queries.md` — the query set, geography tiers and exclusions.
+2. `data/profile/search-queries.md` — the query set, geography tiers and exclusions.
 3. Everything already tracked, as the second dedup source:
    ```bash
    python tools/tracker.py list --json
@@ -83,7 +83,7 @@ reports as new.
 
 ## Step 5: present
 
-Save the shortlist to `job_scraper/runs/YYYY-MM-DD.md` (suffix `-2` if today's
+Save the shortlist to `data/job_scraper/runs/YYYY-MM-DD.md` (suffix `-2` if today's
 file exists), then show the same table:
 
 ```

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read a value out of config/config.toml for the shell scripts.
+"""Read a value out of data/config/config.toml for the shell scripts.
 
     python tools/config_get.py documents          # JSON object
     python tools/config_get.py documents.engine   # bare scalar

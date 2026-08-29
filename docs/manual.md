@@ -2,7 +2,7 @@
   Published as an artifact: https://claude.ai/code/artifact/2b68ae96-7ba7-4e71-8942-451c949f6ea5
   After editing this file, regenerate and republish:
     python tools/publish_manual.py
-  then publish tracker/manual-artifact.html with the Artifact tool, passing
+  then publish docs/manual-artifact.html with the Artifact tool, passing
   that url so the existing page updates rather than a second one appearing.
 -->
 
@@ -64,7 +64,7 @@ tracker.
 
 **The honesty machinery**, because it is the part that makes the output usable:
 
-- Everything claimed must be traceable to `profile/candidate.md`
+- Everything claimed must be traceable to `data/profile/candidate.md`
 - Your profile can carry explicit *honesty notes* — what you did **not** do,
   phrasings to avoid, claims that would be a stretch. They never appear in a
   document; they stop one from being written
@@ -136,7 +136,7 @@ interview.
 
 **Then it offers two routes.**
 
-**Route A — your documents.** Drop everything you have into `documents/`: CVs
+**Route A — your documents.** Drop everything you have into `data/documents/`: CVs
 (including old ones), certificates, reference letters, performance reviews,
 project write-ups. Any readable format. Claude reads them and asks about gaps.
 
@@ -155,15 +155,15 @@ suggests role types your history supports that you may not have considered.
 
 | Path | What |
 |---|---|
-| `profile/candidate.md` | Identity, education, experience, projects, skills |
-| `profile/behavioral.md` | How you work, strengths, ideal environment |
-| `profile/evaluation.md` | Match areas, goals, location rules, salary floor, sector filter |
-| `profile/interview-prep.md` | STAR examples from real experience |
-| `profile/cv_master.md` | Your master CV |
-| `profile/cover_letter_master.md` | The letter skeleton |
-| `profile/search-queries.md` | What `/scrape` looks for |
-| `config/config.toml` | Locale, statuses, page limits, engine |
-| `tracker/careerforge.db` | The tracker |
+| `data/profile/candidate.md` | Identity, education, experience, projects, skills |
+| `data/profile/behavioral.md` | How you work, strengths, ideal environment |
+| `data/profile/evaluation.md` | Match areas, goals, location rules, salary floor, sector filter |
+| `data/profile/interview-prep.md` | STAR examples from real experience |
+| `data/profile/cv_master.md` | Your master CV |
+| `data/profile/cover_letter_master.md` | The letter skeleton |
+| `data/profile/search-queries.md` | What `/scrape` looks for |
+| `data/config/config.toml` | Locale, statuses, page limits, engine |
+| `data/state/careerforge.db` | The tracker |
 
 **All of it is gitignored.** After `/setup`, `git status` should be empty. If it
 is not, something wrote to a framework file, which is a bug — say so.
@@ -257,8 +257,8 @@ has to defend it in the interview.
 /scrape fintech         # prioritise one category
 ```
 
-Searches the boards in `profile/search-queries.md`, drops anything already in
-`job_scraper/seen_jobs.json` or already in your tracker, and records what is
+Searches the boards in `data/profile/search-queries.md`, drops anything already in
+`data/job_scraper/seen_jobs.json` or already in your tracker, and records what is
 new.
 
 Scraping is deliberately cheap. It does not score anything.
@@ -277,7 +277,7 @@ one you pay for again next week.
 
 Two things are gates rather than deductions:
 
-- **Location** — a posting breaking the rules in `profile/evaluation.md` fails,
+- **Location** — a posting breaking the rules in `data/profile/evaluation.md` fails,
   whatever else it offers
 - **Language** — a posting requiring a language your profile does not claim
   fails
@@ -328,7 +328,7 @@ tracker note.
 **A weak verdict is a real answer.** Not applying is the correct outcome for
 most postings, and the time saved is the point.
 
-**2 — Draft.** Creates `applications/<slug>/` with:
+**2 — Draft.** Creates `data/pipeline/applications/<slug>/` with:
 
 - `job.md` — the posting as captured, plus the fit evaluation. Your safety copy
   when the posting is taken down
@@ -380,10 +380,10 @@ Every document exists as `.md` (source), `.docx` (editable), `.pdf` (what you
 send). Edit the `.docx` in Word, then rebuild:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1 -Path applications\<slug>
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1 -Path data\pipeline\applications\<slug>
 ```
 ```bash
-tools/build.sh applications/<slug>
+tools/build.sh data/pipeline/applications/<slug>
 ```
 
 The build sees the DOCX is newer than the Markdown and refreshes **only the
@@ -401,9 +401,9 @@ decided by its status, never set separately:
 
 | Directory | Meaning |
 |---|---|
-| `applications/` | Applied, waiting |
-| `processing/` | They replied; interviews under way |
-| `rejected/` | Closed: rejection, silence, or withdrawn |
+| `data/pipeline/applications/` | Applied, waiting |
+| `data/pipeline/processing/` | They replied; interviews under way |
+| `data/pipeline/rejected/` | Closed: rejection, silence, or withdrawn |
 
 ```bash
 python tools/tracker.py set-status acme screening
@@ -417,7 +417,7 @@ Overwriting an application's documents is not a recoverable mistake, so it is
 not done silently.
 
 Statuses are yours: `python tools/tracker.py statuses` lists what is configured,
-and `config/config.toml` is where you rename, add or translate them.
+and `data/config/config.toml` is where you rename, add or translate them.
 
 ### `/board` — the kanban
 
@@ -451,7 +451,7 @@ reloads rather than overwriting.
 ```
 
 Reads the mailbox you apply from over IMAP and matches messages to open
-applications. Configure it under `[mail]` in `config/config.toml`, with an app
+applications. Configure it under `[mail]` in `data/config/config.toml`, with an app
 password in `MAIL_PASSWORD` or `.mail_password`.
 
 **Read-only, by construction.** The mailbox is opened read-only and messages are
@@ -492,7 +492,7 @@ If the stage is inferred it says so, and you can correct it. Guessing wrong
 wastes the whole preparation.
 
 Each run produces likely questions drawn from **this** posting and **this**
-company's research, an answer for each grounded in `profile/interview-prep.md`,
+company's research, an answer for each grounded in `data/profile/interview-prep.md`,
 questions worth asking them, and your known weak points with an honest answer
 for each.
 
@@ -522,7 +522,7 @@ The profile is not written once.
 /expand --github yourname
 ```
 
-Drop something new into `documents/` and run `/expand`. It reads what is not yet
+Drop something new into `data/documents/` and run `/expand`. It reads what is not yet
 reflected in the profile and proposes additions in three groups: new material,
 better evidence for something already claimed, and contradictions between a
 document and the profile.
@@ -539,7 +539,7 @@ latter.
 
 ## 10. Configuration reference
 
-`config/config.toml`, gitignored. Start from `config/config.example.toml`, which
+`data/config/config.toml`, gitignored. Start from `data/config/config.example.toml`, which
 documents every key inline.
 
 | Key | Read by | Notes |
@@ -608,7 +608,7 @@ gemini                    # once, interactively, and sign in
 # or: set GEMINI_API_KEY from https://aistudio.google.com/apikey
 ```
 
-Then in `config/config.toml`:
+Then in `data/config/config.toml`:
 
 ```toml
 [gemini]
@@ -634,13 +634,13 @@ python tools/gemini.py check
 | Mining old sessions | Interview answers grounded in real stories |
 
 The line is not cost. Gemini **gathers and compresses**; the judgement about
-what may honestly be said about you stays in one place, against `profile/` and
+what may honestly be said about you stays in one place, against `data/profile/` and
 the rules in `CLAUDE.md`.
 
 ### What it sees
 
 Whatever the task needs, including your profile — you configured it that way.
-Every prompt is logged under `tracker/gemini-log/` with the payload size and its
+Every prompt is logged under `data/state/gemini-log/` with the payload size and its
 opening, so what left your machine stays inspectable.
 
 To narrow it, drop a task from `tasks`. To stop entirely, `enabled = false`.
@@ -686,7 +686,7 @@ then re-run the status change.
 `python tools/tracker.py init`
 
 **`no configuration found`**
-Copy `config/config.example.toml` to `config/config.toml`, or run `/setup`.
+Copy `data/config/config.example.toml` to `data/config/config.toml`, or run `/setup`.
 
 **Board says the application changed since you loaded it**
 The tracker was updated elsewhere while the tab sat open. It reloads; retry.
@@ -707,7 +707,7 @@ proposes, you decide.
 
 **`git status` is not empty after `/setup`**
 A bug. Something wrote to a framework file. Revert it and say so; the change
-belongs in `profile/` or `config/config.toml`.
+belongs in `data/profile/` or `data/config/config.toml`.
 
 ---
 
@@ -715,8 +715,8 @@ belongs in `profile/` or `config/config.toml`.
 
 | To change | Edit |
 |---|---|
-| What `/setup` asks for | `profile.example/*.md` |
-| Statuses, labels, page limits, locale | `config/config.toml` |
+| What `/setup` asks for | `data/profile.example/*.md` |
+| Statuses, labels, page limits, locale | `data/config/config.toml` |
 | How postings are scored | `.claude/skills/job-application-assistant/references/job-evaluation.md` |
 | Tone and phrasing rules | `.claude/skills/job-application-assistant/references/writing-style.md` |
 | CV structure and markup | `.claude/skills/job-application-assistant/references/cv-format.md` |
@@ -728,7 +728,7 @@ belongs in `profile/` or `config/config.toml`.
 Framework files are committed; your data is not. A workflow that wants to write
 to a framework file is a bug, not a reason to write to one.
 
-Anything user-specific belongs in `profile/` or `config/config.toml`. That is
+Anything user-specific belongs in `data/profile/` or `data/config/config.toml`. That is
 what keeps `git pull` from ever conflicting with your content.
 
 ### The tools
@@ -752,7 +752,7 @@ Commands orchestrate; these do the work. Each runs standalone and each takes
 | `mailsync.py` | IMAP reconciliation |
 | `notion_sync.py` | The optional Notion mirror: provision, sync-options, import, push |
 | `salary_lookup.py`, `convert_salary_excel.py` | Salary benchmarking against data you supply |
-| `session_digest.py` | Mines old Claude Code transcripts into `profile/history.md` |
+| `session_digest.py` | Mines old Claude Code transcripts into `data/profile/history.md` |
 
 ### Carrying history over from another workspace
 
@@ -769,7 +769,7 @@ python tools/session_digest.py merge
 `extract` filters transcripts down to human turns and assistant prose, dropping
 tool calls and their results — typically about 3% of the raw bytes survive, and
 that 3% is all of the reasoning. `digest` summarises each session; `merge`
-combines them into `profile/history.md`, organised by theme.
+combines them into `data/profile/history.md`, organised by theme.
 
 The raw transcripts stay where they are. They are full of absolute paths and
 filenames that no longer exist, so resuming one in a new workspace is more

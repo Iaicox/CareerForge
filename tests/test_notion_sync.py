@@ -22,6 +22,7 @@ TOOLS = Path(__file__).resolve().parent.parent / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import notion_sync  # noqa: E402
+import paths  # noqa: E402
 import tracker  # noqa: E402
 
 
@@ -86,19 +87,15 @@ class MirrorTestCase(unittest.TestCase):
     """A throwaway repo with one application. No network, no real database."""
 
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-notion-test-"))
-        self._real_repo = tracker.REPO
-        self._real_db = tracker.DB_PATH
+        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-notion-test-")).resolve()
+        self._real_repo = paths.REPO
+        example = paths.CONFIG_EXAMPLE
 
-        tracker.REPO = self.tmp
-        tracker.DB_PATH = self.tmp / "tracker" / "careerforge.db"
-        for stage in tracker.STAGES:
-            (self.tmp / stage).mkdir(parents=True)
-        (self.tmp / "config").mkdir()
-        shutil.copy(
-            self._real_repo / "config" / "config.example.toml",
-            self.tmp / "config" / "config.toml",
-        )
+        paths.configure(self.tmp)
+        for stage in paths.STAGES:
+            paths.stage_dir(stage).mkdir(parents=True)
+        paths.CONFIG_DIR.mkdir(parents=True)
+        shutil.copy(example, paths.CONFIG)
         tracker.load_config(force=True)
 
         tracker.init_db()
@@ -111,8 +108,7 @@ class MirrorTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.conn.close()
-        tracker.REPO = self._real_repo
-        tracker.DB_PATH = self._real_db
+        paths.configure(self._real_repo)
         tracker.load_config(force=True)
         shutil.rmtree(self.tmp, ignore_errors=True)
 

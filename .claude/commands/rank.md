@@ -8,7 +8,7 @@ argument-hint: "[--all] [--min-score N]"
 `/scrape` finds postings. This decides which of them deserve the hour that
 `/apply` costs.
 
-Scores persist into `job_scraper/seen_jobs.json`. A triage finding that only
+Scores persist into `data/job_scraper/seen_jobs.json`. A triage finding that only
 ever reached the console is one you pay for again next week.
 
 `$ARGUMENTS`:
@@ -20,7 +20,7 @@ ever reached the console is one you pay for again next week.
 
 ## Step 0: check the workspace
 
-`profile/evaluation.md` must exist. If it does not, stop and offer `/setup`.
+`data/profile/evaluation.md` must exist. If it does not, stop and offer `/setup`.
 
 ## Step 1: sweep expired postings
 
@@ -53,17 +53,17 @@ the bulk work that should not sit in Claude's context:
 ```bash
 python tools/gemini.py rank \
   --input /tmp/to_rank.json \
-  --criteria profile/evaluation.md > /tmp/ranking.json
+  --criteria data/profile/evaluation.md > /tmp/ranking.json
 ```
 
-**Score the file from step 2, never `job_scraper/seen_jobs.json`.** That file
+**Score the file from step 2, never `data/job_scraper/seen_jobs.json`.** That file
 is every posting ever seen: passing it re-scores the whole history on every
 run, expired entries included, and `merge-scores` then overwrites scores that
 were already good. Step 1 exists to take expired postings out of the run.
 
 Exit code 3 means Gemini is unavailable — not an error. Score them yourself
 instead, using `.claude/skills/job-application-assistant/references/job-evaluation.md`
-and `profile/evaluation.md`, and produce the same JSON shape. Say which route
+and `data/profile/evaluation.md`, and produce the same JSON shape. Say which route
 you took, so the user knows whether a score came from Gemini or from you.
 
 Either way, each result is:
@@ -79,7 +79,7 @@ Either way, each result is:
 
 Two things are not deductions, they are failures:
 
-- **Location.** A posting that breaks the rules in `profile/evaluation.md` is
+- **Location.** A posting that breaks the rules in `data/profile/evaluation.md` is
   `location_verdict: fail`, whatever else it offers.
 - **Language.** A posting requiring a language the profile does not claim at
   working level is `language_verdict: fail`.

@@ -45,16 +45,16 @@ python tools/notion_sync.py provision --parent-page <page URL>
 
 This creates three linked databases — Companies, Applications, Events —
 **with the statuses, work modes, event types and outcomes from your own
-`config/config.toml`**. There is no template to duplicate and no ids to
-transcribe; the ids it gets back are written to `config/notion.json`
+`data/config/config.toml`**. There is no template to duplicate and no ids to
+transcribe; the ids it gets back are written to `data/state/notion.json`
 (gitignored).
 
-**5. Enable it.** Set `notion.enabled = true` in `config/config.toml`.
+**5. Enable it.** Set `notion.enabled = true` in `data/config/config.toml`.
 
-## After you edit config/config.toml
+## After you edit data/config/config.toml
 
 `provision` writes the select options once. Add a status, work mode, event type
-or outcome to `config/config.toml` afterwards and Notion has never heard of it —
+or outcome to `data/config/config.toml` afterwards and Notion has never heard of it —
 the select still holds the options it was created with, and the new value has
 nowhere to land.
 
@@ -72,7 +72,7 @@ you are sure nothing uses it.
 ## Daily use
 
 ```bash
-python tools/notion_sync.py sync-options       # after editing config/config.toml
+python tools/notion_sync.py sync-options       # after editing data/config/config.toml
 python tools/notion_sync.py push               # applications, companies, events
 python tools/notion_sync.py push --files       # also upload the built PDFs
 python tools/notion_sync.py push --slug acme   # just one application
@@ -127,7 +127,7 @@ Upload limits: 20 MiB per file in a single request. A CV is tens of kilobytes.
 
 If you already track applications in Notion and want to move to CareerForge:
 
-**1. Point at your databases.** Write `config/notion.json` by hand:
+**1. Point at your databases.** Write `data/state/notion.json` by hand:
 
 ```json
 {
@@ -149,7 +149,7 @@ python tools/notion_sync.py import --dry-run
 
 **3. Map your statuses.** Any Notion status label the importer cannot match is
 reported and would land as `draft`. Fix that by adding the label to the right
-`[[statuses]]` entry in `config/config.toml` — the importer matches on any
+`[[statuses]]` entry in `data/config/config.toml` — the importer matches on any
 locale's label, so a Russian or German status string maps cleanly once it is
 listed there.
 
@@ -189,7 +189,7 @@ Reconcile what came in against what is on disk:
 
 ```bash
 python tools/tracker.py list --json | python -c "import json,sys; print(len(json.load(sys.stdin)))"
-ls applications processing rejected
+ls data/pipeline/applications data/pipeline/processing data/pipeline/rejected
 python tools/tracker.py list --json    # look at folder_in_sync
 ```
 

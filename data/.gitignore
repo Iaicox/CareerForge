@@ -1,0 +1,11 @@
+# Everything in here is yours and never committed -- except the skeleton
+# (.gitkeep, README.md) and the templates the framework ships beside the
+# files they are templates for.
+*
+!*/
+!.gitignore
+!.gitkeep
+!/README.md
+!/config/config.example.toml
+!/profile.example/*
+!/documents/README.md

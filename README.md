@@ -21,8 +21,8 @@ tracker, with interview prep waiting when the reply arrives.
  and config       dedup vs tracker        draft CV (+ letter)      everything
     |                 |                        |                   you have sent
     v                 v                        v
- profile/         ranked matches          reviewer agent critiques
- config.toml      with fit ratings        -> revise -> build PDF -> track
+ data/profile/    ranked matches          reviewer agent critiques
+ data/config/     with fit ratings        -> revise -> build PDF -> track
 ```
 
 The framework is language- and country-agnostic. Your profile, your statuses and
@@ -34,7 +34,7 @@ The failure mode of an AI writing your CV is a confident invention that you then
 have to defend in an interview. CareerForge is built against that:
 
 - **One source of truth.** Everything claimed in a document must be traceable to
-  `profile/candidate.md`. Nothing else counts as evidence.
+  `data/profile/candidate.md`. Nothing else counts as evidence.
 - **Honesty notes in the profile.** Each role can carry explicit boundaries —
   what you did *not* do, phrasings to avoid, which claims would be a stretch.
   They never appear in a document; they stop one from being written.
@@ -104,7 +104,7 @@ separate](#how-your-data-is-kept-separate).
 
 ## The tracker
 
-A local SQLite database at `tracker/careerforge.db`. No account, no service, no
+A local SQLite database at `data/state/careerforge.db`. No account, no service, no
 quota, works on a plane.
 
 ```bash
@@ -121,15 +121,15 @@ changing the status moves the application's documents with it:
 
 | Directory | Meaning |
 |---|---|
-| `applications/` | Applied, waiting for an answer |
-| `processing/` | They replied; interviews scheduled or underway |
-| `rejected/` | Closed: rejection, silence, or withdrawn |
+| `data/pipeline/applications/` | Applied, waiting for an answer |
+| `data/pipeline/processing/` | They replied; interviews scheduled or underway |
+| `data/pipeline/rejected/` | Closed: rejection, silence, or withdrawn |
 
-Statuses, their labels and their stage mapping all live in `config/config.toml`.
+Statuses, their labels and their stage mapping all live in `data/config/config.toml`.
 Rename them, add them, translate them — the framework reads whatever you define.
 
 It is an ordinary SQLite file, so you can also open it in DB Browser for SQLite,
-the VS Code SQLite extension, or `datasette tracker/careerforge.db`.
+the VS Code SQLite extension, or `datasette data/state/careerforge.db`.
 
 ### Optional: mirror to Notion
 
@@ -147,26 +147,30 @@ tracker in.
 
 ## How your data is kept separate
 
-Everything about you lives in gitignored paths:
+Everything about you lives under one directory, `data/`:
 
 ```
-profile/          your CV master, experience, STAR stories, search queries
-config/config.toml your locale, statuses, page limits
-tracker/          the database
-applications/ processing/ rejected/    per-application documents
+data/
+  config/config.toml   your locale, statuses, page limits   (what you write)
+  profile/             your CV master, experience, STAR stories, search queries
+  documents/           the raw material you dropped in
+  pipeline/            applications/ processing/ rejected/ — one folder per application
+  state/               the database, Notion ids, logs       (what the tools write)
 ```
 
 Everything else is the framework. `/setup` and daily work never write outside
-those paths — so `git status` stays clean, and pulling an update never conflicts
-with your own content. `profile.example/` holds the templates that `/setup`
-fills in; edit those if you want it to ask for something different.
+`data/` — so `git status` stays clean, and pulling an update never conflicts
+with your own content. The only tracked files in there are the templates,
+kept beside the files they are templates for: `data/config/config.example.toml`
+and `data/profile.example/`. Edit those if you want `/setup` to ask for
+something different.
 
 ## Making it yours
 
 | To change | Edit |
 |---|---|
-| What the setup interview asks for | `profile.example/*.md` |
-| Statuses, labels, page limits, locale | `config/config.toml` |
+| What the setup interview asks for | `data/profile.example/*.md` |
+| Statuses, labels, page limits, locale | `data/config/config.toml` |
 | How postings are scored | `.claude/skills/job-application-assistant/references/job-evaluation.md` |
 | Tone and phrasing rules | `.claude/skills/job-application-assistant/references/writing-style.md` |
 | Document design | `templates/reference_cv.docx` / `reference_cover.docx` in Word, or `tools/make_reference.ps1` |

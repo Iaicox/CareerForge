@@ -34,8 +34,8 @@ it is to have it available to choose from.
 `/setup` extracts what it can and asks about the gaps. `/expand` goes back over
 it when you have added something new.
 
-Everything extracted lands in `profile/`, which is also gitignored. Nothing here
+Everything extracted lands in `data/profile/`, which is also gitignored. Nothing here
 is sent anywhere unless you have enabled the Gemini delegation in
-`config/config.toml` — see `docs/manual.md`.
+`data/config/config.toml` — see `docs/manual.md`.
 
 Files stay where you put them; nothing here is moved, renamed or deleted.

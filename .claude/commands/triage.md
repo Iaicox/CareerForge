@@ -42,14 +42,14 @@ Then two lists with no action attached:
 - **Unmatched** — folders with no tracker entry, and tracker entries whose
   folder is missing.
 - **Unknown status** — rows whose `stage` is `null` in `list --json`: their
-  status is not in `config/config.toml`, usually because a status id was
+  status is not in `data/config/config.toml`, usually because a status id was
   renamed or removed. Name the status each one carries and stop there. These
   are deliberately absent from `--stale`, because the only thing this command
   offers a silent row is to close it, and a row whose status cannot be read is
   not a row to make guesses about. Fixing it means editing the config or
   re-setting the status, and that is the user's call.
 - **Silent** — from `--stale`. Propose the `frozen` status for each; that moves
-  the folder to `rejected/`. This is the only status change /triage ever
+  the folder to `data/pipeline/rejected/`. This is the only status change /triage ever
   proposes.
 
 Report the count of everything already correct. Do not list it.
