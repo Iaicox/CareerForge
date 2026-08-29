@@ -273,9 +273,23 @@ JSON_ONLY = (
 # ---------------------------------------------------------------------------
 
 
-def research_company(name: str, url: str | None = None) -> dict:
+def research_company(name: str, url: str | None = None, role: str | None = None,
+                     location: str | None = None) -> dict:
+    target = ""
+    if role or location:
+        target = (
+            f"\n\nThe candidate is looking at the role \"{role or 'unknown'}\" "
+            f"at this company, located: {location or 'unknown'}. Also look for what "
+            "this company pays for that role: salary bands from the posting, "
+            "Glassdoor, levels.fyi, Indeed, Landing.jobs and similar. Report every "
+            "figure you find for THIS company with its own location, currency, "
+            "period and basis exactly as the source states them -- a figure for "
+            "another location is still worth reporting, labelled with that "
+            "location. Never convert, never estimate: a figure that is not stated "
+            "is not in the list."
+        )
     prompt = f"""Research the company "{name}"{f' (website: {url})' if url else ''} \
-for a candidate preparing a job application.
+for a candidate preparing a job application.{target}
 
 Use web search. Every factual claim must carry the source URL you found it at, \
 and a date where the source gives one. Recency matters: a "recent" launch from \
@@ -300,12 +314,20 @@ Schema:
   "red_flags": [
     {{"concern": string, "source_url": string}}   // layoffs, lawsuits, churn
   ],
-  "unverified": [string]           // things you believe but could not source
+  "unverified": [string],          // things you believe but could not source
+  "salary": [                      // figures for THIS company only; [] when none found
+    {{"role": string, "location": string, "currency": string,
+     "amount_min": number|null, "amount_max": number|null,
+     "period": "year"|"month", "basis": "gross"|"net"|null,
+     "payments_per_year": number|null, "source_url": string, "date": "YYYY-MM"|null}}
+  ]
 }}"""
     data = call_json(prompt, kind="research-company")
     if not isinstance(data, dict):
         raise GeminiBadOutput("research did not come back as an object")
     data.setdefault("name", name)
+    if not isinstance(data.get("salary"), list):
+        data["salary"] = []
     data["fetched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return data
 
@@ -444,6 +466,8 @@ def main() -> int:
     rc = sub.add_parser("research-company", help="research a company, with sources")
     rc.add_argument("--name", required=True)
     rc.add_argument("--url")
+    rc.add_argument("--role", help="the role in question; asks for salary figures too")
+    rc.add_argument("--location", help="where the posting is; figures are reported per location")
 
     ep = sub.add_parser("extract-posting", help="job posting text or HTML -> JSON")
     ep.add_argument("--file")
@@ -465,7 +489,7 @@ def main() -> int:
 
     try:
         if args.command == "research-company":
-            print(json.dumps(research_company(args.name, args.url),
+            print(json.dumps(research_company(args.name, args.url, args.role, args.location),
                              ensure_ascii=False, indent=2))
 
         elif args.command == "extract-posting":

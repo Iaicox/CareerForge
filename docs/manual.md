@@ -344,7 +344,11 @@ and `/apply` never evaluates it twice.
 - `cover_letter_<you>.md` — if you asked for one, in the posting's language
 
 **3 — Research and review.** Company research is fetched (cached for 30 days,
-so the second application to a company is free), then an `application-reviewer`
+so the second application to a company is free) — including what the company
+pays for this role, if anything is published. A figure for the posting's own
+location is recorded in your salary benchmark with its source; a figure for
+some other market is not, and the company is marked *unknown* for this
+location instead, with the lead kept in a note. Then an `application-reviewer`
 agent critiques the drafts: missed requirements, weak phrasing, company angles,
 and a verification checklist.
 
@@ -766,7 +770,7 @@ Commands orchestrate; these do the work. Each runs standalone and each takes
 | `gemini.py` | The single wrapper around the Gemini CLI |
 | `mailsync.py` | IMAP reconciliation |
 | `notion_sync.py` | The optional Notion mirror: provision, adopt, sync-options, import, push |
-| `salary_lookup.py`, `convert_salary_excel.py` | Salary benchmarking against data you supply |
+| `salary_lookup.py`, `convert_salary_excel.py` | Salary benchmarking against data you supply — and data research finds (`add`) |
 | `session_digest.py` | Mines old Claude Code transcripts into `data/profile/history.md` |
 
 ### Carrying history over from another workspace

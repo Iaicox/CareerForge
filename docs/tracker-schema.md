@@ -17,7 +17,7 @@ the same row.
 | `slug` | Normalised; the deduplication key |
 | `description` | One or two sentences: product, industry, size |
 | `website` | |
-| `research_json` | Cached company research, shared by `/apply`'s reviewer and `/interview` so the same company is not researched twice. Leads only — the verification checklist still applies |
+| `research_json` | Cached company research, shared by `/apply`'s reviewer and `/interview` so the same company is not researched twice. Carries a `salary` list when the research was asked about a role. Leads only — the verification checklist still applies |
 | `researched_at` | When that cache was filled; it expires after 30 days |
 | `created_at` | |
 
