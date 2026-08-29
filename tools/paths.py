@@ -11,7 +11,7 @@ tests run against a throwaway repo.
       profile/         the source of truth for every claim   (profile.example/ beside it)
       documents/       raw material you drop in for /setup and /expand
       pipeline/        per-application folders, moved between stages by status
-      state/           what the tools write: the database, notion ids, logs, scratch
+      state/           what the tools write: the database, notion ids, logs
 
 The secrets file (.env) stays at the repo root, and the published manual is a
 build product of framework docs, so neither is under data/.
@@ -37,7 +37,6 @@ STATE: Path
 DB: Path
 NOTION_IDS: Path
 GEMINI_LOG: Path
-GEMINI_CWD: Path
 SESSION_DIGEST: Path
 MANUAL_ARTIFACT: Path
 ENV: Path
@@ -61,7 +60,6 @@ def _layout(repo: Path) -> dict[str, Path]:
         "DB": state / "careerforge.db",
         "NOTION_IDS": state / "notion.json",
         "GEMINI_LOG": state / "gemini-log",
-        "GEMINI_CWD": state / "gemini-cwd",
         "SESSION_DIGEST": state / "session-digest",
         "MANUAL_ARTIFACT": repo / "docs" / "manual-artifact.html",
         "ENV": repo / ".env",

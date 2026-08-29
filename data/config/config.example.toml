@@ -52,12 +52,13 @@ stale_after_days = 30
 
 
 [gemini]
-# Optional. Delegates bulk gathering and compression to the Gemini CLI so it
-# does not spend Claude's context. Judgement about what is honest to claim
-# never moves -- that stays with Claude, against data/profile/ and CLAUDE.md.
+# Optional. Delegates bulk gathering and compression to Gemini, over its REST
+# API, so it does not spend Claude's context. Judgement about what is honest
+# to claim never moves -- that stays with Claude, against data/profile/ and
+# CLAUDE.md.
 #
-# Needs `npm install -g @google/gemini-cli` and one authentication: run
-# `gemini` once and sign in, or put GEMINI_API_KEY in .env.
+# Needs GEMINI_API_KEY in .env (https://aistudio.google.com/apikey). The model
+# is used exactly as named here; company research adds Google Search as a tool.
 # Check with: python tools/gemini.py check
 enabled = false
 model = "gemini-2.5-flash"

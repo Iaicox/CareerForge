@@ -4,6 +4,20 @@
 
 ### Changed
 
+- **Gemini is called over its REST API; the CLI is gone.** `tools/gemini.py`
+  used to shell out to `gemini`. Version 0.56/0.57 of that CLI rewrites every
+  model whose name ends in `flash` — `gemini-2.5-flash`, `gemini-3.7-flash` —
+  to `gemini-3.5-flash` under a remote flag, runs its web-search tool on that
+  model whatever `-m` says, and retries a quota error with backoff for as
+  long as the timeout allows; the free tier of 3.5 Flash is 20 requests a
+  day, so research never returned. Now the request goes straight to
+  `generativelanguage.googleapis.com` with `GEMINI_API_KEY`: the model is
+  exactly the one configured, Google Search is a tool on the research
+  request, JSON mode is asked for where no tool is involved, a daily quota is
+  reported once, a short rate limit is waited out once, "high demand" is
+  retried twice, and the socket timeout is the timeout. No CLI to install,
+  no `gemini-cwd` scratch directory, no 32 KB command-line limit.
+
 - **Company research looks for what the company pays, and records it.**
   `research.py get --role --location` asks for salary figures for the role,
   each with its own location, currency, period, basis and source; a cache

@@ -99,7 +99,7 @@ counts. LibreOffice works everywhere and is the only path on macOS and Linux.
 | | Why |
 |---|---|
 | **pypdf** (`pip install pypdf`) or **poppler** (`pdftotext`) | Exact page counts and the ATS text check on the LibreOffice path. Without either, page counts are approximate and say so |
-| **Gemini CLI** (`npm install -g @google/gemini-cli`) | Moves bulk research and ranking off Claude's context. See [§11](#11-delegating-to-gemini) |
+| **A Gemini API key** (`GEMINI_API_KEY` in `.env`) | Moves bulk research and ranking off Claude's context. See [§11](#11-delegating-to-gemini) |
 
 ### Fonts
 
@@ -598,7 +598,7 @@ One `.env` file in the repo root holds them all. The tools load it themselves �
 a real environment variable always wins over the file.
 
 ```
-GEMINI_API_KEY=...        # the Gemini CLI
+GEMINI_API_KEY=...        # the Gemini API (research, extraction, ranking)
 NOTION_KEY=...            # the Notion mirror (NOTION_TOKEN also accepted)
 MAIL_PASSWORD=...         # IMAP, an app password
 ```
@@ -616,15 +616,16 @@ Use app passwords, never account passwords: they can be revoked on their own.
 Optional. Everything works without it.
 
 Research, extraction and batch ranking are high-volume and low-judgement — the
-work that should not be spending Claude's context. With the Gemini CLI
-installed, they go there instead.
+work that should not be spending Claude's context. With a Gemini API key,
+they go there instead — straight to the Gemini API, no CLI in between.
 
 ### Setup
 
-```bash
-npm install -g @google/gemini-cli
-gemini                    # once, interactively, and sign in
-# or: set GEMINI_API_KEY from https://aistudio.google.com/apikey
+Get a key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+and put it in `.env`:
+
+```
+GEMINI_API_KEY=...
 ```
 
 Then in `data/config/config.toml`:
@@ -633,8 +634,14 @@ Then in `data/config/config.toml`:
 [gemini]
 enabled = true
 model = "gemini-2.5-flash"
+timeout_seconds = 300
 tasks = ["research", "extract", "rank", "summarize"]
 ```
+
+The model is called exactly as named. Company research attaches Google Search
+as a tool, which needs a key whose project has that quota; the free tier's
+per-model daily limits are small, and a quota refusal is reported once, not
+retried into a hang.
 
 Check it:
 
@@ -711,8 +718,13 @@ Copy `data/config/config.example.toml` to `data/config/config.toml`, or run `/se
 The tracker was updated elsewhere while the tab sat open. It reloads; retry.
 
 **`not authenticated` from Gemini**
-Run `gemini` once and sign in, or set `GEMINI_API_KEY`. Everything keeps working
-meanwhile.
+Set `GEMINI_API_KEY` in `.env`. Everything keeps working meanwhile.
+
+**`quota exhausted` or `overloaded` from Gemini**
+The key's project is over its quota for that model (free tiers are per model
+and per day — check [ai.dev/rate-limit](https://ai.dev/rate-limit)), or the
+model is under heavy demand. The tool gives up immediately rather than
+retrying for minutes; the work is done in Claude instead.
 
 **`the prompt is too long for a command line`**
 A bug: bulk input should travel over stdin. Report it with the command you ran.
@@ -767,7 +779,7 @@ Commands orchestrate; these do the work. Each runs standalone and each takes
 | `config_get.py` | Lets the build scripts read `config.toml` without a TOML parser of their own |
 | `console.py` | Forces output to UTF-8, so a redirected run does not die on an emoji in a status label |
 | `doctor.py` | The environment check |
-| `gemini.py` | The single wrapper around the Gemini CLI |
+| `gemini.py` | The single wrapper around the Gemini API |
 | `mailsync.py` | IMAP reconciliation |
 | `notion_sync.py` | The optional Notion mirror: provision, adopt, sync-options, import, push |
 | `salary_lookup.py`, `convert_salary_excel.py` | Salary benchmarking against data you supply — and data research finds (`add`) |

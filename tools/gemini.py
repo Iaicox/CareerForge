@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Delegate token-heavy, judgement-light work to the Gemini CLI.
+"""Delegate token-heavy, judgement-light work to Gemini, over its REST API.
 
     python tools/gemini.py check
     python tools/gemini.py research-company --name "Acme" --url https://acme.example
+    python tools/gemini.py research-company --name "Acme" --role "Senior Frontend Engineer" --location "Lisbon"
     python tools/gemini.py extract-posting --file data/pipeline/applications/acme/raw.html
     python tools/gemini.py rank --input to_rank.json --criteria data/profile/evaluation.md
     python tools/gemini.py summarize --file long.html --question "What is their tech stack?"
@@ -11,6 +12,14 @@ Gemini gathers and compresses. It never decides what is honest to claim about
 the candidate -- that judgement stays in one place, with Claude, against
 data/profile/ and the rules in CLAUDE.md.
 
+This talks to generativelanguage.googleapis.com directly, with GEMINI_API_KEY
+from .env. It used to shell out to the Gemini CLI; that stopped being
+workable when the CLI began rewriting every model whose name ends in "flash"
+to gemini-3.5-flash under a remote flag, ran its web-search tool on that
+model whatever was asked for, and retried a quota error without end. Over
+REST the model is exactly the one configured, web search is a tool on the
+request, and a refusal is a refusal.
+
 **Failure is never fatal.** Every subcommand exits 3 when Gemini is unusable,
 so the caller can do the work itself instead. A job search must not stop
 because a side tool is down.
@@ -18,7 +27,7 @@ because a side tool is down.
 Exit codes:
     0  success
     1  usage or unexpected error
-    3  Gemini unavailable (not installed, not authenticated, or disabled)
+    3  Gemini unavailable (no key, disabled, quota, unknown model, overloaded)
     4  timed out
     5  Gemini answered, but not with anything parseable
 """
@@ -29,10 +38,10 @@ import argparse
 import json
 import os
 import re
-import shutil
-import signal
-import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -43,6 +52,14 @@ import paths  # noqa: E402
 from tracker import TrackerError, load_config, load_dotenv, rel  # noqa: E402
 
 EXIT_OK, EXIT_ERROR, EXIT_UNAVAILABLE, EXIT_TIMEOUT, EXIT_BAD_OUTPUT = 0, 1, 3, 4, 5
+
+API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
+
+# One retry on a rate limit the API says will clear within this many seconds;
+# a daily quota says "try again in hours" and is not worth waiting for.
+RETRY_DELAY_CEILING = 30
+# "High demand" (503) clears in seconds or not at all; two more tries, then stop.
+OVERLOAD_BACKOFF = (5, 15)
 
 
 class GeminiUnavailable(Exception):
@@ -84,13 +101,15 @@ def task_enabled(task: str) -> bool:
     return bool(s["enabled"]) and task in s["tasks"]
 
 
-def binary() -> str:
-    exe = shutil.which("gemini")
-    if not exe:
+def api_key() -> str:
+    load_dotenv()
+    key = (os.environ.get("GEMINI_API_KEY") or "").strip()
+    if not key:
         raise GeminiUnavailable(
-            "the gemini CLI is not on PATH (npm install -g @google/gemini-cli)"
+            "GEMINI_API_KEY is not set -- put it in .env "
+            "(https://aistudio.google.com/apikey)"
         )
-    return exe
+    return key
 
 
 # ---------------------------------------------------------------------------
@@ -125,149 +144,136 @@ def log_call(kind: str, prompt: str, result: dict, payload: str | None = None) -
         pass  # logging must never be the reason a call fails
 
 
-def kill_tree(proc: subprocess.Popen) -> None:
-    """Kill a process and everything it spawned.
+def sleep(seconds: float) -> None:
+    time.sleep(seconds)
 
-    The Gemini CLI is a node launcher that starts a second node process for
-    the real work, and that grandchild inherits the stdout pipe. Killing only
-    the child, as subprocess.run() does on a timeout, leaves the pipe open --
-    and run() then blocks in communicate() until the grandchild exits on its
-    own, which turns a 120-second limit into a hang.
+
+def http_post(url: str, body: dict, timeout: int) -> tuple[int, dict]:
+    """One POST to the Gemini API. Returns (HTTP status, decoded JSON body).
+
+    The timeout is the socket's: no byte for that long ends the call. That is
+    the guarantee the CLI route could not give -- a request either answers or
+    stops.
     """
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                       capture_output=True)
-    else:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-    try:
-        proc.kill()
-    except OSError:
-        pass
-
-
-def run_cli(cmd: list[str], *, payload: str | None, timeout: int | None,
-            env: dict | None, cwd: str | None) -> subprocess.CompletedProcess:
-    """subprocess.run, except that a timeout kills the whole process tree."""
-    kwargs: dict[str, Any] = dict(
-        stdin=subprocess.PIPE if payload is not None else subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="replace", cwd=cwd, env=env,
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key()},
+        method="POST",
     )
-    if os.name != "nt":
-        kwargs["start_new_session"] = True  # so killpg reaches the grandchildren
-    proc = subprocess.Popen(cmd, **kwargs)
     try:
-        out, err = proc.communicate(input=payload, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        kill_tree(proc)
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            raw = res.read().decode("utf-8", "replace")
+            return res.status, (json.loads(raw) if raw.strip() else {})
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", "replace")
         try:
-            proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+            return exc.code, json.loads(raw)
+        except ValueError:
+            return exc.code, {"error": {"code": exc.code, "message": raw[:500]}}
+    except TimeoutError:
         raise
-    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError) or "timed out" in str(exc.reason).lower():
+            raise TimeoutError(str(exc.reason))
+        raise GeminiUnavailable(f"could not reach the Gemini API: {exc.reason}")
+
+
+def retry_delay(error: dict) -> float | None:
+    """How long the API asked us to wait, when it said."""
+    for detail in error.get("details") or []:
+        delay = detail.get("retryDelay")
+        if isinstance(delay, str) and delay.endswith("s"):
+            try:
+                return float(delay[:-1])
+            except ValueError:
+                continue
+    m = re.search(r"retry in ([\d.]+)s", error.get("message", ""), re.I)
+    return float(m.group(1)) if m else None
 
 
 def call(prompt: str, *, kind: str = "call", model: str | None = None,
-         timeout: int | None = None, payload: str | None = None) -> str:
-    """Run one headless Gemini prompt and return its text response.
+         timeout: int | None = None, payload: str | None = None,
+         search: bool = False, json_mode: bool = False) -> str:
+    """Run one prompt and return the text of the answer.
 
     `prompt` is the instruction; `payload` is bulk input -- a posting, a
-    document, a transcript. The payload goes over stdin rather than in argv,
-    because a command line has a hard size limit (about 32 KB on Windows) and
-    a job posting can exceed it on its own. Gemini appends the -p prompt after
-    whatever arrives on stdin, so instructions must read as though they follow
-    the data.
+    document, a transcript -- and goes first, so instructions read as though
+    they follow the data. `search` attaches Google Search as a tool.
+    `json_mode` asks the API for JSON; it cannot be combined with a tool, so
+    a search call relies on the prompt and extract_json() instead.
     """
     s = settings()
     if not s["enabled"]:
         raise GeminiUnavailable("gemini is disabled in data/config/config.toml ([gemini] enabled)")
+    model = (model or s["model"]).strip()
+    limit = timeout or s["timeout_seconds"]
 
-    # GEMINI_API_KEY may live in .env; the subprocess inherits os.environ.
-    load_dotenv()
+    text = f"{payload}\n\n{prompt}" if payload else prompt
+    body: dict[str, Any] = {
+        "contents": [{"role": "user", "parts": [{"text": text}]}],
+        "generationConfig": {},
+    }
+    if search:
+        body["tools"] = [{"google_search": {}}]
+    elif json_mode:
+        body["generationConfig"]["responseMimeType"] = "application/json"
+    url = f"{API_ROOT}/models/{model}:generateContent"
 
-    cmd = [
-        binary(),
-        "-p", prompt,
-        "-o", "json",
-        "-m", model or s["model"],
-        # Read-only: this is a summariser, not an agent let loose in the repo.
-        "--approval-mode", "plan",
-        # Without this the approval mode is silently downgraded in an untrusted
-        # folder, which would quietly hand it write tools.
-        "--skip-trust",
-    ]
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
-    # Gemini is itself an agent: run in the repo it discovers CLAUDE.md, follows
-    # ITS instructions instead of the prompt, and pokes at the workspace with
-    # its own tools (which cannot even see data/profile/, since it is gitignored).
-    # An empty working directory gives it nothing to be distracted by, and as a
-    # side effect nothing leaves this machine except what the payload carries.
-    workdir = paths.GEMINI_CWD
-    workdir.mkdir(parents=True, exist_ok=True)
-    try:
-        proc = run_cli(
-            cmd, payload=payload, timeout=timeout or s["timeout_seconds"],
-            env=env, cwd=str(workdir),
-        )
-    except subprocess.TimeoutExpired:
-        raise GeminiTimeout(f"gemini timed out after {timeout or s['timeout_seconds']}s")
-    except OSError as exc:
-        if getattr(exc, "winerror", None) == 206 or "too long" in str(exc).lower():
+    started = time.monotonic()
+    overload_tries = 0
+    limit_retried = False
+    while True:
+        try:
+            status, data = http_post(url, body, limit)
+        except TimeoutError:
+            log_call(kind, prompt, {"error": f"timed out after {limit}s"}, payload)
+            raise GeminiTimeout(f"gemini timed out after {limit}s")
+        error = data.get("error") if isinstance(data, dict) else None
+        if status < 400 and not error:
+            break
+        error = error or {"code": status, "message": f"HTTP {status}"}
+        message = str(error.get("message", "")).strip()
+        if status == 429:
+            delay = retry_delay(error)
+            if delay is not None and delay <= RETRY_DELAY_CEILING and not limit_retried:
+                limit_retried = True
+                sleep(delay)
+                continue
+            log_call(kind, prompt, {"error": error}, payload)
             raise GeminiUnavailable(
-                "the prompt is too long for a command line -- pass bulk input as "
-                "`payload` so it goes over stdin instead"
+                f"quota exhausted for {model}: {message[:200]} -- work falls back to Claude"
             )
-        raise GeminiUnavailable(f"could not run gemini: {exc}")
+        if status in (500, 502, 503, 504) and overload_tries < len(OVERLOAD_BACKOFF):
+            sleep(OVERLOAD_BACKOFF[overload_tries])
+            overload_tries += 1
+            continue
+        log_call(kind, prompt, {"error": error}, payload)
+        if status in (401, 403):
+            raise GeminiUnavailable(f"not authenticated: {message[:200]}")
+        if status == 404:
+            raise GeminiUnavailable(f"model {model!r} is not available to this key: {message[:200]}")
+        if status in (500, 502, 503, 504):
+            raise GeminiUnavailable(f"{model} is overloaded (HTTP {status}): {message[:200]}")
+        raise GeminiUnavailable(f"gemini error (HTTP {status}): {message[:300]}")
 
-    # The JSON envelope lands on stdout on the happy path, but an auth failure
-    # writes it to stderr instead, so both have to be considered.
-    envelope = extract_json(proc.stdout)
-    if not isinstance(envelope, dict) or (
-        "response" not in envelope and "error" not in envelope
-    ):
-        from_stderr = extract_json(proc.stderr)
-        if isinstance(from_stderr, dict):
-            envelope = from_stderr
-    if not isinstance(envelope, dict):
-        envelope = {}
-    log_call(kind, prompt, envelope, payload)
+    candidates = data.get("candidates") or []
+    parts = (candidates[0].get("content") or {}).get("parts") or [] if candidates else []
+    answer = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+    stats = {
+        "model": data.get("modelVersion") or model,
+        "usage": data.get("usageMetadata"),
+        "finish": candidates[0].get("finishReason") if candidates else None,
+        "latency_s": round(time.monotonic() - started, 1),
+        "grounded": bool(candidates and candidates[0].get("groundingMetadata")),
+    }
+    log_call(kind, prompt, {"response": answer, "stats": stats}, payload)
 
-    # Exit codes are not reliable here either: the same failure has been seen
-    # exiting 0 and exiting 41, reporting itself only inside the JSON. The
-    # error key is what counts.
-    if envelope.get("error"):
-        err = envelope["error"]
-        message = err.get("message", "unknown error") if isinstance(err, dict) else str(err)
-        if re.search(r"quota|rate.?limit|resource.?exhausted|429", message, re.I):
-            raise GeminiUnavailable(
-                "quota exhausted for this model today -- work falls back to Claude"
-            )
-        if re.search(r"auth|api[_ ]key|credential|sign ?in|login|GEMINI_API_KEY", message, re.I):
-            raise GeminiUnavailable(f"not authenticated: {message}")
-        raise GeminiUnavailable(f"gemini error: {message}")
-
-    if "response" not in envelope:
-        # Not every failure arrives in the JSON envelope -- some are emitted as
-        # plain text on stderr -- so classify from the raw output too, or the
-        # user gets "nothing usable" when the real answer is "log in" or
-        # "come back tomorrow".
-        combined = f"{proc.stderr or ''}\n{proc.stdout or ''}".strip()
-        if re.search(r"quota|rate.?limit|resource.?exhausted|429", combined, re.I):
-            raise GeminiUnavailable(
-                "quota exhausted for this model today. Wait for the daily reset, "
-                "switch [gemini] model to a lighter one, or sign in with a Google "
-                "account instead of an API key (run `gemini` interactively) -- "
-                "meanwhile the work falls back to Claude."
-            )
-        if re.search(r"auth|api[_ ]key|credential|sign ?in|GEMINI_API_KEY", combined, re.I):
-            raise GeminiUnavailable(f"not authenticated: {combined[:300]}")
-        raise GeminiUnavailable(f"gemini returned nothing usable: {combined[:300]}")
-
-    return str(envelope["response"])
+    if not answer.strip():
+        blocked = (data.get("promptFeedback") or {}).get("blockReason")
+        why = blocked or stats["finish"] or "no candidates"
+        raise GeminiBadOutput(f"gemini returned nothing usable ({why})")
+    return answer
 
 
 def extract_json(text: str) -> Any:
@@ -297,8 +303,10 @@ def extract_json(text: str) -> Any:
 
 
 def call_json(prompt: str, *, kind: str, model: str | None = None,
-              timeout: int | None = None, payload: str | None = None) -> Any:
-    raw = call(prompt, kind=kind, model=model, timeout=timeout, payload=payload)
+              timeout: int | None = None, payload: str | None = None,
+              search: bool = False) -> Any:
+    raw = call(prompt, kind=kind, model=model, timeout=timeout, payload=payload,
+               search=search, json_mode=not search)
     data = extract_json(raw)
     if data is None:
         raise GeminiBadOutput(
@@ -319,23 +327,47 @@ JSON_ONLY = (
 # ---------------------------------------------------------------------------
 
 
+SALARY_SCHEMA = """{
+  "salary": [                      // figures for THIS company only; [] when none found
+    {"role": string, "location": string, "currency": string,
+     "amount_min": number|null, "amount_max": number|null,
+     "period": "year"|"month", "basis": "gross"|"net"|null,
+     "payments_per_year": number|null, "source_url": string, "date": "YYYY-MM"|null}
+  ]
+}"""
+
+
+def salary_figures(name: str, role: str, location: str | None = None) -> list[dict]:
+    """What the company pays for the role, from the web, each figure as stated.
+
+    A question of its own rather than a clause in the research prompt: asked
+    alongside news, culture and tech stack, the model came back with an empty
+    list for companies whose Glassdoor pages it finds in seconds when asked
+    only this. Judgement about which figure counts for which location stays
+    with the caller.
+    """
+    where = f" in {location}" if location else ""
+    prompt = f"""Find what the company "{name}" pays a {role} (or the closest title){where}. \
+Use web search: Glassdoor, levels.fyi, Indeed, Landing.jobs, the company's own \
+postings. Report every figure you find for THIS company, each with its own \
+location, currency, period and basis exactly as the source states them; a \
+figure for another location is still worth reporting, labelled with that \
+location. Never convert, never estimate: a figure that is not stated is not \
+in the list.
+
+{JSON_ONLY}
+
+Schema:
+{SALARY_SCHEMA}"""
+    data = call_json(prompt, kind="salary-figures", search=True)
+    figures = data.get("salary") if isinstance(data, dict) else None
+    return [f for f in figures if isinstance(f, dict)] if isinstance(figures, list) else []
+
+
 def research_company(name: str, url: str | None = None, role: str | None = None,
                      location: str | None = None) -> dict:
-    target = ""
-    if role or location:
-        target = (
-            f"\n\nThe candidate is looking at the role \"{role or 'unknown'}\" "
-            f"at this company, located: {location or 'unknown'}. Also look for what "
-            "this company pays for that role: salary bands from the posting, "
-            "Glassdoor, levels.fyi, Indeed, Landing.jobs and similar. Report every "
-            "figure you find for THIS company with its own location, currency, "
-            "period and basis exactly as the source states them -- a figure for "
-            "another location is still worth reporting, labelled with that "
-            "location. Never convert, never estimate: a figure that is not stated "
-            "is not in the list."
-        )
     prompt = f"""Research the company "{name}"{f' (website: {url})' if url else ''} \
-for a candidate preparing a job application.{target}
+for a candidate preparing a job application.
 
 Use web search. Every factual claim must carry the source URL you found it at, \
 and a date where the source gives one. Recency matters: a "recent" launch from \
@@ -360,20 +392,20 @@ Schema:
   "red_flags": [
     {{"concern": string, "source_url": string}}   // layoffs, lawsuits, churn
   ],
-  "unverified": [string],          // things you believe but could not source
-  "salary": [                      // figures for THIS company only; [] when none found
-    {{"role": string, "location": string, "currency": string,
-     "amount_min": number|null, "amount_max": number|null,
-     "period": "year"|"month", "basis": "gross"|"net"|null,
-     "payments_per_year": number|null, "source_url": string, "date": "YYYY-MM"|null}}
-  ]
+  "unverified": [string]           // things you believe but could not source
 }}"""
-    data = call_json(prompt, kind="research-company")
+    data = call_json(prompt, kind="research-company", search=True)
     if not isinstance(data, dict):
         raise GeminiBadOutput("research did not come back as an object")
     data.setdefault("name", name)
-    if not isinstance(data.get("salary"), list):
-        data["salary"] = []
+    data["salary"] = []
+    if role:
+        # Its own call, so a refusal here costs the salary block, not the
+        # research; the reason is kept where the reader of the cache sees it.
+        try:
+            data["salary"] = salary_figures(name, role, location)
+        except (GeminiUnavailable, GeminiBadOutput) as exc:
+            data["salary_error"] = str(exc)
     data["fetched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return data
 
@@ -481,33 +513,31 @@ def cmd_check() -> int:
     print(f"  enabled   {s['enabled']}")
     print(f"  model     {s['model']}")
     print(f"  tasks     {', '.join(s['tasks']) or '(none)'}")
-    exe = shutil.which("gemini")
-    print(f"  binary    {exe or 'NOT FOUND'}")
-    if not exe:
-        print("\n  install: npm install -g @google/gemini-cli")
+    try:
+        api_key()
+        print("  key       GEMINI_API_KEY present")
+    except GeminiUnavailable as exc:
+        print(f"  key       {exc}")
         return EXIT_UNAVAILABLE
     if not s["enabled"]:
         print("\n  set [gemini] enabled = true in data/config/config.toml to use it")
         return EXIT_UNAVAILABLE
+    started = time.monotonic()
     try:
         reply = call("Reply with exactly: OK", kind="check", timeout=60)
     except (GeminiUnavailable, GeminiBadOutput) as exc:
         print(f"\n  NOT USABLE: {exc}")
-        if "not authenticated" in str(exc):
-            print("\n  Authenticate once, either way:")
-            print("    - run `gemini` interactively and sign in with a Google account, or")
-            print("    - set GEMINI_API_KEY from https://aistudio.google.com/apikey")
         return getattr(exc, "exit_code", EXIT_UNAVAILABLE)
-    print(f"  live      yes ({reply.strip()[:40]})")
+    print(f"  live      yes ({reply.strip()[:40]}, {time.monotonic() - started:.1f}s)")
     print(f"  log       {rel(paths.GEMINI_LOG)}")
     return EXIT_OK
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Delegate bulk work to the Gemini CLI")
+    ap = argparse.ArgumentParser(description="Delegate bulk work to Gemini over its API")
     sub = ap.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("check", help="is Gemini installed, configured and authenticated?")
+    sub.add_parser("check", help="is Gemini configured, and does the key answer?")
 
     rc = sub.add_parser("research-company", help="research a company, with sources")
     rc.add_argument("--name", required=True)

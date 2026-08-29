@@ -293,9 +293,6 @@ def check_gemini() -> Check:
     if not enabled:
         return Check("Gemini delegation", OK, "disabled (optional)", required=False)
 
-    if not shutil.which("gemini"):
-        return Check("Gemini delegation", WARN, "enabled, but the CLI is not on PATH",
-                     "npm install -g @google/gemini-cli", required=False)
     try:
         probe = subprocess.run(
             [sys.executable, str(REPO / "tools" / "gemini.py"), "check"],
@@ -305,14 +302,14 @@ def check_gemini() -> Check:
         return Check("Gemini delegation", WARN, f"probe failed: {exc}",
                      "python tools/gemini.py check", required=False)
     if probe.returncode == 0:
-        return Check("Gemini delegation", OK, "installed and authenticated", required=False)
+        return Check("Gemini delegation", OK, "key answers", required=False)
     reason = ""
     for line in (probe.stdout or "").splitlines():
         if "NOT USABLE" in line:
             reason = line.split("NOT USABLE:", 1)[-1].strip()[:80]
     return Check(
         "Gemini delegation", WARN, reason or "enabled but not usable",
-        "run `gemini` once and sign in, or set GEMINI_API_KEY; "
+        "set GEMINI_API_KEY in .env (https://aistudio.google.com/apikey); "
         "work falls back to Claude meanwhile",
         required=False,
     )

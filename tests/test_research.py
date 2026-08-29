@@ -18,6 +18,8 @@ TOOLS = Path(__file__).resolve().parent.parent / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import gemini  # noqa: E402
+
+REAL_API_KEY = gemini.api_key
 import research  # noqa: E402
 import paths  # noqa: E402
 import tracker  # noqa: E402
@@ -194,102 +196,177 @@ class ExtractJsonTest(unittest.TestCase):
         self.assertIsNone(gemini.extract_json(""))
 
 
-class BulkInputTest(unittest.TestCase):
-    """Bulk input must travel over stdin, not in the command line.
+class RestTransportTest(unittest.TestCase):
+    """Gemini is called over its REST API: the configured model, bounded retries.
 
-    A command line has a hard size limit -- about 32 KB on Windows -- and a
-    single job posting can exceed it, so putting the payload in argv fails with
-    WinError 206 on exactly the inputs the tool exists for.
+    The CLI route was dropped after it began rewriting every model whose name
+    ends in "flash" to gemini-3.5-flash under a remote flag, ran web search on
+    that model whatever was asked for, and retried a quota error without end.
     """
 
     def setUp(self) -> None:
-        self.captured: dict = {}
-        self._real_run = gemini.run_cli
-        self._real_settings = gemini.settings
-        self._real_binary = gemini.binary
-        self._real_log = gemini.log_call
-
-        class Result:
-            returncode = 0
-            stdout = json.dumps({"response": "ok"})
-            stderr = ""
-
-        def fake_run(cmd, **kwargs):
-            self.captured["cmd"] = cmd
-            self.captured["input"] = kwargs.get("payload")
-            self.captured["cwd"] = kwargs.get("cwd")
-            return Result()
-
-        gemini.run_cli = fake_run
-        gemini.binary = lambda: "gemini"
-        gemini.log_call = lambda *a, **k: None
+        self.calls: list[tuple[str, dict, int]] = []
+        self.responses: list = []
+        self.sleeps: list[float] = []
+        for name in ("http_post", "settings", "log_call", "api_key", "sleep"):
+            self.addCleanup(setattr, gemini, name, getattr(gemini, name))
         gemini.settings = lambda: {
-            "enabled": True, "model": "m", "timeout_seconds": 10,
+            "enabled": True, "model": "gemini-3.7-flash", "timeout_seconds": 10,
             "cache_days": 30, "tasks": ["research"], "log": False,
         }
+        gemini.log_call = lambda *a, **k: None
+        gemini.api_key = lambda: "test-key"
+        gemini.sleep = lambda seconds: self.sleeps.append(seconds)
 
-    def tearDown(self) -> None:
-        gemini.run_cli = self._real_run
-        gemini.settings = self._real_settings
-        gemini.binary = self._real_binary
-        gemini.log_call = self._real_log
+        def fake_post(url, body, timeout):
+            self.calls.append((url, body, timeout))
+            item = self.responses.pop(0) if self.responses else (200, self.ok("OK"))
+            if isinstance(item, BaseException):
+                raise item
+            return item
 
-    def test_payload_goes_to_stdin_and_not_argv(self):
-        bulk = "x" * 200_000
-        gemini.call("instruction", payload=bulk)
-        self.assertEqual(self.captured["input"], bulk)
-        self.assertNotIn(bulk, self.captured["cmd"])
+        gemini.http_post = fake_post
 
-    def test_the_instruction_still_travels_in_argv(self):
-        gemini.call("instruction", payload="data")
-        self.assertIn("instruction", self.captured["cmd"])
+    @staticmethod
+    def ok(text: str) -> dict:
+        return {
+            "candidates": [{"content": {"parts": [{"text": text}]}, "finishReason": "STOP"}],
+            "usageMetadata": {"totalTokenCount": 3},
+            "modelVersion": "gemini-3.7-flash-08-2026",
+        }
 
-    def test_gemini_runs_in_an_empty_room_not_the_repo(self):
-        # Gemini is itself an agent: run in the repo it discovers CLAUDE.md and
-        # answers as the workspace assistant instead of doing the task. Seen
-        # live: a digest request came back as "run /setup".
-        gemini.call("instruction", payload="data")
-        cwd = self.captured.get("cwd")
-        self.assertIsNotNone(cwd)
-        self.assertIn("gemini-cwd", str(cwd))
+    @staticmethod
+    def quota(delay: str | None) -> tuple[int, dict]:
+        err = {"code": 429, "status": "RESOURCE_EXHAUSTED",
+               "message": "You exceeded your current quota, please check your plan and billing details."}
+        if delay:
+            err["details"] = [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": delay}]
+        return 429, {"error": err}
 
-    def test_read_only_mode_is_always_requested(self):
+    def test_the_configured_model_is_the_one_called(self):
         gemini.call("instruction")
-        cmd = self.captured["cmd"]
-        self.assertIn("--approval-mode", cmd)
-        self.assertEqual(cmd[cmd.index("--approval-mode") + 1], "plan")
-        # Without this the approval mode is silently downgraded in an untrusted
-        # folder, which would hand it write tools.
-        self.assertIn("--skip-trust", cmd)
+        url = self.calls[0][0]
+        self.assertTrue(url.endswith("/models/gemini-3.7-flash:generateContent"), url)
+        self.assertEqual(self.calls[0][2], 10)
 
-    def test_a_command_line_length_failure_is_explained(self):
-        def raise_206(cmd, **kwargs):
-            exc = OSError("[WinError 206] The filename or extension is too long")
-            exc.winerror = 206
-            raise exc
+    def test_the_payload_precedes_the_instruction_in_one_message(self):
+        gemini.call("instruction", payload="x" * 200_000)
+        text = self.calls[0][1]["contents"][0]["parts"][0]["text"]
+        self.assertTrue(text.startswith("x" * 200_000))
+        self.assertTrue(text.endswith("\n\ninstruction"))
 
-        gemini.run_cli = raise_206
+    def test_research_attaches_web_search_and_extraction_asks_for_json(self):
+        self.responses = [(200, self.ok('{"name": "Acme", "what_they_do": "x"}'))]
+        gemini.research_company("Acme")
+        body = self.calls[0][1]
+        self.assertEqual(body["tools"], [{"google_search": {}}])
+        self.assertNotIn("responseMimeType", body["generationConfig"], "JSON mode cannot ride with a tool")
+        self.assertEqual(len(self.calls), 1, "no role, no salary call")
+
+        self.responses = [(200, self.ok('{"role": "Dev", "company": "Acme"}'))]
+        gemini.extract_posting("posting text")
+        body = self.calls[1][1]
+        self.assertNotIn("tools", body)
+        self.assertEqual(body["generationConfig"]["responseMimeType"], "application/json")
+
+    def test_a_role_makes_salary_its_own_searched_call(self):
+        # Asked alongside news and culture, the model returned an empty salary
+        # list for companies whose Glassdoor page it finds in seconds when
+        # asked only that. Two calls, and the second cannot sink the first.
+        self.responses = [
+            (200, self.ok('{"name": "Acme", "what_they_do": "x"}')),
+            (200, self.ok('{"salary": [{"role": "Dev", "location": "Lisbon", "currency": "EUR", '
+                          '"amount_min": 60000, "amount_max": 70000, "period": "year", "basis": "gross", '
+                          '"payments_per_year": 14, "source_url": "https://g.example", "date": "2026-07"}]}')),
+        ]
+        data = gemini.research_company("Acme", role="Dev", location="Lisbon")
+        self.assertEqual(len(self.calls), 2)
+        salary_prompt = self.calls[1][1]["contents"][0]["parts"][0]["text"]
+        self.assertIn("Dev", salary_prompt)
+        self.assertIn("Lisbon", salary_prompt)
+        self.assertEqual(self.calls[1][1]["tools"], [{"google_search": {}}])
+        self.assertEqual(data["salary"][0]["amount_max"], 70000)
+        self.assertNotIn("salary_error", data)
+
+    def test_a_refused_salary_call_keeps_the_research(self):
+        self.responses = [(200, self.ok('{"name": "Acme", "what_they_do": "x"}')), self.quota("52418s")]
+        data = gemini.research_company("Acme", role="Dev", location="Lisbon")
+        self.assertEqual(data["what_they_do"], "x")
+        self.assertEqual(data["salary"], [])
+        self.assertIn("quota", data["salary_error"])
+
+    def test_a_daily_quota_is_not_retried(self):
+        self.responses = [self.quota("52418s")]
         with self.assertRaises(gemini.GeminiUnavailable) as ctx:
-            gemini.call("instruction", payload="x")
-        self.assertIn("stdin", str(ctx.exception))
+            gemini.call("instruction")
+        self.assertIn("quota", str(ctx.exception))
+        self.assertIn("gemini-3.7-flash", str(ctx.exception))
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.sleeps, [])
 
-    def test_a_timeout_kills_the_whole_process_tree(self):
-        # The Gemini launcher starts a second node process that inherits the
-        # stdout pipe. subprocess.run() kills only the child on a timeout and
-        # then blocks reading the pipe until the grandchild exits by itself --
-        # seen live as a 120-second limit that hung for eight minutes.
-        import subprocess
-        import time
-        child = (
-            "import subprocess, sys, time; "
-            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)']); "
-            "time.sleep(20)"
-        )
-        start = time.monotonic()
-        with self.assertRaises(subprocess.TimeoutExpired):
-            self._real_run([sys.executable, "-c", child], payload=None, timeout=1,
-                           env=None, cwd=None)
-        self.assertLess(time.monotonic() - start, 8, "the grandchild kept the pipe open")
+    def test_a_short_rate_limit_is_waited_out_once(self):
+        self.responses = [self.quota("5s"), (200, self.ok("OK"))]
+        self.assertEqual(gemini.call("instruction"), "OK")
+        self.assertEqual(self.sleeps, [5.0])
+        self.assertEqual(len(self.calls), 2)
+        self.responses = [self.quota("5s"), self.quota("5s"), (200, self.ok("OK"))]
+        with self.assertRaises(gemini.GeminiUnavailable):
+            gemini.call("instruction")
+
+    def test_high_demand_is_retried_twice_then_given_up(self):
+        overloaded = (503, {"error": {"code": 503, "status": "UNAVAILABLE",
+                                      "message": "This model is currently experiencing high demand."}})
+        self.responses = [overloaded, overloaded, overloaded]
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+            gemini.call("instruction")
+        self.assertIn("overloaded", str(ctx.exception))
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(self.sleeps, [5, 15])
+        self.responses = [overloaded, (200, self.ok("OK"))]
+        self.assertEqual(gemini.call("instruction"), "OK")
+
+    def test_a_timeout_is_a_timeout(self):
+        self.responses = [TimeoutError("timed out")]
+        with self.assertRaises(gemini.GeminiTimeout):
+            gemini.call("instruction")
+
+    def test_an_unknown_model_and_a_bad_key_are_explained(self):
+        self.responses = [(404, {"error": {"code": 404, "message": "models/x is not found"}})]
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+            gemini.call("instruction")
+        self.assertIn("not available to this key", str(ctx.exception))
+        self.responses = [(403, {"error": {"code": 403, "message": "API key not valid"}})]
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+            gemini.call("instruction")
+        self.assertIn("not authenticated", str(ctx.exception))
+
+    def test_an_empty_answer_is_bad_output_with_the_reason(self):
+        self.responses = [(200, {"candidates": [], "promptFeedback": {"blockReason": "SAFETY"}})]
+        with self.assertRaises(gemini.GeminiBadOutput) as ctx:
+            gemini.call("instruction")
+        self.assertIn("SAFETY", str(ctx.exception))
+
+    def test_a_missing_key_says_where_to_put_it(self):
+        import os
+        from unittest import mock
+        gemini.api_key = REAL_API_KEY
+        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": ""}), \
+                mock.patch.object(gemini, "load_dotenv", lambda: None):
+            with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+                gemini.api_key()
+        self.assertIn(".env", str(ctx.exception))
+
+    def test_rank_unwraps_the_results_list(self):
+        self.responses = [(200, self.ok('{"results": [{"id": 1, "score": 80}]}'))]
+        self.assertEqual(gemini.rank_postings([{"id": 1, "title": "Dev"}], "criteria"), [{"id": 1, "score": 80}])
+        text = self.calls[0][1]["contents"][0]["parts"][0]["text"]
+        self.assertTrue(text.startswith("CRITERIA:"))
+
+    def test_the_command_line_length_limit_no_longer_exists(self):
+        # 200 KB of posting text went over stdin to the CLI because argv has a
+        # ~32 KB limit on Windows; over HTTP it is simply the request body.
+        gemini.call("instruction", payload="x" * 300_000)
+        self.assertEqual(len(self.calls), 1)
 
 
 if __name__ == "__main__":
