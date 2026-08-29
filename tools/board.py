@@ -6,7 +6,7 @@
 
 Standard library only. All data access goes through tools/tracker.py, so the
 board and the agent share one set of rules -- including the one that moves an
-application's folder between applications/, processing/ and rejected/ when its
+application's folder between the stage directories under data/pipeline/ when its
 status changes.
 
 The server binds the loopback interface only and rejects requests whose Host
@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+import paths
 import tracker
 from tracker import TrackerError
 
@@ -183,7 +184,7 @@ def main() -> int:
     server = ThreadingHTTPServer(("127.0.0.1", args.port), BoardHandler)
     url = f"http://127.0.0.1:{args.port}/"
     print(f"CareerForge board: {url}")
-    print(f"database: {tracker.rel(tracker.DB_PATH)}")
+    print(f"database: {tracker.rel(paths.DB)}")
     print("Ctrl+C to stop.")
     if not args.no_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()

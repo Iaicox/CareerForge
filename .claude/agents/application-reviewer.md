@@ -36,10 +36,10 @@ Search for whatever is missing:
 - `.claude/skills/job-application-assistant/references/job-evaluation.md`
 - `.claude/skills/job-application-assistant/references/cv-format.md`
 - `.claude/skills/job-application-assistant/references/cover-letter-format.md`
-- `profile/candidate.md` — what the candidate has actually done
-- `profile/behavioral.md` — how they work
+- `data/profile/candidate.md` — what the candidate has actually done
+- `data/profile/behavioral.md` — how they work
 
-`profile/` is the source of truth about the candidate. If a claim in a draft is
+`data/profile/` is the source of truth about the candidate. If a claim in a draft is
 not supported there, it is a fabrication, no matter how plausible it sounds.
 
 ## 3. Read the drafts and the posting
@@ -71,7 +71,7 @@ company and this role.
 **e) Verification checklist**
 Report pass/fail on each, with the offending text quoted on any fail:
 
-- [ ] Every claim is supported by `profile/candidate.md`
+- [ ] Every claim is supported by `data/profile/candidate.md`
 - [ ] Job titles, dates, company names and locations are correct
 - [ ] Contact details match the profile
 - [ ] The opening is tailored to this role, not reusable boilerplate

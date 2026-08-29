@@ -1,7 +1,7 @@
 # Job evaluation framework
 
 The scoring machinery. The user's own match areas, goals, location rules and
-sector filter live in `profile/evaluation.md` — read both before scoring anything.
+sector filter live in `data/profile/evaluation.md` — read both before scoring anything.
 
 ## Scoring dimensions
 
@@ -16,7 +16,7 @@ How well the required and preferred skills line up with what the candidate can d
 | 40–59 | Partial match; significant upskilling needed |
 | 0–39 | Fundamental mismatch |
 
-Use the strong / moderate / weak match areas from `profile/evaluation.md`.
+Use the strong / moderate / weak match areas from `data/profile/evaluation.md`.
 
 ### 2. Experience match (0–100)
 
@@ -43,11 +43,11 @@ an automatic 40 — but it is not an 80 either.
 
 Check reviews, LinkedIn and press for team stability, leadership style,
 restructuring, and how engineering is treated. Weigh against
-`profile/behavioral.md`.
+`data/profile/behavioral.md`.
 
 ### 4. Location and logistics (pass/fail)
 
-Apply the rules in `profile/evaluation.md` exactly. Location is a gate, not a
+Apply the rules in `data/profile/evaluation.md` exactly. Location is a gate, not a
 score: a posting that fails it is not worth scoring further, however good the
 rest looks. Say so plainly rather than quietly discounting it.
 
@@ -61,11 +61,11 @@ rest looks. Say so plainly rather than quietly discounting it.
 | 0–39 | A dead end or a step backwards |
 
 Score against their stated goals, the tasks that energise them and the tasks
-that drain them, from `profile/evaluation.md`.
+that drain them, from `data/profile/evaluation.md`.
 
 ### 6. Salary benchmark (optional)
 
-If `profile/salary_data.json` exists:
+If `data/profile/salary_data.json` exists:
 
 ```bash
 python tools/salary_lookup.py "<Company>" --json    # add --city when the posting names one

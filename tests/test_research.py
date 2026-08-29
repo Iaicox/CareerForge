@@ -19,23 +19,20 @@ sys.path.insert(0, str(TOOLS))
 
 import gemini  # noqa: E402
 import research  # noqa: E402
+import paths  # noqa: E402
 import tracker  # noqa: E402
 
 
 class ResearchCacheTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-research-"))
-        self._real_repo = tracker.REPO
-        self._real_db = tracker.DB_PATH
-        tracker.REPO = self.tmp
-        tracker.DB_PATH = self.tmp / "tracker" / "careerforge.db"
-        for stage in tracker.STAGES:
-            (self.tmp / stage).mkdir(parents=True)
-        (self.tmp / "config").mkdir()
-        shutil.copy(
-            self._real_repo / "config" / "config.example.toml",
-            self.tmp / "config" / "config.toml",
-        )
+        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-research-")).resolve()
+        self._real_repo = paths.REPO
+        example = paths.CONFIG_EXAMPLE
+        paths.configure(self.tmp)
+        for stage in paths.STAGES:
+            paths.stage_dir(stage).mkdir(parents=True)
+        paths.CONFIG_DIR.mkdir(parents=True)
+        shutil.copy(example, paths.CONFIG)
         tracker.load_config(force=True)
         tracker.init_db()
         self.conn = tracker.connect()
@@ -56,8 +53,7 @@ class ResearchCacheTest(unittest.TestCase):
         gemini.research_company = self._real_fetch
         gemini.task_enabled = self._real_enabled
         self.conn.close()
-        tracker.REPO = self._real_repo
-        tracker.DB_PATH = self._real_db
+        paths.configure(self._real_repo)
         tracker.load_config(force=True)
         shutil.rmtree(self.tmp, ignore_errors=True)
 

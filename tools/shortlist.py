@@ -25,9 +25,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from tracker import REPO, TrackerError, parse_deadline  # noqa: E402
+import paths  # noqa: E402
+from tracker import TrackerError, parse_deadline  # noqa: E402
 
-SEEN_PATH = REPO / "job_scraper" / "seen_jobs.json"
+
+def seen_path() -> Path:
+    return paths.JOB_SCRAPER / "seen_jobs.json"
 VERDICT_ORDER = {"strong": 0, "good": 1, "moderate": 2, "weak": 3, "poor": 4}
 
 # Entries scraped before /rank existed carry a coarse "fit" instead of a score.
@@ -47,19 +50,19 @@ def today() -> str:
 
 
 def load() -> dict:
-    if not SEEN_PATH.exists():
+    if not seen_path().exists():
         return {"seen": {}}
     try:
-        data = json.loads(SEEN_PATH.read_text(encoding="utf-8"))
+        data = json.loads(seen_path().read_text(encoding="utf-8"))
     except ValueError as exc:
-        raise TrackerError(f"{SEEN_PATH.name} is not valid JSON: {exc}")
+        raise TrackerError(f"{seen_path().name} is not valid JSON: {exc}")
     data.setdefault("seen", {})
     return data
 
 
 def save(data: dict) -> None:
-    SEEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SEEN_PATH.write_text(
+    seen_path().parent.mkdir(parents=True, exist_ok=True)
+    seen_path().write_text(
         json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
 

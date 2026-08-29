@@ -6,20 +6,21 @@ allowed-tools: Read, Bash, AskUserQuestion
 
 # Application tracker
 
-A local SQLite database at `tracker/careerforge.db`. Everything goes through
+A local SQLite database at `data/state/careerforge.db`. Everything goes through
 `tools/tracker.py` — never open the database directly, and never edit an
 application folder's location by hand.
 
 ## The one rule
 
-**Status drives the folder, never the reverse.** Each status maps to a stage
-directory in `config/config.toml`:
+**Status drives the folder, never the reverse.** Each status in
+`data/config/config.toml` carries a `stage` id, and the stage names the
+directory under `data/pipeline/`:
 
 | Stage | Meaning |
 |---|---|
-| `applications/` | Applied, waiting for an answer |
-| `processing/` | The company replied; interviews scheduled or underway |
-| `rejected/` | Closed: rejection at any stage, silence, or withdrawn |
+| `data/pipeline/applications/` | Applied, waiting for an answer |
+| `data/pipeline/processing/` | The company replied; interviews scheduled or underway |
+| `data/pipeline/rejected/` | Closed: rejection at any stage, silence, or withdrawn |
 
 `tracker.py set-status` changes the status **and** moves the folder in one
 step. If it reports a collision, stop and tell the user — do not resolve it by
@@ -43,7 +44,7 @@ python tools/tracker.py add \
 ```
 
 `add` prints the slug it assigned — that is the folder name to create under
-`applications/`. It refuses duplicates on its own; `--force` exists for the
+`data/pipeline/applications/`. It refuses duplicates on its own; `--force` exists for the
 genuine second application to the same company, and needs the user to say so.
 
 Leave attachments empty at this point. The PDFs go up when the application is
@@ -118,7 +119,7 @@ fixes. `/board` opens the same data as a drag-and-drop kanban in the browser.
 
 ## Optional: mirroring to Notion
 
-Only when `config/config.toml` has `notion.enabled = true`:
+Only when `data/config/config.toml` has `notion.enabled = true`:
 
 ```bash
 python tools/notion_sync.py push          # local -> Notion, including PDFs

@@ -34,13 +34,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import gemini  # noqa: E402
-from tracker import REPO, TrackerError  # noqa: E402
+import paths  # noqa: E402
+from tracker import TrackerError  # noqa: E402
 
 PROJECTS = Path.home() / ".claude" / "projects"
-WORK = REPO / "tracker" / "session-digest"
+WORK = paths.SESSION_DIGEST
 EXTRACTED = WORK / "sessions"
 DIGESTS = WORK / "digests"
-OUTPUT = REPO / "profile" / "history.md"
+OUTPUT = paths.PROFILE / "history.md"
 
 EXIT_OK, EXIT_ERROR, EXIT_NEEDS_CLAUDE = 0, 1, 3
 

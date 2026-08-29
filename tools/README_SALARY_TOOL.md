@@ -8,7 +8,7 @@ The salary lookup tool (`tools/salary_lookup.py`) lets you benchmark company sal
 
 ## How it works
 
-The tool reads `profile/salary_data.json`, which sits with the rest of your own data. It uses fuzzy matching to find companies by name, folding diacritics, stripping legal suffixes (`A/S`, `GmbH`, `Lda`, `S.A.`) and region words, and tolerating common spelling variations. The lists it strips live in `config/config.toml` under `[salary]`, so it works in any Latin-script market.
+The tool reads `data/profile/salary_data.json`, which sits with the rest of your own data. It uses fuzzy matching to find companies by name, folding diacritics, stripping legal suffixes (`A/S`, `GmbH`, `Lda`, `S.A.`) and region words, and tolerating common spelling variations. The lists it strips live in `data/config/config.toml` under `[salary]`, so it works in any Latin-script market.
 
 The data format supports any index-based or absolute salary data. For example:
 - Index 100 = median salary, higher is better
@@ -19,7 +19,7 @@ The `vs Baseline` column is always a percentage **of the baseline**, so both kin
 
 ## Data format
 
-The tool expects `profile/salary_data.json` with this structure:
+The tool expects `data/profile/salary_data.json` with this structure:
 
 ```json
 {
@@ -61,7 +61,7 @@ The tool expects `profile/salary_data.json` with this structure:
 
 ## Setup options
 
-### Option A: Create profile/salary_data.json manually
+### Option A: Create data/profile/salary_data.json manually
 
 Create the file by hand with data from any source: union statistics, Glassdoor, salary surveys, networking, or personal research.
 
@@ -122,6 +122,6 @@ python tools/salary_lookup.py --list-all
 
 ## Important notes
 
-- The data file lives in `profile/`, so it is **excluded from git** with the rest of your data. Salary figures are often confidential, and some are shared with you in confidence.
+- The data file lives in `data/profile/`, so it is **excluded from git** with the rest of your data. Salary figures are often confidential, and some are shared with you in confidence.
 - If the data file is missing, `tools/salary_lookup.py` exits with a helpful error message and the `/apply` workflow skips the salary benchmark step.
 - The fuzzy matcher absorbs the usual company-name variation: legal suffixes, diacritics, region words, anglicised spellings and partial matches. Write names as the postings write them.

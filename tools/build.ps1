@@ -1,19 +1,19 @@
 # Builds application documents: markdown -> docx (pandoc) -> pdf (MS Word or LibreOffice).
 #
 # Usage:
-#   tools\build.ps1 -Path applications\acme                 # build cv_*.md + cover*.md in the folder
-#   tools\build.ps1 -Path processing\acme                   # same; works in any stage folder
-#   tools\build.ps1 -Path applications\acme\cv_jane_doe.md  # one document
-#   tools\build.ps1 -Path applications\acme -Force          # rebuild docx even if hand-edited
-#   tools\build.ps1 -Path applications\acme -PdfOnly        # only docx -> pdf (keep manual edits)
-#   tools\build.ps1 -Path applications\acme -Engine libreoffice
+#   tools\build.ps1 -Path data\pipeline\applications\acme                 # build cv_*.md + cover*.md in the folder
+#   tools\build.ps1 -Path data\pipeline\processing\acme                   # same; works in any stage folder
+#   tools\build.ps1 -Path data\pipeline\applications\acme\cv_jane_doe.md  # one document
+#   tools\build.ps1 -Path data\pipeline\applications\acme -Force          # rebuild docx even if hand-edited
+#   tools\build.ps1 -Path data\pipeline\applications\acme -PdfOnly        # only docx -> pdf (keep manual edits)
+#   tools\build.ps1 -Path data\pipeline\applications\acme -Engine libreoffice
 #
 # Rules:
 #   - Folder mode builds only cv_*.md and cover*.md; other markdown (job.md,
 #     interview prep, notes) is skipped. Build extras by passing the file path.
 #   - cv_*.md      uses templates\reference_cv.docx
 #   - cover_*.md   uses templates\reference_cover.docx
-#   - Page limits come from config/config.toml ([documents]), not from this script.
+#   - Page limits come from data/config/config.toml ([documents]), not from this script.
 #   - If the .docx is newer than the .md (edited by hand in Word), the md->docx step
 #     is skipped to protect manual edits; only the PDF is refreshed. Use -Force to override.
 #   - Engine 'auto' prefers MS Word (exact page counts) and falls back to LibreOffice.
@@ -37,13 +37,13 @@ if (-not (Get-Command pandoc -ErrorAction SilentlyContinue)) {
 }
 
 # ---------------------------------------------------------------------------
-# Settings (single source of truth: config/config.toml)
+# Settings (single source of truth: data/config/config.toml)
 # ---------------------------------------------------------------------------
 $docSettings = $null
 try {
     $docSettings = & python (Join-Path $PSScriptRoot 'config_get.py') 'documents' | ConvertFrom-Json
 } catch {
-    Write-Warning 'could not read config/config.toml; falling back to 2-page CV / 1-page letter'
+    Write-Warning 'could not read data/config/config.toml; falling back to 2-page CV / 1-page letter'
 }
 $cvLimit = if ($docSettings) { [int]$docSettings.cv_max_pages } else { 2 }
 $coverLimit = if ($docSettings) { [int]$docSettings.cover_max_pages } else { 1 }

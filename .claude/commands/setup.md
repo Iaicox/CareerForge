@@ -10,9 +10,10 @@ Collect the user's professional information and configure the workspace so
 
 ## The rule that matters
 
-**Write only to `profile/`, `config/config.toml`, `config/notion.json` and
-`tracker/`.** All four are gitignored. Never modify `CLAUDE.md`, the files under
-`.claude/`, `templates/`, `tools/` or `profile.example/` — those are the
+**Write only under `data/`: `profile/`, `config/config.toml` and `state/`.**
+All of it is gitignored. Never modify `CLAUDE.md`, the files under `.claude/`,
+`templates/`, `tools/`, or the two templates inside `data/`
+(`config/config.example.toml`, `profile.example/`) — those are the
 framework, and a user who pulls an update must not get a merge conflict because
 setup edited them.
 
@@ -34,10 +35,10 @@ plainly that documents cannot be built until they are installed.
 
 ## Step 1: choose a path
 
-First, look in `documents/`:
+First, look in `data/documents/`:
 
 ```bash
-ls documents/
+ls data/documents/
 ```
 
 If it holds anything besides `README.md`, say what you found and start there —
@@ -50,7 +51,7 @@ paste a CV into a chat window.
 > write cover letters and prep you for interviews.
 >
 > **Path A — read your documents (recommended).** Drop CVs, certificates,
-> reference letters and project write-ups into `documents/` and I'll read them.
+> reference letters and project write-ups into `data/documents/` and I'll read them.
 > Old CVs are especially useful: they usually describe work a later CV had to
 > cut for space. You can also share a file with `@` or paste text.
 >
@@ -68,7 +69,7 @@ deal-breakers, salary floor.
 A long PDF is worth delegating rather than reading into context:
 
 ```bash
-python tools/gemini.py summarize --file documents/<file> \
+python tools/gemini.py summarize --file data/documents/<file> \
   --question "List every role, project, technology and measurable outcome mentioned. Quote the wording used."
 ```
 
@@ -109,18 +110,18 @@ not have considered a platform role. This is where latent options surface.
 
 ## Step 2: write the profile
 
-Each file starts from its counterpart in `profile.example/`, which carries the
+Each file starts from its counterpart in `data/profile.example/`, which carries the
 expected structure and a note on what belongs in it.
 
 | Write to | Contents |
 |---|---|
-| `profile/candidate.md` | Identity, contact, education, experience, projects, skills, certifications |
-| `profile/behavioral.md` | Behavioural profile, strengths, ideal environment, growth areas |
-| `profile/evaluation.md` | Strong/moderate/weak match areas, career goals, motivation filters, location rules, salary floor, sector filter |
-| `profile/interview-prep.md` | 3–4 STAR examples drawn from real experience, plus tough-question notes |
-| `profile/cv_master.md` | The master CV, with real details, keeping the pandoc markup conventions from `references/cv-format.md` |
-| `profile/cover_letter_master.md` | The cover letter skeleton |
-| `profile/search-queries.md` | Search queries, geography tiers and sector exclusions from section 9 |
+| `data/profile/candidate.md` | Identity, contact, education, experience, projects, skills, certifications |
+| `data/profile/behavioral.md` | Behavioural profile, strengths, ideal environment, growth areas |
+| `data/profile/evaluation.md` | Strong/moderate/weak match areas, career goals, motivation filters, location rules, salary floor, sector filter |
+| `data/profile/interview-prep.md` | 3–4 STAR examples drawn from real experience, plus tough-question notes |
+| `data/profile/cv_master.md` | The master CV, with real details, keeping the pandoc markup conventions from `references/cv-format.md` |
+| `data/profile/cover_letter_master.md` | The cover letter skeleton |
+| `data/profile/search-queries.md` | Search queries, geography tiers and sector exclusions from section 9 |
 
 Write what the user actually told you. An empty section is better than a
 plausible invention — every later document is checked against these files, so a
@@ -130,7 +131,7 @@ fabrication here propagates into a CV.
 
 ## Step 3: configure
 
-Copy `config/config.example.toml` to `config/config.toml`, then adjust:
+Copy `data/config/config.example.toml` to `data/config/config.toml`, then adjust:
 
 - `locale` — the language for status labels
 - `documents.name_slug` — used in document filenames (`cv_jane_doe.md`)
@@ -177,8 +178,8 @@ Pass the **page** URL. A Notion URL copied from a board or table view carries a
 
 Re-run `python tools/doctor.py` and show the result. Then:
 
-> **Setup complete.** Written: `profile/…`, `config/config.toml`,
-> `tracker/careerforge.db`.
+> **Setup complete.** Written: `data/profile/…`, `data/config/config.toml`,
+> `data/state/careerforge.db`.
 >
 > - `/scrape` — search job boards now, then `/rank` to score what it finds
 > - `/apply <url>` — run the full application workflow on a posting
@@ -193,5 +194,5 @@ git status --short
 ```
 
 Empty output is the expected result. If anything shows up, you edited a
-framework file — revert it and put the change in `profile/` or
-`config/config.toml` instead.
+framework file — revert it and put the change in `data/profile/` or
+`data/config/config.toml` instead.

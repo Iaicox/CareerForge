@@ -11,10 +11,10 @@ when the user asks for a piece of it directly.
 
 ## Before anything
 
-If `profile/candidate.md` does not exist, the workspace is not set up. Say so
+If `data/profile/candidate.md` does not exist, the workspace is not set up. Say so
 and offer `/setup`. Do not invent a profile, and do not proceed with a partial one.
 
-`profile/` is the single source of truth about the user. Every claim in every
+`data/profile/` is the single source of truth about the user. Every claim in every
 document must be traceable to it.
 
 ## Workflow
@@ -23,7 +23,7 @@ document must be traceable to it.
 
 - Fetch the posting (WebFetch for a URL; use the text as given if pasted).
 - Score it with `references/job-evaluation.md`, using the user's own match
-  areas, goals and deal-breakers from `profile/evaluation.md`.
+  areas, goals and deal-breakers from `data/profile/evaluation.md`.
 - Check for a duplicate before doing any work:
   `python tools/tracker.py find --url <url> --company "<Company>" --role "<Role>"`
 - Present the evaluation table and verdict, then ask whether to proceed and
@@ -31,16 +31,16 @@ document must be traceable to it.
 
 ### 2. Tailor the CV
 
-- Copy `profile/cv_master.md` into the application folder. **Never edit the master.**
+- Copy `data/profile/cv_master.md` into the application folder. **Never edit the master.**
 - Follow `references/cv-format.md`; keep the pandoc markup conventions exactly.
 - Tailor the profile statement, reorder and reframe bullets against the posting.
 - Write the `job.md` snapshot alongside it.
 
 ### 3. Draft the cover letter (optional)
 
-- Copy `profile/cover_letter_master.md`; replace every placeholder.
+- Copy `data/profile/cover_letter_master.md`; replace every placeholder.
 - Follow `references/writing-style.md` and `references/cover-letter-format.md`.
-- Match the posting's language unless `config/config.toml` overrides it.
+- Match the posting's language unless `data/config/config.toml` overrides it.
 
 ### 4. Build
 
@@ -49,7 +49,7 @@ tools/build.ps1 -Path <stage>/<slug>          # Windows
 tools/build.sh <stage>/<slug>                 # macOS / Linux
 ```
 
-Enforce the page limits from `config/config.toml`. Over budget means cutting
+Enforce the page limits from `data/config/config.toml`. Over budget means cutting
 content and rebuilding, not shrinking the font.
 
 ### 5. Record in the tracker
@@ -59,7 +59,7 @@ attach the built PDFs once the user confirms it was actually sent.
 
 ### 6. Interview preparation
 
-An interview invitation means the folder belongs in `processing/` — change the
+An interview invitation means the folder belongs in `data/pipeline/processing/` — change the
 status and the folder follows:
 
 ```
@@ -68,7 +68,7 @@ python tools/tracker.py set-status <slug> screening
 
 Write prep files into the folder as `interview_prep.md`, and
 `interview_prep_<round>.md` for later rounds. Ground every STAR answer in
-`profile/interview-prep.md`; never invent an anecdote.
+`data/profile/interview-prep.md`; never invent an anecdote.
 
 ## Reference files
 
@@ -79,7 +79,7 @@ Write prep files into the folder as `interview_prep.md`, and
 | `references/cv-format.md` | CV structure and pandoc markup conventions |
 | `references/cover-letter-format.md` | Cover letter structure and rules |
 
-User data lives outside this skill, in `profile/`: `candidate.md`,
+User data lives outside this skill, in `data/profile/`: `candidate.md`,
 `behavioral.md`, `evaluation.md`, `interview-prep.md`, `cv_master.md`,
 `cover_letter_master.md`.
 

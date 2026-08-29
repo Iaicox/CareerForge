@@ -13,6 +13,7 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parent.parent / "tools"
 sys.path.insert(0, str(TOOLS))
 
+import paths  # noqa: E402
 import shortlist  # noqa: E402
 import tracker  # noqa: E402
 
@@ -23,23 +24,20 @@ def days_from_now(n: int) -> str:
 
 class ShortlistTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-shortlist-"))
-        self._real_repo = tracker.REPO
-        self._real_seen = shortlist.SEEN_PATH
-        tracker.REPO = self.tmp
-        shortlist.SEEN_PATH = self.tmp / "job_scraper" / "seen_jobs.json"
-        shortlist.SEEN_PATH.parent.mkdir(parents=True)
+        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-shortlist-")).resolve()
+        self._real_repo = paths.REPO
+        paths.configure(self.tmp)
+        paths.JOB_SCRAPER.mkdir(parents=True)
 
     def tearDown(self) -> None:
-        tracker.REPO = self._real_repo
-        shortlist.SEEN_PATH = self._real_seen
+        paths.configure(self._real_repo)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def seed(self, entries: dict) -> None:
         shortlist.save({"seen": entries})
 
     def read(self) -> dict:
-        return json.loads(shortlist.SEEN_PATH.read_text(encoding="utf-8"))["seen"]
+        return json.loads(shortlist.seen_path().read_text(encoding="utf-8"))["seen"]
 
     # -- reading -----------------------------------------------------------
 
@@ -47,7 +45,7 @@ class ShortlistTest(unittest.TestCase):
         self.assertEqual(shortlist.load(), {"seen": {}})
 
     def test_corrupt_file_is_reported_not_silently_reset(self):
-        shortlist.SEEN_PATH.write_text("{not json", encoding="utf-8")
+        shortlist.seen_path().write_text("{not json", encoding="utf-8")
         with self.assertRaises(tracker.TrackerError):
             shortlist.load()
 

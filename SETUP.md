@@ -92,8 +92,8 @@ Then run `/setup`. It offers two paths:
   what it can and asks about the rest.
 - **Interview** — nine sections, conversational.
 
-Both end in the same place: `profile/` populated, `config/config.toml` written,
-`tracker/careerforge.db` created.
+Both end in the same place: `data/profile/` populated, `data/config/config.toml` written,
+`data/state/careerforge.db` created.
 
 **Detail matters more than anything else here.** A profile that lists job titles
 produces generic applications. A profile that describes what you actually built,
@@ -112,15 +112,15 @@ Re-run a single section later:
 
 | Path | Contents |
 |---|---|
-| `profile/candidate.md` | Identity, education, experience, projects, skills |
-| `profile/behavioral.md` | How you work, strengths, ideal environment |
-| `profile/evaluation.md` | Match areas, goals, location rules, salary floor, sector filter |
-| `profile/interview-prep.md` | STAR examples from real experience |
-| `profile/cv_master.md` | Your master CV |
-| `profile/cover_letter_master.md` | The letter skeleton |
-| `profile/search-queries.md` | What `/scrape` searches for |
-| `config/config.toml` | Locale, statuses, page limits, engine |
-| `tracker/careerforge.db` | The tracker |
+| `data/profile/candidate.md` | Identity, education, experience, projects, skills |
+| `data/profile/behavioral.md` | How you work, strengths, ideal environment |
+| `data/profile/evaluation.md` | Match areas, goals, location rules, salary floor, sector filter |
+| `data/profile/interview-prep.md` | STAR examples from real experience |
+| `data/profile/cv_master.md` | Your master CV |
+| `data/profile/cover_letter_master.md` | The letter skeleton |
+| `data/profile/search-queries.md` | What `/scrape` searches for |
+| `data/config/config.toml` | Locale, statuses, page limits, engine |
+| `data/state/careerforge.db` | The tracker |
 
 All of it is gitignored. `git status` should be empty when `/setup` finishes —
 if it is not, something wrote to a framework file, which is a bug.
@@ -130,7 +130,7 @@ if it is not, something wrote to a framework file, which is a bug.
 If you have salary data — a union dataset, a survey, a Glassdoor export, your
 own research:
 
-- **By hand:** create `profile/salary_data.json`. Format:
+- **By hand:** create `data/profile/salary_data.json`. Format:
   `tools/README_SALARY_TOOL.md`.
 - **From Excel:**
   ```bash
@@ -139,9 +139,9 @@ own research:
   ```
 
 Company-name matching normalises legal forms and diacritics. The lists it uses
-are in `config/config.toml` under `[salary]`; extend them for your market.
+are in `data/config/config.toml` under `[salary]`; extend them for your market.
 
-Without `profile/salary_data.json`, `/apply` simply omits the benchmark.
+Without `data/profile/salary_data.json`, `/apply` simply omits the benchmark.
 
 ## 4. Optional: mirror to Notion
 
@@ -159,12 +159,12 @@ Only if you want your pipeline readable on your phone.
    python tools/notion_sync.py provision --parent-page <page URL> --dry-run
    python tools/notion_sync.py provision --parent-page <page URL>
    ```
-5. Set `notion.enabled = true` in `config/config.toml`.
+5. Set `notion.enabled = true` in `data/config/config.toml`.
 
 Then `python tools/notion_sync.py push --files` mirrors your pipeline, PDFs
 included. SQLite stays authoritative; if the two disagree, push again.
 
-Moving an existing Notion tracker in? Fill in `config/notion.json` with your
+Moving an existing Notion tracker in? Fill in `data/state/notion.json` with your
 database ids and run `python tools/notion_sync.py import --dry-run` first.
 
 ## 5. Try it
@@ -188,14 +188,14 @@ Every document exists three times: `.md` (source), `.docx` (editable), `.pdf`
 
 ```powershell
 # Windows
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1 -Path applications\<slug>
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1 -Path applications\<slug> -Force
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1 -Path data\pipeline\applications\<slug>
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1 -Path data\pipeline\applications\<slug> -Force
 ```
 
 ```bash
 # macOS / Linux
-tools/build.sh applications/<slug>
-tools/build.sh applications/<slug> --force
+tools/build.sh data/pipeline/applications/<slug>
+tools/build.sh data/pipeline/applications/<slug> --force
 ```
 
 Edited the `.docx` by hand in Word? Re-running detects that the DOCX is newer
@@ -223,8 +223,8 @@ poppler's `pdfinfo`. The regex fallback warns you when it is guessing.
 
 **"tracker database not found"** — `python tools/tracker.py init`.
 
-**"no configuration found"** — copy `config/config.example.toml` to
-`config/config.toml`, or run `/setup`.
+**"no configuration found"** — copy `data/config/config.example.toml` to
+`data/config/config.toml`, or run `/setup`.
 
 **A folder move was refused** — a folder with that slug already exists in the
 target stage directory. This is deliberate: nothing is overwritten. Merge or

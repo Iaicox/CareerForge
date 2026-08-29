@@ -1,6 +1,6 @@
 # CareerForge configuration.
 #
-# Copy to config/config.toml (gitignored) or let /setup generate it.
+# Copy to data/config/config.toml (gitignored) or let /setup generate it.
 # Everything here is yours to change; nothing in the framework hardcodes it.
 
 # Language used for status labels and board headings ("en", "ru", or any key
@@ -54,7 +54,7 @@ stale_after_days = 30
 [gemini]
 # Optional. Delegates bulk gathering and compression to the Gemini CLI so it
 # does not spend Claude's context. Judgement about what is honest to claim
-# never moves -- that stays with Claude, against profile/ and CLAUDE.md.
+# never moves -- that stays with Claude, against data/profile/ and CLAUDE.md.
 #
 # Needs `npm install -g @google/gemini-cli` and one authentication: run
 # `gemini` once and sign in, or put GEMINI_API_KEY in .env.
@@ -75,7 +75,7 @@ cache_days = 30
 #   summarize  long pages (handbooks, review sites)
 tasks = ["research", "extract", "rank", "summarize"]
 
-# Record every prompt sent to Google under tracker/gemini-log/, so what left
+# Record every prompt sent to Google under data/state/gemini-log/, so what left
 # this machine stays inspectable.
 log = true
 
@@ -83,7 +83,7 @@ log = true
 [notion]
 # Optional mirror. Everything works without it.
 # Run:  python tools/notion_sync.py provision
-# to create the databases and write config/notion.json.
+# to create the databases and write data/state/notion.json.
 enabled = false
 
 

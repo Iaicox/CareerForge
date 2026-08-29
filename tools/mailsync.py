@@ -40,10 +40,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import tracker  # noqa: E402
-from tracker import REPO, TrackerError  # noqa: E402
+import paths  # noqa: E402
+from tracker import TrackerError  # noqa: E402
 
 EXIT_OK, EXIT_ERROR, EXIT_UNCONFIGURED = 0, 1, 3
-PASSWORD_FILE = REPO / ".mail_password"
+PASSWORD_FILE = paths.REPO / ".mail_password"
 MAX_BODY_CHARS = 4000
 
 # Ordered: the first pattern that matches wins, so an interview invitation is
@@ -82,7 +83,7 @@ def mail_settings() -> dict:
     cfg = load_mail_config()
     if not cfg.get("host") or not cfg.get("user"):
         raise TrackerError(
-            "no mailbox configured. Add a [mail] section to config/config.toml:\n"
+            "no mailbox configured. Add a [mail] section to data/config/config.toml:\n"
             '  [mail]\n'
             '  host = "imap.gmail.com"\n'
             '  port = 993\n'
@@ -297,7 +298,7 @@ def suggested_status(config, kind: str) -> str | None:
     """The status this kind of reply implies, if the user has such a status.
 
     The ids above are the ones config.example.toml ships with, but statuses
-    come from config/config.toml and belong to the user -- renaming `screening`
+    come from data/config/config.toml and belong to the user -- renaming `screening`
     or dropping `assignment` is a supported thing to do. Proposing an id that
     is not configured used to fail in `tracker.py set-status`, after the whole
     table had been read and approved. No suggestion is the honest answer.

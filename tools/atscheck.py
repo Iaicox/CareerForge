@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Check that a built PDF still reads as text to an applicant tracking system.
 
-    python tools/atscheck.py applications/acme/cv_jane_doe.pdf
-    python tools/atscheck.py <pdf> --source applications/acme/cv_jane_doe.md
+    python tools/atscheck.py data/pipeline/applications/acme/cv_jane_doe.pdf
+    python tools/atscheck.py <pdf> --source data/pipeline/applications/acme/cv_jane_doe.md
     python tools/atscheck.py <pdf> --keywords Vue TypeScript "design systems"
     python tools/atscheck.py <pdf> --json
 

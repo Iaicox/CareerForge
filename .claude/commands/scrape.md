@@ -8,11 +8,11 @@ argument-hint: "[broad | <focus area>]"
 Run the **job-scraper** skill (`.claude/skills/job-scraper/SKILL.md`) with
 `$ARGUMENTS` as the mode:
 
-- no arguments — the top three priority categories from `profile/search-queries.md`
+- no arguments — the top three priority categories from `data/profile/search-queries.md`
 - `broad` — every category
 - anything else (`fintech`, `tech lead`) — prioritise that category
 
-If `profile/search-queries.md` does not exist, stop and offer
+If `data/profile/search-queries.md` does not exist, stop and offer
 `/setup --section search`.
 
 ## Deduplicate against both sources

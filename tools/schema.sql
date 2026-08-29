@@ -1,5 +1,5 @@
 -- CareerForge tracker schema.
--- Status / work-mode / event-type values are ids defined in config/config.toml,
+-- Status / work-mode / event-type values are ids defined in data/config/config.toml,
 -- so the database never stores a display label.
 
 PRAGMA foreign_keys = ON;

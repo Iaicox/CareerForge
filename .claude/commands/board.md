@@ -12,8 +12,8 @@ python tools/board.py $ARGUMENTS
 ```
 
 It serves `http://127.0.0.1:8765/` (loopback only) and opens a browser. Columns
-are the statuses from `config/config.toml`; dragging a card changes its status
-**and** moves its folder between `applications/`, `processing/` and `rejected/`.
+are the statuses from `data/config/config.toml`; dragging a card changes its status
+**and** moves its folder between `data/pipeline/applications/`, `data/pipeline/processing/` and `data/pipeline/rejected/`.
 
 The server runs until stopped, so start it in the background and tell the user
 the URL rather than blocking the session on it.

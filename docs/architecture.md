@@ -15,20 +15,24 @@ CareerForge/
 │   ├── .claude/agents/           application-reviewer
 │   ├── .claude/skills/           job-application-assistant, job-scraper, application-tracker
 │   ├── .claude/hooks/            first-run notice
-│   ├── profile.example/          templates that tell /setup what to collect
-│   ├── config/config.example.toml
 │   ├── templates/                docx reference docs, fonts
 │   ├── tools/                    tracker, board, doctor, build, notion adapter
 │   └── tests/
 │
-└── yours  (gitignored, written by /setup and by daily work)
+└── data/  (yours; gitignored except the skeleton and the two templates)
+    ├── config/config.toml        locale, statuses, page limits      <- what you write
+    ├── config/config.example.toml   the template it starts from      (committed)
     ├── profile/                  who you are; the source of truth for every claim
-    ├── config/config.toml        locale, statuses, page limits
-    ├── config/notion.json        Notion database ids, if you mirror
-    ├── tracker/careerforge.db    the pipeline
-    ├── applications/ processing/ rejected/
-    └── job_scraper/              seen postings, run shortlists
+    ├── profile.example/          templates that tell /setup what to collect  (committed)
+    ├── documents/                raw material you dropped in
+    ├── pipeline/                 applications/ processing/ rejected/
+    ├── job_scraper/              seen postings
+    └── state/                    careerforge.db, notion.json, logs  <- what the tools write
 ```
+
+The two templates live inside `data/` on purpose: a template sits beside the
+file it is a template for, so there is never a question of where the real one
+goes. `data/.gitignore` ignores everything else.
 
 Two consequences worth stating outright:
 
@@ -36,12 +40,12 @@ Two consequences worth stating outright:
   empty after onboarding, and why pulling a framework update never conflicts
   with your content.
 - **A workflow that wants to edit a framework file is a bug**, not a reason to
-  edit it. The thing it wants to change belongs in `profile/` or
-  `config/config.toml`.
+  edit it. The thing it wants to change belongs in `data/profile/` or
+  `data/config/config.toml`.
 
 ## Configuration is the seam
 
-`config/config.toml` is where anything market-, language- or preference-specific
+`data/config/config.toml` is where anything market-, language- or preference-specific
 lives, so the framework can stay neutral:
 
 | Setting | Consumed by |
@@ -66,7 +70,7 @@ set independently.
 
 ```
 tracker.py set-status <slug> screening
-    -> move_folder(slug, stage_of("screening"))    # applications/ -> processing/
+    -> move_folder(slug, stage_of("screening"))    # data/pipeline/applications/ -> data/pipeline/processing/
     -> UPDATE applications SET status = 'screening'
 ```
 
@@ -85,12 +89,12 @@ posting (URL or text)
    |
    |-- tracker.py find --url ...            duplicate? stop and ask
    v
-fit evaluation      references/job-evaluation.md  x  profile/evaluation.md
+fit evaluation      references/job-evaluation.md  x  data/profile/evaluation.md
    |
    |  (user decides: CV only, CV + letter, or stop)
    v
-draft               profile/cv_master.md -> applications/<slug>/cv_<name>.md
-                    profile/cover_letter_master.md -> cover_letter_<name>.md
+draft               data/profile/cv_master.md -> data/pipeline/applications/<slug>/cv_<name>.md
+                    data/profile/cover_letter_master.md -> cover_letter_<name>.md
                     job.md snapshot
    v
 application-reviewer agent                 researches, critiques, cites
@@ -139,7 +143,7 @@ JS, and it reads the same columns your config defines.
 ## Documents
 
 Two scripts, one per platform, both reading their page limits from
-`config/config.toml` through `tools/config_get.py` so they cannot drift:
+`data/config/config.toml` through `tools/config_get.py` so they cannot drift:
 
 - `build.ps1` — Windows. MS Word via COM, which renders exactly and reports
   exact page counts. Falls back to LibreOffice if Word is not scriptable.

@@ -53,7 +53,7 @@ class NormalisationTest(unittest.TestCase):
         # user has a config at all -- "group" and "holding" were.
         import tomllib
 
-        with (REPO / "config" / "config.example.toml").open("rb") as fh:
+        with (REPO / "data" / "config" / "config.example.toml").open("rb") as fh:
             example = tomllib.load(fh)["salary"]
         self.assertEqual(
             set(salary.DEFAULT_LEGAL_FORMS) - set(example["strip_legal_forms"]),

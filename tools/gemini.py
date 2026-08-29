@@ -3,13 +3,13 @@
 
     python tools/gemini.py check
     python tools/gemini.py research-company --name "Acme" --url https://acme.example
-    python tools/gemini.py extract-posting --file applications/acme/raw.html
-    python tools/gemini.py rank --input job_scraper/seen_jobs.json --criteria profile/evaluation.md
+    python tools/gemini.py extract-posting --file data/pipeline/applications/acme/raw.html
+    python tools/gemini.py rank --input data/job_scraper/seen_jobs.json --criteria data/profile/evaluation.md
     python tools/gemini.py summarize --file long.html --question "What is their tech stack?"
 
 Gemini gathers and compresses. It never decides what is honest to claim about
 the candidate -- that judgement stays in one place, with Claude, against
-profile/ and the rules in CLAUDE.md.
+data/profile/ and the rules in CLAUDE.md.
 
 **Failure is never fatal.** Every subcommand exits 3 when Gemini is unusable,
 so the caller can do the work itself instead. A job search must not stop
@@ -38,9 +38,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from tracker import REPO, TrackerError, load_config, load_dotenv, rel  # noqa: E402
-
-LOG_DIR = REPO / "tracker" / "gemini-log"
+import paths  # noqa: E402
+from tracker import TrackerError, load_config, load_dotenv, rel  # noqa: E402
 
 EXIT_OK, EXIT_ERROR, EXIT_UNAVAILABLE, EXIT_TIMEOUT, EXIT_BAD_OUTPUT = 0, 1, 3, 4, 5
 
@@ -103,7 +102,7 @@ def log_call(kind: str, prompt: str, result: dict, payload: str | None = None) -
     if not settings()["log"]:
         return
     try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        paths.GEMINI_LOG.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc)
         entry = {
             "at": stamp.isoformat(timespec="seconds"),
@@ -118,7 +117,7 @@ def log_call(kind: str, prompt: str, result: dict, payload: str | None = None) -
             "stats": result.get("stats"),
             "error": result.get("error"),
         }
-        path = LOG_DIR / f"{stamp:%Y-%m-%d}.jsonl"
+        path = paths.GEMINI_LOG / f"{stamp:%Y-%m-%d}.jsonl"
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
     except OSError:
@@ -138,7 +137,7 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
     """
     s = settings()
     if not s["enabled"]:
-        raise GeminiUnavailable("gemini is disabled in config/config.toml ([gemini] enabled)")
+        raise GeminiUnavailable("gemini is disabled in data/config/config.toml ([gemini] enabled)")
 
     # GEMINI_API_KEY may live in .env; the subprocess inherits os.environ.
     load_dotenv()
@@ -157,10 +156,10 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     # Gemini is itself an agent: run in the repo it discovers CLAUDE.md, follows
     # ITS instructions instead of the prompt, and pokes at the workspace with
-    # its own tools (which cannot even see profile/, since it is gitignored).
+    # its own tools (which cannot even see data/profile/, since it is gitignored).
     # An empty working directory gives it nothing to be distracted by, and as a
     # side effect nothing leaves this machine except what the payload carries.
-    workdir = REPO / "tracker" / "gemini-cwd"
+    workdir = paths.GEMINI_CWD
     workdir.mkdir(parents=True, exist_ok=True)
     try:
         proc = subprocess.run(
@@ -420,7 +419,7 @@ def cmd_check() -> int:
         print("\n  install: npm install -g @google/gemini-cli")
         return EXIT_UNAVAILABLE
     if not s["enabled"]:
-        print("\n  set [gemini] enabled = true in config/config.toml to use it")
+        print("\n  set [gemini] enabled = true in data/config/config.toml to use it")
         return EXIT_UNAVAILABLE
     try:
         reply = call("Reply with exactly: OK", kind="check", timeout=60)
@@ -432,7 +431,7 @@ def cmd_check() -> int:
             print("    - set GEMINI_API_KEY from https://aistudio.google.com/apikey")
         return getattr(exc, "exit_code", EXIT_UNAVAILABLE)
     print(f"  live      yes ({reply.strip()[:40]})")
-    print(f"  log       {rel(LOG_DIR)}")
+    print(f"  log       {rel(paths.GEMINI_LOG)}")
     return EXIT_OK
 
 

@@ -14,7 +14,7 @@ Auth: NOTION_KEY in .env, or NOTION_TOKEN in the environment, or a
 at notion.so/my-integrations with Read, Update and Insert content, then share
 the parent page with it.
 
-Database ids live in config/notion.json (gitignored), written by `provision`
+Database ids live in data/state/notion.json (gitignored), written by `provision`
 or by hand. Standard library only.
 """
 
@@ -38,11 +38,11 @@ from typing import Any, Iterable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import tracker  # noqa: E402
-from tracker import REPO, TrackerError  # noqa: E402
+import paths  # noqa: E402
+from tracker import TrackerError  # noqa: E402
 
 API = "https://api.notion.com/v1"
 API_VERSION = "2025-09-03"
-IDS_PATH = REPO / "config" / "notion.json"
 PACE_SECONDS = 0.35  # Notion averages 3 requests/second
 MAX_UPLOAD = 20 * 1024 * 1024
 
@@ -74,7 +74,7 @@ def token() -> str:
         value = (os.environ.get(name) or "").strip()
         if value:
             return value
-    path = REPO / ".notion_token"
+    path = paths.REPO / ".notion_token"
     if path.exists():
         value = path.read_text(encoding="utf-8").strip()
         if value:
@@ -183,17 +183,17 @@ def normalise_id(value: str) -> str:
 
 
 def load_ids() -> dict:
-    if not IDS_PATH.exists():
+    if not paths.NOTION_IDS.exists():
         raise TrackerError(
-            f"{tracker.rel(IDS_PATH)} not found. Run: "
+            f"{tracker.rel(paths.NOTION_IDS)} not found. Run: "
             "python tools/notion_sync.py provision --parent-page <page url>"
         )
-    return json.loads(IDS_PATH.read_text(encoding="utf-8"))
+    return json.loads(paths.NOTION_IDS.read_text(encoding="utf-8"))
 
 
 def save_ids(ids: dict) -> None:
-    IDS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    IDS_PATH.write_text(
+    paths.NOTION_IDS.parent.mkdir(parents=True, exist_ok=True)
+    paths.NOTION_IDS.write_text(
         json.dumps(ids, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
 
@@ -294,7 +294,7 @@ def do_sync_options(dry_run: bool) -> int:
     """Bring the mirror's select options back in step with config.
 
     provision() writes them once. Add a status, event type, work mode or
-    outcome to config/config.toml afterwards and Notion never hears about it:
+    outcome to data/config/config.toml afterwards and Notion never hears about it:
     the select keeps the options it was created with, and the new value has
     nowhere to land.
 
@@ -415,8 +415,8 @@ def provision(parent_page: str, dry_run: bool) -> dict:
     print("linked relations")
 
     save_ids(ids)
-    print(f"wrote {tracker.rel(IDS_PATH)}")
-    print("Set notion.enabled = true in config/config.toml to start mirroring.")
+    print(f"wrote {tracker.rel(paths.NOTION_IDS)}")
+    print("Set notion.enabled = true in data/config/config.toml to start mirroring.")
     return ids
 
 
@@ -660,7 +660,7 @@ def do_import(dry_run: bool, with_bodies: bool) -> int:
     print(f"{verb}: {imported} application(s), {events} event(s)")
     print(f"already present: {skipped} application(s), {events_present} event(s)")
     if unmapped_statuses:
-        print("statuses with no match in config/config.toml (stored as 'draft'):")
+        print("statuses with no match in data/config/config.toml (stored as 'draft'):")
         for s in sorted(unmapped_statuses):
             print(f"  - {s}")
     return 0
@@ -933,7 +933,7 @@ def do_push(slug: str | None, with_files: bool, dry_run: bool,
 
         if with_files:
             for att in detail["attachments"]:
-                path = REPO / att["path"]
+                path = paths.REPO / att["path"]
                 if not path.exists():
                     print(f"  skipped missing file {att['path']}")
                     continue

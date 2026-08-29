@@ -1,6 +1,6 @@
 # The tracker database
 
-`tracker/careerforge.db` — an ordinary SQLite file. Created by
+`data/state/careerforge.db` — an ordinary SQLite file. Created by
 `python tools/tracker.py init` from `tools/schema.sql`.
 
 ## Tables
@@ -32,7 +32,7 @@ One row per application: one CV sent for one role.
 | `role` | The title as the posting writes it |
 | `slug` | Unique; also the folder name under the stage directory |
 | `url` | The posting URL — the primary deduplication key |
-| `status` | An id from `[[statuses]]` in `config/config.toml` |
+| `status` | An id from `[[statuses]]` in `data/config/config.toml` |
 | `work_mode` | An id from `[[work_modes]]` |
 | `location` | The place as the posting states it |
 | `location_verdict` | `pass`, `fail` or `flag`. Separate from `location` because the place is a fact and the verdict is a judgement |
@@ -97,7 +97,7 @@ What every read goes through. Every column of `applications`, plus:
 ## What the database does not store
 
 **Display labels.** `status` holds `screening`, never `Screening` or
-`📞 Скрининг`. Labels come from `config/config.toml` at read time, which is why
+`📞 Скрининг`. Labels come from `data/config/config.toml` at read time, which is why
 you can change your locale, rename a status or translate the whole funnel
 without migrating anything.
 
@@ -115,7 +115,7 @@ It is a plain SQLite file, so:
 python tools/board.py                    # kanban, drag to change status
 python tools/tracker.py report --board   # kanban in the terminal
 python tools/tracker.py export           # everything as JSON
-datasette tracker/careerforge.db         # queryable web UI, pip install datasette
+datasette data/state/careerforge.db         # queryable web UI, pip install datasette
 ```
 
 [DB Browser for SQLite](https://sqlitebrowser.org/) and the VS Code SQLite
@@ -140,6 +140,10 @@ Each migration runs in its own transaction together with the row that records
 it, so one that fails partway leaves the database exactly as it was and can be
 retried once fixed.
 
+Not every migration adds a column. `004_attachments_data_dir.sql` rewrites the
+rows of `attachments`: their paths are repo-relative, and the stage directories
+moved from the repo root to `data/pipeline/`.
+
 ## Backups
 
 Copy the file. If the board or a session might be running, copy all three of
@@ -147,6 +151,6 @@ Copy the file. If the board or a session might be running, copy all three of
 consistent snapshot:
 
 ```bash
-sqlite3 tracker/careerforge.db ".backup 'backup.db'"
+sqlite3 data/state/careerforge.db ".backup 'backup.db'"
 python tools/tracker.py export > backup.json
 ```

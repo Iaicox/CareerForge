@@ -2,13 +2,13 @@
 # Builds application documents on macOS / Linux: markdown -> docx (pandoc) -> pdf (LibreOffice).
 #
 # Usage:
-#   tools/build.sh applications/acme                  # build cv_*.md + cover*.md in the folder
-#   tools/build.sh applications/acme/cv_jane_doe.md   # one document
-#   tools/build.sh applications/acme --force          # rebuild docx even if hand-edited
-#   tools/build.sh applications/acme --pdf-only       # only docx -> pdf (keep manual edits)
+#   tools/build.sh data/pipeline/applications/acme                  # build cv_*.md + cover*.md in the folder
+#   tools/build.sh data/pipeline/applications/acme/cv_jane_doe.md   # one document
+#   tools/build.sh data/pipeline/applications/acme --force          # rebuild docx even if hand-edited
+#   tools/build.sh data/pipeline/applications/acme --pdf-only       # only docx -> pdf (keep manual edits)
 #
 # The Windows counterpart is tools/build.ps1, which prefers MS Word. Both read
-# their page limits from config/config.toml, so they cannot drift apart.
+# their page limits from data/config/config.toml, so they cannot drift apart.
 #
 # Install the fonts in templates/fonts/ into your user font directory once if
 # documents render with substitutes (macOS: Font Book; Linux: cp to ~/.local/share/fonts && fc-cache).
@@ -46,7 +46,7 @@ done
   echo "error: LibreOffice not found (brew install --cask libreoffice / apt install libreoffice)" >&2
   exit 1; }
 
-# Page limits: config/config.toml is the single source of truth.
+# Page limits: data/config/config.toml is the single source of truth.
 DOCCFG="$("$PYTHON" "$SCRIPT_DIR/config_get.py" documents 2>/dev/null || echo '{}')"
 read_limit() {
   "$PYTHON" -c "import json,sys; print(json.loads(sys.argv[1]).get(sys.argv[2], sys.argv[3]))" \

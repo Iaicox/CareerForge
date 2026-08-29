@@ -5,8 +5,8 @@
 CVs are written in Markdown and built into styled DOCX + PDF. The visual design follows `templates/CV_template.docx` (Roboto fonts, gray secondary text, right-aligned dates) via pandoc reference-doc `templates/reference_cv.docx`.
 
 **Master reference:** `templates/cv_master.md` - comprehensive CV with all competencies, experience, and achievements. **Copy it as the starting point for every targeted CV; never edit the master itself.**
-**Output file:** `applications/<company-slug>/cv_{slug}.md`
-**Build:** `powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1 -Path applications\<company-slug>` (produces `.docx` and `.pdf`, reports page count; same command with `processing\<company-slug>` once the folder has moved there)
+**Output file:** `data/pipeline/applications/<company-slug>/cv_{slug}.md`
+**Build:** `powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1 -Path data\pipeline\applications\<company-slug>` (produces `.docx` and `.pdf`, reports page count; same command with `data\pipeline\processing\<company-slug>` once the folder has moved there)
 
 ## Markup Conventions (must be preserved exactly)
 

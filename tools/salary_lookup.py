@@ -24,8 +24,11 @@ import argparse
 import unicodedata
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-DATA_FILE = REPO / "profile" / "salary_data.json"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import paths  # noqa: E402
+
+DATA_FILE = paths.PROFILE / "salary_data.json"
 
 # Company-name normalisation. The lists live in config/config.toml under
 # [salary] so this works in any market; the values below are only the fallback
@@ -54,7 +57,7 @@ def _load_normalisation():
     try:
         import tomllib
 
-        cfg = REPO / "config" / "config.toml"
+        cfg = paths.CONFIG
         if cfg.exists():
             with cfg.open("rb") as fh:
                 data = tomllib.load(fh).get("salary", {})

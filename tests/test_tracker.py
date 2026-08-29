@@ -20,26 +20,23 @@ REPO = Path(__file__).resolve().parent.parent
 TOOLS = REPO / "tools"
 sys.path.insert(0, str(TOOLS))
 
+import paths  # noqa: E402
 import tracker  # noqa: E402
 from tracker import TrackerError  # noqa: E402
 
 
 class TrackerTestCase(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-test-"))
-        self._real_repo = tracker.REPO
-        self._real_db = tracker.DB_PATH
+        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-test-")).resolve()
+        self._real_repo = paths.REPO
+        example = paths.CONFIG_EXAMPLE
 
-        # Point the module at a throwaway repo laid out like the real one.
-        tracker.REPO = self.tmp
-        tracker.DB_PATH = self.tmp / "tracker" / "careerforge.db"
-        for stage in tracker.STAGES:
-            (self.tmp / stage).mkdir(parents=True)
-        (self.tmp / "config").mkdir()
-        shutil.copy(
-            self._real_repo / "config" / "config.example.toml",
-            self.tmp / "config" / "config.toml",
-        )
+        # Point the tools at a throwaway repo laid out like the real one.
+        paths.configure(self.tmp)
+        for stage in paths.STAGES:
+            paths.stage_dir(stage).mkdir(parents=True)
+        paths.CONFIG_DIR.mkdir(parents=True)
+        shutil.copy(example, paths.CONFIG)
         tracker.load_config(force=True)
 
         tracker.init_db()
@@ -48,8 +45,7 @@ class TrackerTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.conn.close()
-        tracker.REPO = self._real_repo
-        tracker.DB_PATH = self._real_db
+        paths.configure(self._real_repo)
         tracker.load_config(force=True)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
@@ -87,19 +83,19 @@ class TrackerTestCase(unittest.TestCase):
 
     def test_status_change_moves_the_folder(self):
         row = self.add()
-        (self.tmp / "applications" / row["slug"]).mkdir()
-        (self.tmp / "applications" / row["slug"] / "job.md").write_text("x")
+        (paths.stage_dir("applications") / row["slug"]).mkdir()
+        (paths.stage_dir("applications") / row["slug"] / "job.md").write_text("x")
 
         with self.conn:
             tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
 
-        self.assertFalse((self.tmp / "applications" / row["slug"]).exists())
-        self.assertTrue((self.tmp / "processing" / row["slug"] / "job.md").exists())
+        self.assertFalse((paths.stage_dir("applications") / row["slug"]).exists())
+        self.assertTrue((paths.stage_dir("processing") / row["slug"] / "job.md").exists())
 
     def test_collision_refuses_and_changes_nothing(self):
         row = self.add()
-        (self.tmp / "applications" / row["slug"]).mkdir()
-        (self.tmp / "rejected" / row["slug"]).mkdir()  # name already taken
+        (paths.stage_dir("applications") / row["slug"]).mkdir()
+        (paths.stage_dir("rejected") / row["slug"]).mkdir()  # name already taken
 
         with self.assertRaises(TrackerError) as ctx:
             with self.conn:
@@ -107,7 +103,7 @@ class TrackerTestCase(unittest.TestCase):
         self.assertIn("already exists", str(ctx.exception))
 
         # Neither the folder nor the status moved.
-        self.assertTrue((self.tmp / "applications" / row["slug"]).exists())
+        self.assertTrue((paths.stage_dir("applications") / row["slug"]).exists())
         after = tracker.resolve(self.conn, row["slug"])
         self.assertEqual(after["status"], "draft")
 
@@ -449,6 +445,27 @@ class TrackerTestCase(unittest.TestCase):
         recorded = {r["name"] for r in self.conn.execute("SELECT name FROM migrations")}
         on_disk = {p.name for p in tracker.MIGRATIONS_DIR.glob("*.sql")}
         self.assertEqual(recorded, on_disk)
+
+    def test_migration_004_moves_attachment_paths_under_data(self):
+        # Attachments are stored repo-relative, so rows written before the
+        # stage directories moved under data/pipeline/ point at nothing.
+        row = self.add()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO attachments(application_id, kind, path) VALUES (?,?,?)",
+                (row["id"], "cv", "applications/acme/cv.pdf"),
+            )
+            self.conn.execute(
+                "INSERT INTO attachments(application_id, kind, path) VALUES (?,?,?)",
+                (row["id"], "cover", "data/pipeline/rejected/acme/cover.pdf"),
+            )
+        sql = (tracker.MIGRATIONS_DIR / "004_attachments_data_dir.sql").read_text(encoding="utf-8")
+        self.conn.executescript(sql)
+        paths_ = sorted(r["path"] for r in self.conn.execute("SELECT path FROM attachments"))
+        self.assertEqual(paths_, [
+            "data/pipeline/applications/acme/cv.pdf",
+            "data/pipeline/rejected/acme/cover.pdf",
+        ])
 
     def columns(self, table="applications"):
         return {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}

@@ -29,10 +29,14 @@ from pathlib import Path
 
 ARTIFACT_URL = "https://claude.ai/code/artifact/2b68ae96-7ba7-4e71-8942-451c949f6ea5"
 
-REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import paths  # noqa: E402
+
+REPO = paths.REPO
 SOURCE = REPO / "docs" / "manual.md"
 TEMPLATE = Path(__file__).resolve().parent / "manual_template.html"
-OUTPUT = REPO / "tracker" / "manual-artifact.html"
+OUTPUT = paths.MANUAL_ARTIFACT
 
 
 def slug(text: str) -> str:
