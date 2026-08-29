@@ -204,7 +204,7 @@ class BulkInputTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.captured: dict = {}
-        self._real_run = gemini.subprocess.run
+        self._real_run = gemini.run_cli
         self._real_settings = gemini.settings
         self._real_binary = gemini.binary
         self._real_log = gemini.log_call
@@ -216,11 +216,11 @@ class BulkInputTest(unittest.TestCase):
 
         def fake_run(cmd, **kwargs):
             self.captured["cmd"] = cmd
-            self.captured["input"] = kwargs.get("input")
+            self.captured["input"] = kwargs.get("payload")
             self.captured["cwd"] = kwargs.get("cwd")
             return Result()
 
-        gemini.subprocess.run = fake_run
+        gemini.run_cli = fake_run
         gemini.binary = lambda: "gemini"
         gemini.log_call = lambda *a, **k: None
         gemini.settings = lambda: {
@@ -229,7 +229,7 @@ class BulkInputTest(unittest.TestCase):
         }
 
     def tearDown(self) -> None:
-        gemini.subprocess.run = self._real_run
+        gemini.run_cli = self._real_run
         gemini.settings = self._real_settings
         gemini.binary = self._real_binary
         gemini.log_call = self._real_log
@@ -268,10 +268,28 @@ class BulkInputTest(unittest.TestCase):
             exc.winerror = 206
             raise exc
 
-        gemini.subprocess.run = raise_206
+        gemini.run_cli = raise_206
         with self.assertRaises(gemini.GeminiUnavailable) as ctx:
             gemini.call("instruction", payload="x")
         self.assertIn("stdin", str(ctx.exception))
+
+    def test_a_timeout_kills_the_whole_process_tree(self):
+        # The Gemini launcher starts a second node process that inherits the
+        # stdout pipe. subprocess.run() kills only the child on a timeout and
+        # then blocks reading the pipe until the grandchild exits by itself --
+        # seen live as a 120-second limit that hung for eight minutes.
+        import subprocess
+        import time
+        child = (
+            "import subprocess, sys, time; "
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)']); "
+            "time.sleep(20)"
+        )
+        start = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self._real_run([sys.executable, "-c", child], payload=None, timeout=1,
+                           env=None, cwd=None)
+        self.assertLess(time.monotonic() - start, 8, "the grandchild kept the pipe open")
 
 
 if __name__ == "__main__":

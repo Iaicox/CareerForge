@@ -30,6 +30,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -124,6 +125,52 @@ def log_call(kind: str, prompt: str, result: dict, payload: str | None = None) -
         pass  # logging must never be the reason a call fails
 
 
+def kill_tree(proc: subprocess.Popen) -> None:
+    """Kill a process and everything it spawned.
+
+    The Gemini CLI is a node launcher that starts a second node process for
+    the real work, and that grandchild inherits the stdout pipe. Killing only
+    the child, as subprocess.run() does on a timeout, leaves the pipe open --
+    and run() then blocks in communicate() until the grandchild exits on its
+    own, which turns a 120-second limit into a hang.
+    """
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                       capture_output=True)
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def run_cli(cmd: list[str], *, payload: str | None, timeout: int | None,
+            env: dict | None, cwd: str | None) -> subprocess.CompletedProcess:
+    """subprocess.run, except that a timeout kills the whole process tree."""
+    kwargs: dict[str, Any] = dict(
+        stdin=subprocess.PIPE if payload is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace", cwd=cwd, env=env,
+    )
+    if os.name != "nt":
+        kwargs["start_new_session"] = True  # so killpg reaches the grandchildren
+    proc = subprocess.Popen(cmd, **kwargs)
+    try:
+        out, err = proc.communicate(input=payload, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill_tree(proc)
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
 def call(prompt: str, *, kind: str = "call", model: str | None = None,
          timeout: int | None = None, payload: str | None = None) -> str:
     """Run one headless Gemini prompt and return its text response.
@@ -162,10 +209,9 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
     workdir = paths.GEMINI_CWD
     workdir.mkdir(parents=True, exist_ok=True)
     try:
-        proc = subprocess.run(
-            cmd, input=payload, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", cwd=str(workdir),
-            timeout=timeout or s["timeout_seconds"], env=env,
+        proc = run_cli(
+            cmd, payload=payload, timeout=timeout or s["timeout_seconds"],
+            env=env, cwd=str(workdir),
         )
     except subprocess.TimeoutExpired:
         raise GeminiTimeout(f"gemini timed out after {timeout or s['timeout_seconds']}s")

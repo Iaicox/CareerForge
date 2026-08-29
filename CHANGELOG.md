@@ -83,6 +83,14 @@
 
 ### Fixed
 
+- **A Gemini timeout no longer hangs.** The Gemini CLI is a launcher that
+  starts a second node process for the real work, and that grandchild inherits
+  the stdout pipe; `subprocess.run()` killed only the child on a timeout and
+  then blocked reading the pipe until the grandchild exited by itself — a
+  120-second limit that ran for eight minutes. `gemini.run_cli()` now kills the
+  whole process tree (`taskkill /T` on Windows, the process group elsewhere)
+  and raises the timeout it promised.
+
 - **The Notion import no longer duplicates events.** `notion_sync.py import`
   deduplicated applications on their posting URL but keyed events on nothing, so
   every re-run appended the whole Notion event history again — against a
