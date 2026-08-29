@@ -401,6 +401,72 @@ class RestTransportTest(unittest.TestCase):
         self.assertIn("Google Search grounding", str(ctx.exception))
         self.assertIn("search pool", str(ctx.exception))
 
+    def test_a_plain_refusal_leaves_the_model_free_for_grounded_work(self):
+        # gemini-2.5-flash is the general pool's last resort and the search
+        # pool's first choice, and the two quotas are separate.
+        gemini.cool_down("gemini-2.5-flash", self.T0 + timedelta(hours=1), "daily quota")
+        self.assertIsNone(gemini.cooling_until("gemini-2.5-flash", search=True))
+        gemini.call("instruction", search=True)
+        self.assertEqual(self.models_called(), ["gemini-2.5-flash"])
+
+    def test_a_grounded_refusal_leaves_the_model_free_for_plain_work(self):
+        self.responses = [self.quota(None, "GenerateRequestsPerDayPerProjectPerModel-FreeTier"),
+                          (200, self.ok("OK"))]
+        gemini.call("instruction", search=True)
+        self.assertIsNotNone(gemini.cooling_until("gemini-2.5-flash", search=True))
+        self.assertIsNone(gemini.cooling_until("gemini-2.5-flash"),
+                          "the grounding quota is not the request quota")
+        self.calls.clear()
+        gemini.call("instruction")
+        self.assertEqual(self.models_called(), ["gemini-3.7-flash"])
+
+    def test_a_probe_reports_a_refusal_without_benching_anything(self):
+        # `check` runs this way: a diagnostic that disables what it diagnoses
+        # turns three runs of /doctor into a day without delegation.
+        self.responses = [self.quota(None, "GenerateRequestsPerDayPerProjectPerModel-FreeTier")] * 3
+        with self.assertRaises(gemini.GeminiUnavailable):
+            gemini.call("instruction", cool=False)
+        self.assertEqual(gemini.load_cooldowns(), {})
+
+    # -- errors that belong to one model, not to the pool -------------------
+
+    def test_an_unsupported_request_moves_on_to_the_next_model(self):
+        # A model that will not take the search tool answers 400, not 429.
+        self.responses = [(400, {"error": {"code": 400, "status": "INVALID_ARGUMENT",
+                                           "message": "google_search is not supported"}}),
+                          (200, self.ok("OK"))]
+        self.assertEqual(gemini.call("instruction", search=True), "OK")
+        self.assertEqual(self.models_called(), ["gemini-2.5-flash", "gemini-2.5-flash-lite"])
+
+    def test_a_malformed_key_is_a_400_and_still_stops_the_pool(self):
+        self.responses = [(400, {"error": {"code": 400, "status": "INVALID_ARGUMENT",
+                                           "message": "API key not valid. Please pass a valid API key."}})]
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+            gemini.call("instruction")
+        self.assertIn("not authenticated", str(ctx.exception))
+        self.assertEqual(len(self.calls), 1, "no other model would fix the key")
+
+    def test_the_timeout_is_the_budget_for_the_pool_not_for_each_model(self):
+        # It used to be the socket timeout of every model in turn, so a stalled
+        # API cost len(pool) x timeout_seconds -- half an hour under the shipped
+        # config -- from a setting that reads like a bound.
+        clock = [0.0]
+        self.addCleanup(setattr, gemini, "time", gemini.time)
+        gemini.time = type("Clock", (), {"monotonic": staticmethod(lambda: clock[0]),
+                                         "sleep": staticmethod(lambda s: None)})
+
+        def crawl(url, body, timeout):
+            self.calls.append((url, body, timeout))
+            clock[0] += timeout  # the socket timeout is spent in full
+            raise TimeoutError("timed out")
+
+        gemini.http_post = crawl
+        with self.assertRaises(gemini.GeminiTimeout) as ctx:
+            gemini.call("instruction")
+        self.assertEqual([c[2] for c in self.calls], [10],
+                         "the first model spent the budget; the rest are not asked")
+        self.assertIn("budget was spent", str(ctx.exception))
+
     # -- 404: unknown until restart ----------------------------------------
 
     def test_an_unknown_model_is_skipped_for_the_rest_of_the_process(self):
@@ -416,6 +482,8 @@ class RestTransportTest(unittest.TestCase):
     # -- the rest -------------------------------------------------------------
 
     def test_high_demand_is_retried_twice_then_the_next_model_is_asked(self):
+        base = gemini.settings()
+        gemini.settings = lambda: {**base, "timeout_seconds": 120}  # room for 5s + 15s
         overloaded = (503, {"error": {"code": 503, "status": "UNAVAILABLE",
                                       "message": "This model is currently experiencing high demand."}})
         self.responses = [overloaded, overloaded, overloaded, (200, self.ok("OK"))]
@@ -507,7 +575,18 @@ class PoolSettingsTest(unittest.TestCase):
         minute = {"details": [{"violations": [{"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}]}]}
         self.assertEqual(gemini.quota_kind(minute), "minute")
         self.assertEqual(gemini.quota_kind({"message": "Please retry in 12s.", "details": []}), "minute")
-        self.assertEqual(gemini.quota_kind({"message": "You exceeded your current quota", "details": []}), "daily")
+        # Google states the same limit in prose, with spaces, and sometimes
+        # sends no details at all.
+        prose = {"message": "Quota exceeded for quota metric "
+                            "'Generate Content API requests per minute'", "details": []}
+        self.assertEqual(gemini.quota_kind(prose), "minute")
+        helpful = {"message": "You exceeded your current quota. See "
+                              "https://ai.google.dev/gemini-api/docs/daily-limits", "details": []}
+        self.assertEqual(gemini.quota_kind(helpful), "minute",
+                         "a word in a help link is not the quota that was hit")
+        self.assertEqual(gemini.quota_kind({"message": "You exceeded your current quota", "details": []}),
+                         "minute",
+                         "an inconclusive 429 costs one retry this way, a day the other way")
 
 
 if __name__ == "__main__":

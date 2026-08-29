@@ -281,25 +281,23 @@ def check_dotenv() -> Check:
 
 def check_gemini() -> Check:
     """Optional: bulk gathering delegated off Claude's context."""
-    cfg_path = paths.CONFIG
-    enabled = False
-    timeout = 120
-    if cfg_path.exists():
-        try:
-            import tomllib
-            with cfg_path.open("rb") as fh:
-                gemini_cfg = tomllib.load(fh).get("gemini", {})
-            enabled = bool(gemini_cfg.get("enabled"))
-            timeout = int(gemini_cfg.get("timeout_seconds", timeout))
-        except Exception:
-            enabled = False
+    try:
+        import gemini
+        settings = gemini.settings()
+        enabled, timeout = bool(settings["enabled"]), settings["timeout_seconds"]
+    except Exception:
+        enabled, timeout = False, 120
     if not enabled:
         return Check("Gemini delegation", OK, "disabled (optional)", required=False)
 
     try:
         probe = subprocess.run(
             [sys.executable, str(REPO / "tools" / "gemini.py"), "check"],
-            capture_output=True, text=True, timeout=timeout + 30,
+            capture_output=True, text=True,
+            # `check` runs the plain pool and then the search pool, and each of
+            # them is allowed the configured budget. Anything less than both and
+            # doctor reports a timeout of its own making.
+            timeout=2 * timeout + 30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return Check("Gemini delegation", WARN, f"probe failed: {exc}",
