@@ -4,6 +4,21 @@
 
 ### Changed
 
+- **The Notion mirror carries postings too.** A fourth database, Postings,
+  next to Companies, Applications and Events: title, company, URL, status,
+  score and verdict, deadline, source, first seen, the note, and a relation to
+  the application. Keyed by `postings.notion_page_id`, then by the posting URL,
+  so a page typed by hand is adopted rather than duplicated; the title is set
+  once and the note is never cleared, on the events' reasoning. `push` sends
+  postings after applications (`--no-postings` to skip; `--slug` never touches
+  them), `import` brings them in (`--postings-only`, `--map` for labels config
+  does not know), and `sync-options` covers the new select. Labels match with
+  or without their emoji, for postings and applications alike.
+
+  New `adopt postings <database URL>`: a list you already keep in Notion becomes
+  the mirror in place — its title, url, select and Company/Note columns are
+  renamed, the missing properties added, every row kept.
+
 - **Every posting ever seen is a row in the tracker.** The scraper kept its
   own JSON file, keyed on the raw URL; `/apply` never wrote to it, and the
   tracker compared URLs with its own bare `strip()` — so a LinkedIn link with a

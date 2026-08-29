@@ -765,7 +765,7 @@ Commands orchestrate; these do the work. Each runs standalone and each takes
 | `doctor.py` | The environment check |
 | `gemini.py` | The single wrapper around the Gemini CLI |
 | `mailsync.py` | IMAP reconciliation |
-| `notion_sync.py` | The optional Notion mirror: provision, sync-options, import, push |
+| `notion_sync.py` | The optional Notion mirror: provision, adopt, sync-options, import, push |
 | `salary_lookup.py`, `convert_salary_excel.py` | Salary benchmarking against data you supply |
 | `session_digest.py` | Mines old Claude Code transcripts into `data/profile/history.md` |
 

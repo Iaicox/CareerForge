@@ -165,7 +165,9 @@ Then `python tools/notion_sync.py push --files` mirrors your pipeline, PDFs
 included. SQLite stays authoritative; if the two disagree, push again.
 
 Moving an existing Notion tracker in? Fill in `data/state/notion.json` with your
-database ids and run `python tools/notion_sync.py import --dry-run` first.
+database ids and run `python tools/notion_sync.py import --dry-run` first. A
+list of postings you already keep in Notion is adopted in place:
+`python tools/notion_sync.py adopt postings <database URL> --dry-run`.
 
 ## 5. Try it
 
