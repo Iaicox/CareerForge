@@ -221,7 +221,7 @@ class RestTransportTest(unittest.TestCase):
         gemini.UNKNOWN_MODELS.clear()
         gemini.settings = lambda: {
             "enabled": True, "models": list(self.POOL), "search_models": list(self.SEARCH_POOL),
-            "model": self.POOL[0], "timeout_seconds": 10, "cache_days": 30,
+            "timeout_seconds": 10, "cache_days": 30,
             "tasks": ["research"], "log": False,
         }
         gemini.log_call = lambda *a, **k: None
@@ -541,7 +541,6 @@ class PoolSettingsTest(unittest.TestCase):
         s = gemini.settings()
         self.assertEqual(s["models"], list(gemini.DEFAULT_MODELS))
         self.assertEqual(s["search_models"], list(gemini.DEFAULT_SEARCH_MODELS))
-        self.assertEqual(s["model"], "gemini-3.7-flash")
 
     def test_a_single_model_in_config_goes_first_with_the_defaults_behind(self):
         self.cfg = {"model": "gemini-2.5-flash"}

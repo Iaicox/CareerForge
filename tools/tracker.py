@@ -242,8 +242,8 @@ def load_config(force: bool = False) -> Config:
                 _config = Config(tomllib.load(fh), candidate)
             return _config
     raise TrackerError(
-        "no configuration found: expected config/config.toml "
-        "(copy config/config.example.toml or run /setup)"
+        "no configuration found: expected data/config/config.toml "
+        "(copy data/config/config.example.toml or run /setup)"
     )
 
 

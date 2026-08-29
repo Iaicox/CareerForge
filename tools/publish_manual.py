@@ -2,7 +2,7 @@
 """Render docs/manual.md into the published-manual HTML page.
 
     python tools/publish_manual.py
-    # -> tracker/manual-artifact.html
+    # -> docs/manual-artifact.html
 
 The manual is published as a Claude artifact so it is readable without cloning:
 
@@ -12,7 +12,7 @@ The page is generated from docs/manual.md, so it cannot drift from the manual
 in the repository. After editing the manual, regenerate and republish:
 
     1. python tools/publish_manual.py
-    2. In a Claude Code session: publish tracker/manual-artifact.html with the
+    2. In a Claude Code session: publish docs/manual-artifact.html with the
        Artifact tool, passing url=ARTIFACT_URL so the existing page updates
        instead of a second one appearing.
 

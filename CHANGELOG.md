@@ -108,13 +108,38 @@
 
 ### Fixed
 
-- **A Gemini timeout no longer hangs.** The Gemini CLI is a launcher that
-  starts a second node process for the real work, and that grandchild inherits
-  the stdout pipe; `subprocess.run()` killed only the child on a timeout and
-  then blocked reading the pipe until the grandchild exited by itself — a
-  120-second limit that ran for eight minutes. `gemini.run_cli()` now kills the
-  whole process tree (`taskkill /T` on Windows, the process group elsewhere)
-  and raises the timeout it promised.
+- **A Gemini timeout no longer hangs, and `timeout_seconds` bounds the whole
+  call.** The CLI was a launcher whose grandchild held the stdout pipe, so
+  `subprocess.run()` killed only the child on a timeout and then blocked
+  reading the pipe until the grandchild exited by itself — a 120-second limit
+  that ran for eight minutes. That route is gone (above): over REST the socket
+  timeout ends the request, and `call()` holds one deadline for the whole pool,
+  so a stalled API costs the configured budget once rather than once per model.
+
+- **A quota refusal benches one quota, not both.** Cooldowns were keyed by
+  model name while Google meters grounded and ungrounded requests separately,
+  so a batch `rank` that spent its plain quota took company research down with
+  it, and one grounding refusal took down everything else. They are now keyed
+  by model and mode. An inconclusive 429 is read as a per-minute limit rather
+  than a daily one — the wrong guess then costs one retry instead of a day —
+  and `gemini.py check` reports a refusal without benching anything, so running
+  `/doctor` can no longer disable what it is checking.
+
+- **A 400 no longer kills the pool.** Only an unusable key stops a call now;
+  any other per-model error moves to the next model, so a model that will not
+  take the search tool no longer takes company research down with it.
+
+- **Research no longer caches a salary answer it never got.** `research_company`
+  wrote `salary: []` on every call, including role-less ones and refused ones,
+  which is exactly the marker `research.py` reads to decide an entry is worth
+  refreshing. A `/interview` lookup could therefore leave the later `/apply`
+  with an empty salary block for `cache_days`. The key is written only when the
+  question was answered.
+
+- **Two postings no longer collapse into one.** `position`, `source` and `src`
+  were stripped from posting URLs as tracking parameters, but boards use them
+  to name the posting itself, so the second of two postings was silently
+  dropped as already known.
 
 - **The Notion import no longer duplicates events.** `notion_sync.py import`
   deduplicated applications on their posting URL but keyed events on nothing, so

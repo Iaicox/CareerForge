@@ -131,7 +131,6 @@ def settings() -> dict:
         "enabled": cfg.get("enabled", False),
         "models": models,
         "search_models": search_models,
-        "model": models[0],
         "timeout_seconds": int(cfg.get("timeout_seconds", 120)),
         "cache_days": int(cfg.get("cache_days", 30)),
         "tasks": list(cfg.get("tasks", ["research", "extract", "rank", "summarize"])),

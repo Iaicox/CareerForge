@@ -155,9 +155,9 @@ def baseline_unit(data):
         if len(set(tokens)) != 1:
             break
         common.append(tokens[0])
-    if not common or len(common) == len(parts[0]):
-        # Nothing shared, or every category is the same name: no unit to read.
-        return None if not common else "_".join(reversed(common))
+    if not common:
+        # Nothing shared between the category names: no unit to read.
+        return None
     return "_".join(reversed(common))
 
 
