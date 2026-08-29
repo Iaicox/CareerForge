@@ -115,14 +115,18 @@ the posting gives one.
 ## Step 3: research, then review
 
 **First, get the company research.** It is cached, so a second application to
-the same company — or a later interview — costs nothing:
+the same company — or a later interview — costs nothing. Name the role and
+the posting's location, so the research also looks for what this company pays:
 
 ```bash
-python tools/research.py get "<Company>" --url "<company site>"
+python tools/research.py get "<Company>" --url "<company site>" \
+  --role "<Role>" --location "<the location the posting states>"
 ```
 
 Exit code 3 means nothing is cached and Gemini is unavailable. Research the
-company yourself, then store it so the next consumer gets it free:
+company yourself — including its salary figures for this role, each with its
+own location, currency, period, basis and source — then store it so the next
+consumer gets it free:
 
 ```bash
 python tools/research.py put "<Company>" --file <json>
@@ -130,6 +134,31 @@ python tools/research.py put "<Company>" --file <json>
 
 Research is **leads, not evidence**. Everything in it still has to be verified
 before it reaches a document — a cached claim is not a checked one.
+
+**Then record what the research says about pay**, if `data/profile/salary_data.json`
+exists. The rule is in `references/job-evaluation.md` §6; in short:
+
+- The target location is **the one the posting states**. A figure in the
+  research counts only if it is for that location.
+- A matching figure goes in as stated, in the unit its category name carries
+  (`senior_frontend_eur_gross_annual`; a US posting gets a
+  `..._usd_gross_annual` category, with `--new-category`), with its source
+  and date. Never converted between currencies, never guessed from net.
+  ```bash
+  python tools/salary_lookup.py add --company "<Company>" --city "<target location>" \
+    --category <category> --index <figure> --count <sources> \
+    --source "<url>" --as-of "<YYYY-MM>"
+  ```
+- Only other locations, or nothing at all → the record for this company at
+  this location is **unknown**, with the other-market figure kept as a lead:
+  ```bash
+  python tools/salary_lookup.py add --company "<Company>" --city "<target location>" \
+    --unknown --note "<market>: <figures> (<source>, <date>)" --as-of "<YYYY-MM>"
+  ```
+
+The tool refuses to overwrite a figure already there (`--force` if the new one
+is better sourced). Say what was recorded in the step's summary, and put the
+finding in `job.md`'s Notes line.
 
 **Then spawn the `application-reviewer`** agent with the Agent tool. Give it:
 

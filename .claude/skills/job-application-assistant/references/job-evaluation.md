@@ -68,11 +68,34 @@ that drain them, from `data/profile/evaluation.md`.
 If `data/profile/salary_data.json` exists:
 
 ```bash
-python tools/salary_lookup.py "<Company>" --json    # add --city when the posting names one
+python tools/salary_lookup.py "<Company>" --city "<the posting's location>" --json
 ```
 
 Present it as a small table. If the tool is not configured, omit the section
-entirely rather than noting its absence.
+entirely rather than noting its absence. A record marked unknown says the
+company was researched for this location and nothing was found — show the
+note, do not research it again.
+
+**Recording what research found** (step 3 of `/apply`, after
+`research.py get --role --location`):
+
+- **The target location is the location the posting itself states** — a city
+  and country, or "remote — <region>". Not the home market: a US posting is
+  benchmarked against US figures, a Lisbon posting against Lisbon figures.
+- **A figure counts only if it is for the target location.** However good a
+  figure for another location is, it does not become this posting's
+  benchmark: record `--unknown` for this company at this location, with the
+  other-market figure in the note as a lead, so it is neither presented as
+  evidence nor researched again.
+- **A matching figure is recorded in the unit the source states**, encoded in
+  the category name the way the file already does it
+  (`senior_frontend_eur_gross_annual`, `senior_frontend_usd_gross_annual`):
+  annual gross as stated, or monthly gross × the payments per year the source
+  states. Never converted between currencies, never guessed from net. `count`
+  is the number of independent sources.
+- Categories in another unit than the file's baseline are shown without the
+  "vs Baseline" column, so a USD row is never read as a percentage of the EUR
+  median.
 
 ## Weighting
 

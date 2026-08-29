@@ -42,8 +42,9 @@ class ResearchCacheTest(unittest.TestCase):
         self._real_enabled = gemini.task_enabled
         self.calls: list[tuple] = []
 
-        def fake_fetch(name, url=None):
-            self.calls.append((name, url))
+        def fake_fetch(name, url=None, role=None, location=None):
+            self.calls.append((name, url) if role is None and location is None
+                              else (name, url, role, location))
             return {"name": name, "what_they_do": "fetched", "recent_news": []}
 
         gemini.research_company = fake_fetch
@@ -118,6 +119,30 @@ class ResearchCacheTest(unittest.TestCase):
         data, origin = research.get(self.conn, "Acme", None, force=False)
         self.assertEqual(origin, "cache")
         self.assertEqual(data["what_they_do"], "by hand")
+
+    # -- salary ------------------------------------------------------------
+
+    def test_a_role_and_location_reach_the_research_call(self):
+        research.get(self.conn, "Acme", "https://acme.example", False,
+                     role="Senior Frontend Developer", location="Lisbon")
+        self.assertEqual(self.calls, [("Acme", "https://acme.example", "Senior Frontend Developer", "Lisbon")])
+
+    def test_a_cache_from_before_salary_existed_is_refreshed_once(self):
+        # The first fetch stored no `salary` key (the fake returns none). With a
+        # role asked for, that entry is not good enough -- once.
+        research.get(self.conn, "Acme", None, False)
+        self.assertEqual(len(self.calls), 1)
+        _, origin = research.get(self.conn, "Acme", None, False, role="Dev", location="Lisbon")
+        self.assertEqual((origin, len(self.calls)), ("gemini", 2))
+        with self.conn:
+            research.write_cache(self.conn, "Acme", {"name": "Acme", "salary": []})
+        _, origin = research.get(self.conn, "Acme", None, False, role="Dev", location="Lisbon")
+        self.assertEqual((origin, len(self.calls)), ("cache", 2))
+        # Without a role, an old entry is still a hit.
+        with self.conn:
+            research.write_cache(self.conn, "Acme", {"name": "Acme"})
+        _, origin = research.get(self.conn, "Acme", None, False)
+        self.assertEqual(origin, "cache")
 
     # -- storage -----------------------------------------------------------
 

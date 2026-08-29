@@ -2,6 +2,7 @@
 """Company research, cached so the same company is not researched twice.
 
     python tools/research.py get "Acme" --url https://acme.example
+    python tools/research.py get "Acme" --role "Senior Frontend Developer" --location "Lisbon"
     python tools/research.py get "Acme" --force
     python tools/research.py put "Acme" --file research.json
     python tools/research.py list
@@ -80,17 +81,23 @@ def write_cache(conn: sqlite3.Connection, name: str, data: dict,
 
 
 def get(conn: sqlite3.Connection, name: str, url: str | None,
-        force: bool) -> tuple[dict, str]:
-    """Returns (research, where it came from)."""
+        force: bool, role: str | None = None, location: str | None = None) -> tuple[dict, str]:
+    """Returns (research, where it came from).
+
+    With a role given, research also asks what the company pays for it. A cache
+    entry from before that question existed has no `salary` key and is
+    refreshed once; after that the usual age rule applies.
+    """
     if not force:
         cached, age = read_cache(conn, name)
         if cached is not None and age is not None and age <= cache_days():
-            cached["cache_age_days"] = round(age, 1)
-            return cached, "cache"
+            if not (role and "salary" not in cached):
+                cached["cache_age_days"] = round(age, 1)
+                return cached, "cache"
 
     if not gemini.task_enabled("research"):
         raise GeminiPass("research is not delegated to Gemini")
-    data = gemini.research_company(name, url)
+    data = gemini.research_company(name, url, role=role, location=location)
     with conn:
         write_cache(conn, name, data, url)
     return data, "gemini"
@@ -107,6 +114,8 @@ def main() -> int:
     g = sub.add_parser("get", help="cached research, fetching it if stale")
     g.add_argument("company")
     g.add_argument("--url", help="company website, to disambiguate the name")
+    g.add_argument("--role", help="the role in question; research then asks what the company pays for it")
+    g.add_argument("--location", help="where the posting is; salary figures come back per location")
     g.add_argument("--force", action="store_true", help="ignore the cache")
 
     p = sub.add_parser("put", help="store research gathered elsewhere")
@@ -122,7 +131,8 @@ def main() -> int:
     try:
         if args.command == "get":
             try:
-                data, origin = get(conn, args.company, args.url, args.force)
+                data, origin = get(conn, args.company, args.url, args.force,
+                                   args.role, args.location)
             except GeminiPass as exc:
                 print(f"no usable cache and {exc}.", file=sys.stderr)
                 print("Research it yourself, then store it with:", file=sys.stderr)

@@ -62,11 +62,11 @@ python tools/research.py put "<Company>" --file <json>
 
 | Stage | What matters |
 |---|---|
-| `screening` | A 90-second story of who they are. Salary expectation, notice period, why this company. Recruiters screen out on logistics, not on depth |
+| `screening` | A 90-second story of who they are. Salary expectation — the research's `salary` block and `salary_lookup.py "<Company>" --city` say what this company pays, if anything is known — notice period, why this company. Recruiters screen out on logistics, not on depth |
 | `tech` | The stack in the posting, matched against real work. Where the gaps are and how to answer honestly when one is probed |
 | `system-design` | One or two architectures from their actual history, with the trade-offs they can defend. Scale, failure modes, what they would do differently |
 | `manager` | Ownership, conflict, delivery under pressure, why they left each role |
-| `final` | Motivation, the questions worth asking, compensation, the close |
+| `final` | Motivation, the questions worth asking, compensation (from the same salary sources as screening), the close |
 
 For every stage produce:
 

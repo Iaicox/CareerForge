@@ -55,9 +55,11 @@ The tool expects `data/profile/salary_data.json` with this structure:
 - **metadata.index_baseline**: What every value is compared against (e.g. 100 for index data, or the market median for absolute salaries). Set it to `0` and the comparison column stays empty, because there is nothing to compare to
 - **metadata.index_label**: Label for the value column in output, and the place to state the unit — `--json` returns only the company entries, so a reader of that output sees no metadata at all
 - **metadata.baseline_description**: Human-readable explanation of the baseline
+- **metadata.baseline_unit** (optional): the unit suffix the baseline is in, e.g. `eur_gross_annual`. Only categories ending with it get the `vs Baseline` column. When absent it is derived from the suffix every category shares; `add --new-category` writes it down the first time a category in another unit arrives
 - **companies[].company**: Company name (required)
-- **companies[].city**: City/location (optional, used for filtering)
+- **companies[].city**: City/location — one record is one company in one city; `add` matches on both
 - **companies[].categories**: Named salary categories, each with `count` and/or `index`
+- **companies[].source**, **as_of**, **note**, **origin** (optional): where a figure came from and when, the lead behind an unknown, and `research` for records the `/apply` research step wrote. Shown by the lookup, kept by `--json`
 
 ## Setup options
 
@@ -119,6 +121,33 @@ python tools/salary_lookup.py "Ørsted" --city "Fredericia"
 python tools/salary_lookup.py "COWI" --json
 python tools/salary_lookup.py --list-all
 ```
+
+### Recording a figure: `add`
+
+`/apply`'s research step asks what a company pays for the role, and records
+what it finds here with its source and date:
+
+```bash
+python tools/salary_lookup.py add --company "Acme Lda" --city "Lisboa" \
+  --category senior_frontend_eur_gross_annual --index 65000 --count 2 \
+  --source https://www.glassdoor.com/... --as-of 2026-08
+
+python tools/salary_lookup.py add --company "Acme Lda" --city "Lisboa" --unknown \
+  --note "US only: $150-190k (levels.fyi, 2026-05)" --as-of 2026-08
+```
+
+- A record is **one company in one city**. A figure for another location is
+  never this location's benchmark: `--unknown` records that nothing was found
+  for it, with the other-market figure in the note as a lead, so the next
+  application to the company shows "unknown" instead of researching again.
+- **No unit conversion.** The figure goes in as the source states it, in the
+  unit its category name carries. A category the file has never seen is
+  refused unless `--new-category` says it really is a new unit or role — a
+  `..._usd_gross_annual` figure for a US posting, say. The first such category
+  pins `metadata.baseline_unit`, and figures in other units are shown without
+  the `vs Baseline` column.
+- A figure already there is not overwritten unless `--force`; both values are
+  printed so you can decide.
 
 ## Important notes
 

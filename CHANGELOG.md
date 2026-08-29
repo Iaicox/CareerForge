@@ -4,6 +4,25 @@
 
 ### Changed
 
+- **Company research looks for what the company pays, and records it.**
+  `research.py get --role --location` asks for salary figures for the role,
+  each with its own location, currency, period, basis and source; a cache
+  entry from before the question existed is refreshed once. In `/apply`'s
+  research step, a figure for **the location the posting states** goes into
+  the salary benchmark with its source and date; a figure for any other
+  location does not — the company is recorded as *unknown* for this location,
+  with the other-market figure kept as a lead, so it is neither presented as
+  evidence nor researched again.
+
+  `salary_lookup.py add` is the write path: one record per company and city;
+  no unit conversion; a category the file has never seen needs
+  `--new-category`, and the first foreign one pins `metadata.baseline_unit`
+  so figures in another unit are shown without the `vs Baseline` column. A
+  figure already there is not overwritten without `--force`. Records carry
+  `source`, `as_of`, `note` and `origin`, and the lookup shows them. The
+  allow-listed `salary_lookup.py` therefore now writes — only to
+  `data/profile/salary_data.json`.
+
 - **The Notion mirror carries postings too.** A fourth database, Postings,
   next to Companies, Applications and Events: title, company, URL, status,
   score and verdict, deadline, source, first seen, the note, and a relation to

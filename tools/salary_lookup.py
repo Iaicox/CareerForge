@@ -15,9 +15,21 @@ Usage:
     python tools/salary_lookup.py "Company Name" --city "Lisbon"
     python tools/salary_lookup.py "Company Name" --json
     python tools/salary_lookup.py --list-all
+    python tools/salary_lookup.py add --company "Acme" --city "Lisbon" \
+        --category senior_frontend_eur_gross_annual --index 62000 --count 2 \
+        --source https://... --as-of 2026-08
+    python tools/salary_lookup.py add --company "Acme" --city "Lisbon" --unknown \
+        --note "US only: $150-190k (levels.fyi, 2026-05)" --as-of 2026-08
+
+`add` is how a figure found during company research lands here, with its
+source and date. A record is one company in one city; a figure for another
+location never becomes this location's benchmark -- `--unknown` records that
+nothing was found for it, with the lead in the note.
 """
 
 import json
+import os
+import tempfile
 import sys
 import re
 import argparse
@@ -93,6 +105,64 @@ def load_data():
         sys.exit(1)
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def save_data(data):
+    """Write the file back whole, atomically, metadata and all."""
+    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".salary_data-", suffix=".json", dir=str(DATA_FILE.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(tmp, DATA_FILE)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def all_categories(data):
+    """Every category name the file uses, in first-seen order."""
+    seen = []
+    for entry in data.get("companies", []):
+        for name in (entry.get("categories") or {}):
+            if name not in seen:
+                seen.append(name)
+    return seen
+
+
+def baseline_unit(data):
+    """The unit the baseline is in, as a category-name suffix.
+
+    metadata.baseline_unit when the file states it; otherwise the trailing
+    tokens every category name shares (senior_frontend_eur_gross_annual and
+    senior_fullstack_eur_gross_annual -> eur_gross_annual). Only categories
+    ending with it are compared to the baseline: a USD figure against a EUR
+    median is not a percentage of anything.
+    """
+    stated = (data.get("metadata") or {}).get("baseline_unit")
+    if stated:
+        return stated
+    names = all_categories(data)
+    if not names:
+        return None
+    parts = [n.split("_") for n in names]
+    common = []
+    for tokens in zip(*(reversed(p) for p in parts)):
+        if len(set(tokens)) != 1:
+            break
+        common.append(tokens[0])
+    if not common or len(common) == len(parts[0]):
+        # Nothing shared, or every category is the same name: no unit to read.
+        return None if not common else "_".join(reversed(common))
+    return "_".join(reversed(common))
+
+
+def compares_to_baseline(label, unit):
+    return not unit or label == unit or label.endswith("_" + unit)
 
 
 def fold(s):
@@ -267,11 +337,15 @@ def format_entry(entry, metadata):
     body = [f"  {entry['company']}"]
     if entry.get("city"):
         body.append(f"  Location: {entry['city']}")
+    for key, heading in (("source", "Source"), ("as_of", "As of"), ("note", "Note")):
+        if entry.get(key):
+            body.append(f"  {heading}: {entry[key]}")
     heading_ends = len(body)
 
     if categories:
         index_label = metadata.get("index_label", "Index")
         baseline = metadata.get("index_baseline", 100)
+        unit = metadata.get("_baseline_unit")
 
         rows, withheld = [], False
         for label, data in categories.items():
@@ -283,7 +357,7 @@ def format_entry(entry, metadata):
                 value_str, diff_str = "N/A*", ""
             else:
                 value_str = fmt_number(value)
-                diff_str = fmt_difference(value, baseline)
+                diff_str = fmt_difference(value, baseline) if compares_to_baseline(label, unit) else ""
             # A count of 0 is a fact; only a missing one is a dash.
             count_str = "-" if count is None else str(count)
             rows.append((fmt_label(label), count_str, value_str, diff_str))
@@ -319,9 +393,12 @@ def format_entry(entry, metadata):
             if rows:
                 body.append("")
             body.extend(notes)
+    elif entry.get("note") or entry.get("origin"):
+        body.append("  No figure for this location -- see the note above." if entry.get("note")
+                    else "  No figure for this location.")
     else:
         # Simple format: just show all non-standard fields
-        skip_keys = {"company", "city", "categories"}
+        skip_keys = {"company", "city", "categories", "source", "as_of", "note", "origin"}
         for key, value in entry.items():
             if key not in skip_keys:
                 body.append(f"  {fmt_label(key)}: {value}")
@@ -330,7 +407,131 @@ def format_entry(entry, metadata):
     return "\n".join(["", banner, *body[:heading_ends], banner, *body[heading_ends:]])
 
 
+def find_record(data, company, city):
+    """The record for this company in this city, if any.
+
+    Company by the same normalisation the lookup uses at its exact-match
+    level; city folded, so "Lisbon" and "Lisboa" are still two cities -- the
+    dataset decides how it spells a place, this tool does not translate.
+    """
+    want_company = normalize(company)
+    want_city = fold(city or "").strip()
+    for entry in data.get("companies", []):
+        if normalize(entry.get("company", "")) != want_company:
+            continue
+        if fold(entry.get("city") or "").strip() == want_city:
+            return entry
+    return None
+
+
+def add_record(data, company, city, category=None, index=None, count=None,
+               source=None, as_of=None, note=None, unknown=False,
+               force=False, new_category=False):
+    """Add or update one company-in-one-city record. Returns a message.
+
+    Refuses to overwrite a figure that is already there unless forced, and
+    refuses a category name the file has never seen unless told it is new --
+    that is what keeps a monthly figure out of an annual column by accident.
+    Never converts units.
+    """
+    if unknown:
+        if category or index is not None:
+            raise ValueError("--unknown records that nothing was found; drop --category/--index")
+    else:
+        if not category or index is None:
+            raise ValueError("a figure needs --category and --index (or pass --unknown)")
+        if category not in all_categories(data) and not new_category:
+            known = ", ".join(all_categories(data)) or "(none yet)"
+            raise ValueError(
+                f"category {category!r} is not in the file; the ones there are: {known}. "
+                "Pass --new-category if it really is a new unit or role, e.g. a USD figure "
+                "for a US posting."
+            )
+
+    if not unknown and category not in all_categories(data):
+        # The first foreign category (a USD figure in a EUR file) is where the
+        # file's own unit has to be written down, or the derived suffix would
+        # shrink to what both units share and the comparison would lie.
+        metadata = data.setdefault("metadata", {})
+        if not metadata.get("baseline_unit"):
+            unit = baseline_unit(data)
+            if unit:
+                metadata["baseline_unit"] = unit
+
+    entry = find_record(data, company, city)
+    created = entry is None
+    if created:
+        entry = {"company": company, "city": city, "categories": {}}
+        data.setdefault("companies", []).append(entry)
+    cats = entry.setdefault("categories", {})
+
+    if unknown:
+        if cats:
+            raise ValueError(
+                f"{entry['company']} ({entry.get('city')}) already carries a figure: "
+                f"{', '.join(cats)}. Nothing recorded."
+            )
+        entry["origin"] = "research"
+    else:
+        old = cats.get(category)
+        if old is not None and not force:
+            raise ValueError(
+                f"{entry['company']} ({entry.get('city')}) already has {category} = "
+                f"{fmt_number(old.get('index'))} (count {old.get('count')}); new figure "
+                f"{fmt_number(index)} (count {count}). Pass --force to overwrite."
+            )
+        cats[category] = {"count": count, "index": index}
+        entry["origin"] = entry.get("origin") or "research"
+
+    for key, value in (("source", source), ("as_of", as_of), ("note", note)):
+        if value:
+            entry[key] = value
+
+    what = "recorded" if created else "updated"
+    if unknown:
+        return f"{what} {entry['company']} ({city}): no figure for this location"
+    return f"{what} {entry['company']} ({city}): {category} = {fmt_number(index)}"
+
+
+def main_add(argv):
+    parser = argparse.ArgumentParser(
+        prog="salary_lookup.py add",
+        description="Record a salary figure, or that none was found for a location",
+    )
+    parser.add_argument("--company", required=True)
+    parser.add_argument("--city", required=True, help="the posting's location; one record per company and city")
+    parser.add_argument("--category", help="e.g. senior_frontend_eur_gross_annual -- the unit is in the name")
+    parser.add_argument("--index", type=float, help="the figure, in the category's unit")
+    parser.add_argument("--count", type=int, help="how many independent sources stand behind it")
+    parser.add_argument("--source", help="where it came from -- a URL")
+    parser.add_argument("--as-of", dest="as_of", help="YYYY-MM the figure is for")
+    parser.add_argument("--note", help="the lead, the caveat, the other-market figure")
+    parser.add_argument("--unknown", action="store_true",
+                        help="record that nothing was found for this company at this location")
+    parser.add_argument("--force", action="store_true", help="overwrite a figure already there")
+    parser.add_argument("--new-category", dest="new_category", action="store_true",
+                        help="the category is new to the file (a new unit or role)")
+    args = parser.parse_args(argv)
+
+    data = load_data()
+    try:
+        message = add_record(
+            data, args.company, args.city, category=args.category, index=args.index,
+            count=args.count, source=args.source, as_of=args.as_of, note=args.note,
+            unknown=args.unknown, force=args.force, new_category=args.new_category,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    save_data(data)
+    print(message)
+    return 0
+
+
 def main():
+    if sys.argv[1:2] == ["add"]:
+        sys.exit(main_add(sys.argv[2:]))
+
     parser = argparse.ArgumentParser(description="Salary Benchmark Lookup")
     parser.add_argument("company", nargs="?", help="Company name to search for")
     parser.add_argument("--city", help="Filter by city name")
@@ -339,7 +540,8 @@ def main():
     args = parser.parse_args()
 
     data = load_data()
-    metadata = data.get("metadata", {})
+    metadata = dict(data.get("metadata", {}))
+    metadata["_baseline_unit"] = baseline_unit(data)
     companies = data.get("companies", [])
 
     if args.list_all:
