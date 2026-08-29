@@ -204,7 +204,7 @@ optimistic locking, and company-name normalisation.
 
 ## Optional: delegate the bulk work
 
-With the [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed,
+With a [Gemini API key](https://aistudio.google.com/apikey) in `.env`,
 company research, posting extraction, batch ranking and long-document
 summarising move off Claude's context. Judgement about what is honest to claim
 does not move — that stays in one place, against your profile.
