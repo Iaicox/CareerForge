@@ -633,15 +633,26 @@ Then in `data/config/config.toml`:
 ```toml
 [gemini]
 enabled = true
-model = "gemini-2.5-flash"
+models = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash", "gemini-2.5-flash"]
+search_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
 timeout_seconds = 300
 tasks = ["research", "extract", "rank", "summarize"]
 ```
 
-The model is called exactly as named. Company research attaches Google Search
-as a tool, which needs a key whose project has that quota; the free tier's
-per-model daily limits are small, and a quota refusal is reported once, not
-retried into a hang.
+Two pools of models, tried in order. `search_models` serves company research
+and salary figures, which attach Google Search as a tool; `models` serves
+everything else. They are separate because search grounding is a quota of
+its own: on a free-tier key 3.7 Flash answers a plain prompt and refuses the
+same request with the search tool attached, while 2.5 Flash grounds fine.
+
+A model that answers with a quota error is set aside and the next one is
+asked at once. A per-minute limit keeps it out for the retry delay the API
+names, or a minute; a daily quota until the retry delay it names, or else
+the next midnight in Los Angeles, where Google resets the daily counters. A
+model the key does not know (404) is skipped for the rest of the run.
+Cooldowns are kept in `data/state/gemini-cooldowns.json`; `gemini.py check`
+shows which models are sitting out and why. Only when every model in the
+pool is out does the work fall back to Claude.
 
 Check it:
 

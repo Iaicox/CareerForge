@@ -197,26 +197,38 @@ class ExtractJsonTest(unittest.TestCase):
 
 
 class RestTransportTest(unittest.TestCase):
-    """Gemini is called over its REST API: the configured model, bounded retries.
+    """Gemini over its REST API: a pool of models, cooldowns, bounded retries.
 
     The CLI route was dropped after it began rewriting every model whose name
     ends in "flash" to gemini-3.5-flash under a remote flag, ran web search on
     that model whatever was asked for, and retried a quota error without end.
     """
 
+    POOL = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-2.5-flash"]
+    SEARCH_POOL = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+    T0 = datetime(2026, 8, 29, 19, 0, tzinfo=timezone.utc)
+
     def setUp(self) -> None:
         self.calls: list[tuple[str, dict, int]] = []
         self.responses: list = []
         self.sleeps: list[float] = []
-        for name in ("http_post", "settings", "log_call", "api_key", "sleep"):
+        self.clock = self.T0
+        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-gemini-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        for name in ("http_post", "settings", "log_call", "api_key", "sleep", "cooldowns_path", "now"):
             self.addCleanup(setattr, gemini, name, getattr(gemini, name))
+        self.addCleanup(gemini.UNKNOWN_MODELS.clear)
+        gemini.UNKNOWN_MODELS.clear()
         gemini.settings = lambda: {
-            "enabled": True, "model": "gemini-3.7-flash", "timeout_seconds": 10,
-            "cache_days": 30, "tasks": ["research"], "log": False,
+            "enabled": True, "models": list(self.POOL), "search_models": list(self.SEARCH_POOL),
+            "model": self.POOL[0], "timeout_seconds": 10, "cache_days": 30,
+            "tasks": ["research"], "log": False,
         }
         gemini.log_call = lambda *a, **k: None
         gemini.api_key = lambda: "test-key"
         gemini.sleep = lambda seconds: self.sleeps.append(seconds)
+        gemini.cooldowns_path = lambda: self.tmp / "cooldowns.json"
+        gemini.now = lambda: self.clock
 
         def fake_post(url, body, timeout):
             self.calls.append((url, body, timeout))
@@ -232,22 +244,41 @@ class RestTransportTest(unittest.TestCase):
         return {
             "candidates": [{"content": {"parts": [{"text": text}]}, "finishReason": "STOP"}],
             "usageMetadata": {"totalTokenCount": 3},
-            "modelVersion": "gemini-3.7-flash-08-2026",
         }
 
     @staticmethod
-    def quota(delay: str | None) -> tuple[int, dict]:
-        err = {"code": 429, "status": "RESOURCE_EXHAUSTED",
-               "message": "You exceeded your current quota, please check your plan and billing details."}
+    def quota(delay: str | None, quota_id: str | None = None) -> tuple[int, dict]:
+        err: dict = {"code": 429, "status": "RESOURCE_EXHAUSTED",
+                     "message": "You exceeded your current quota, please check your plan and billing details.",
+                     "details": []}
         if delay:
-            err["details"] = [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": delay}]
+            err["details"].append({"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": delay})
+        if quota_id:
+            err["details"].append({"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                                   "violations": [{"quotaId": quota_id}]})
         return 429, {"error": err}
 
-    def test_the_configured_model_is_the_one_called(self):
+    def models_called(self) -> list[str]:
+        return [c[0].split("/models/")[1].split(":")[0] for c in self.calls]
+
+    def cooldowns(self) -> dict:
+        return json.loads((self.tmp / "cooldowns.json").read_text(encoding="utf-8"))
+
+    # -- pools ---------------------------------------------------------------
+
+    def test_a_plain_call_starts_the_general_pool_and_search_the_search_pool(self):
         gemini.call("instruction")
-        url = self.calls[0][0]
-        self.assertTrue(url.endswith("/models/gemini-3.7-flash:generateContent"), url)
+        gemini.call("instruction", search=True)
+        self.assertEqual(self.models_called(), ["gemini-3.7-flash", "gemini-2.5-flash"])
+        self.assertEqual(self.calls[1][1]["tools"], [{"google_search": {}}])
         self.assertEqual(self.calls[0][2], 10)
+        self.assertEqual(gemini.LAST_MODEL, "gemini-2.5-flash")
+
+    def test_an_explicit_model_is_tried_alone(self):
+        self.responses = [self.quota("5s", "GenerateRequestsPerMinutePerProjectPerModel-FreeTier")]
+        with self.assertRaises(gemini.GeminiUnavailable):
+            gemini.call("instruction", model="gemini-2.5-flash")
+        self.assertEqual(self.models_called(), ["gemini-2.5-flash"])
 
     def test_the_payload_precedes_the_instruction_in_one_message(self):
         gemini.call("instruction", payload="x" * 200_000)
@@ -268,11 +299,9 @@ class RestTransportTest(unittest.TestCase):
         body = self.calls[1][1]
         self.assertNotIn("tools", body)
         self.assertEqual(body["generationConfig"]["responseMimeType"], "application/json")
+        self.assertEqual(self.models_called()[1], "gemini-3.7-flash", "extraction uses the general pool")
 
     def test_a_role_makes_salary_its_own_searched_call(self):
-        # Asked alongside news and culture, the model returned an empty salary
-        # list for companies whose Glassdoor page it finds in seconds when
-        # asked only that. Two calls, and the second cannot sink the first.
         self.responses = [
             (200, self.ok('{"name": "Acme", "what_they_do": "x"}')),
             (200, self.ok('{"salary": [{"role": "Dev", "location": "Lisbon", "currency": "EUR", '
@@ -289,70 +318,120 @@ class RestTransportTest(unittest.TestCase):
         self.assertNotIn("salary_error", data)
 
     def test_a_refused_salary_call_keeps_the_research(self):
-        self.responses = [(200, self.ok('{"name": "Acme", "what_they_do": "x"}')), self.quota("52418s")]
+        self.responses = [(200, self.ok('{"name": "Acme", "what_they_do": "x"}')),
+                          self.quota(None, "GenerateRequestsPerDayPerProjectPerModel-FreeTier"),
+                          self.quota(None, "GenerateRequestsPerDayPerProjectPerModel-FreeTier")]
         data = gemini.research_company("Acme", role="Dev", location="Lisbon")
         self.assertEqual(data["what_they_do"], "x")
         self.assertEqual(data["salary"], [])
-        self.assertIn("quota", data["salary_error"])
+        self.assertIn("no model in the search pool", data["salary_error"])
 
-    def test_a_daily_quota_is_not_retried(self):
-        self.responses = [self.quota("52418s")]
+    # -- 429: cooldown and move on ------------------------------------------
+
+    def test_a_per_minute_limit_moves_on_at_once_and_cools_for_its_retry_delay(self):
+        self.responses = [self.quota("7s", "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"),
+                          (200, self.ok("OK"))]
+        self.assertEqual(gemini.call("instruction"), "OK")
+        self.assertEqual(self.models_called(), ["gemini-3.7-flash", "gemini-3.6-flash"])
+        self.assertEqual(self.sleeps, [], "no waiting on a limited model; the next one is asked")
+        cd = self.cooldowns()["gemini-3.7-flash"]
+        self.assertEqual(cd["until"], (self.T0 + timedelta(seconds=7)).isoformat(timespec="seconds"))
+        self.assertIn("per-minute", cd["reason"])
+
+    def test_a_per_minute_limit_without_a_delay_cools_for_a_minute(self):
+        self.responses = [self.quota(None, "GenerateRequestsPerMinutePerProjectPerModel-FreeTier")]
+        gemini.call("instruction")
+        self.assertEqual(self.cooldowns()["gemini-3.7-flash"]["until"],
+                         (self.T0 + timedelta(seconds=60)).isoformat(timespec="seconds"))
+
+    def test_a_daily_quota_cools_until_los_angeles_midnight(self):
+        self.responses = [self.quota(None, "GenerateRequestsPerDayPerProjectPerModel-FreeTier")]
+        gemini.call("instruction")
+        cd = self.cooldowns()["gemini-3.7-flash"]
+        # 2026-08-29 19:00 UTC is 12:00 PDT; the next midnight PDT is 07:00 UTC on the 30th.
+        self.assertEqual(cd["until"], "2026-08-30T07:00:00+00:00")
+        self.assertIn("daily", cd["reason"])
+
+    def test_a_daily_quota_with_a_retry_delay_uses_the_delay(self):
+        self.responses = [self.quota("52418s", "GenerateRequestsPerDayPerProjectPerModel-FreeTier")]
+        gemini.call("instruction")
+        self.assertEqual(self.cooldowns()["gemini-3.7-flash"]["until"],
+                         (self.T0 + timedelta(seconds=52418)).isoformat(timespec="seconds"))
+
+    def test_a_cooling_model_is_skipped_and_returns_when_the_time_has_passed(self):
+        self.responses = [self.quota("30s", "GenerateRequestsPerMinutePerProjectPerModel-FreeTier")]
+        gemini.call("instruction")
+        self.calls.clear()
+        gemini.call("instruction")
+        self.assertEqual(self.models_called(), ["gemini-3.6-flash"], "still cooling")
+        self.clock = self.T0 + timedelta(seconds=31)
+        self.calls.clear()
+        gemini.call("instruction")
+        self.assertEqual(self.models_called(), ["gemini-3.7-flash"], "back in rotation")
+
+    def test_cooldowns_survive_across_processes(self):
+        # The file is the memory: another run sees the same cooldown.
+        gemini.cool_down("gemini-3.7-flash", self.T0 + timedelta(hours=1), "daily quota")
+        self.assertIsNotNone(gemini.cooling_until("gemini-3.7-flash"))
+        gemini.call("instruction")
+        self.assertEqual(self.models_called(), ["gemini-3.6-flash"])
+
+    def test_when_the_whole_pool_is_cooling_the_caller_is_told_why(self):
+        for m in self.POOL:
+            gemini.cool_down(m, self.T0 + timedelta(hours=1), "daily quota")
         with self.assertRaises(gemini.GeminiUnavailable) as ctx:
             gemini.call("instruction")
-        self.assertIn("quota", str(ctx.exception))
-        self.assertIn("gemini-3.7-flash", str(ctx.exception))
-        self.assertNotIn("grounding", str(ctx.exception))
-        self.assertEqual(len(self.calls), 1)
-        self.assertEqual(self.sleeps, [])
+        self.assertIn("cooling down", str(ctx.exception))
+        self.assertEqual(self.calls, [])
 
-    def test_a_quota_refusal_on_a_search_call_names_grounding(self):
-        # Seen live: gemini-3.7-flash answers a plain prompt and refuses the
-        # same key with google_search attached -- the free tier has no
-        # grounding quota for that model, and the message has to say so.
-        self.responses = [self.quota(None)]
+    def test_a_search_refusal_hints_at_grounding(self):
+        self.responses = [self.quota(None, "GenerateRequestsPerDayPerProjectPerModel-FreeTier"),
+                          self.quota(None, "GenerateRequestsPerDayPerProjectPerModel-FreeTier")]
         with self.assertRaises(gemini.GeminiUnavailable) as ctx:
             gemini.call("instruction", search=True)
         self.assertIn("Google Search grounding", str(ctx.exception))
+        self.assertIn("search pool", str(ctx.exception))
 
-    def test_a_short_rate_limit_is_waited_out_once(self):
-        self.responses = [self.quota("5s"), (200, self.ok("OK"))]
+    # -- 404: unknown until restart ----------------------------------------
+
+    def test_an_unknown_model_is_skipped_for_the_rest_of_the_process(self):
+        self.responses = [(404, {"error": {"code": 404, "message": "models/gemini-3.7-flash is not found"}}),
+                          (200, self.ok("OK"))]
         self.assertEqual(gemini.call("instruction"), "OK")
-        self.assertEqual(self.sleeps, [5.0])
-        self.assertEqual(len(self.calls), 2)
-        self.responses = [self.quota("5s"), self.quota("5s"), (200, self.ok("OK"))]
-        with self.assertRaises(gemini.GeminiUnavailable):
-            gemini.call("instruction")
+        self.assertEqual(self.models_called(), ["gemini-3.7-flash", "gemini-3.6-flash"])
+        self.calls.clear()
+        gemini.call("instruction")
+        self.assertEqual(self.models_called(), ["gemini-3.6-flash"], "not asked again")
+        self.assertNotIn("gemini-3.7-flash", gemini.load_cooldowns(), "not a cooldown: it ends with the process")
 
-    def test_high_demand_is_retried_twice_then_given_up(self):
+    # -- the rest -------------------------------------------------------------
+
+    def test_high_demand_is_retried_twice_then_the_next_model_is_asked(self):
         overloaded = (503, {"error": {"code": 503, "status": "UNAVAILABLE",
                                       "message": "This model is currently experiencing high demand."}})
-        self.responses = [overloaded, overloaded, overloaded]
-        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
-            gemini.call("instruction")
-        self.assertIn("overloaded", str(ctx.exception))
-        self.assertEqual(len(self.calls), 3)
-        self.assertEqual(self.sleeps, [5, 15])
-        self.responses = [overloaded, (200, self.ok("OK"))]
+        self.responses = [overloaded, overloaded, overloaded, (200, self.ok("OK"))]
         self.assertEqual(gemini.call("instruction"), "OK")
+        self.assertEqual(self.models_called(), ["gemini-3.7-flash"] * 3 + ["gemini-3.6-flash"])
+        self.assertEqual(self.sleeps, [5, 15])
 
-    def test_a_timeout_is_a_timeout(self):
-        self.responses = [TimeoutError("timed out")]
-        with self.assertRaises(gemini.GeminiTimeout):
-            gemini.call("instruction")
-
-    def test_an_unknown_model_and_a_bad_key_are_explained(self):
-        self.responses = [(404, {"error": {"code": 404, "message": "models/x is not found"}})]
+    def test_a_timeout_moves_on_and_is_reported_when_every_model_times_out(self):
+        self.responses = [TimeoutError("timed out"), (200, self.ok("OK"))]
+        self.assertEqual(gemini.call("instruction"), "OK")
+        self.responses = [TimeoutError("timed out")] * 3
         with self.assertRaises(gemini.GeminiUnavailable) as ctx:
             gemini.call("instruction")
-        self.assertIn("not available to this key", str(ctx.exception))
+        self.assertIn("timed out", str(ctx.exception))
+
+    def test_a_bad_key_is_an_immediate_stop(self):
         self.responses = [(403, {"error": {"code": 403, "message": "API key not valid"}})]
         with self.assertRaises(gemini.GeminiUnavailable) as ctx:
             gemini.call("instruction")
         self.assertIn("not authenticated", str(ctx.exception))
+        self.assertEqual(len(self.calls), 1, "no other model would fix the key")
 
-    def test_an_empty_answer_is_bad_output_with_the_reason(self):
-        self.responses = [(200, {"candidates": [], "promptFeedback": {"blockReason": "SAFETY"}})]
-        with self.assertRaises(gemini.GeminiBadOutput) as ctx:
+    def test_an_empty_answer_moves_on_with_the_reason(self):
+        self.responses = [(200, {"candidates": [], "promptFeedback": {"blockReason": "SAFETY"}})] * 3
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
             gemini.call("instruction")
         self.assertIn("SAFETY", str(ctx.exception))
 
@@ -372,11 +451,54 @@ class RestTransportTest(unittest.TestCase):
         text = self.calls[0][1]["contents"][0]["parts"][0]["text"]
         self.assertTrue(text.startswith("CRITERIA:"))
 
-    def test_the_command_line_length_limit_no_longer_exists(self):
-        # 200 KB of posting text went over stdin to the CLI because argv has a
-        # ~32 KB limit on Windows; over HTTP it is simply the request body.
-        gemini.call("instruction", payload="x" * 300_000)
-        self.assertEqual(len(self.calls), 1)
+
+class PoolSettingsTest(unittest.TestCase):
+    """Where the pools come from: config lists, then a preferred model, then defaults."""
+
+    def setUp(self) -> None:
+        self.addCleanup(setattr, gemini, "load_config", gemini.load_config)
+        self.cfg: dict = {}
+        gemini.load_config = lambda: type("C", (), {"data": {"gemini": self.cfg}})()
+
+    def test_defaults_when_nothing_is_configured(self):
+        s = gemini.settings()
+        self.assertEqual(s["models"], list(gemini.DEFAULT_MODELS))
+        self.assertEqual(s["search_models"], list(gemini.DEFAULT_SEARCH_MODELS))
+        self.assertEqual(s["model"], "gemini-3.7-flash")
+
+    def test_a_single_model_in_config_goes_first_with_the_defaults_behind(self):
+        self.cfg = {"model": "gemini-2.5-flash"}
+        self.assertEqual(gemini.settings()["models"][:2], ["gemini-2.5-flash", "gemini-3.7-flash"])
+        self.assertEqual(gemini.settings()["models"].count("gemini-2.5-flash"), 1)
+
+    def test_config_lists_win_over_the_single_model(self):
+        self.cfg = {"model": "gemini-2.5-flash", "models": ["a", "b"], "search_models": ["c"]}
+        s = gemini.settings()
+        self.assertEqual((s["models"], s["search_models"]), (["a", "b"], ["c"]))
+
+    def test_a_comma_separated_string_is_accepted_too(self):
+        self.cfg = {"models": " x , y,,x ", "search_models": "z"}
+        s = gemini.settings()
+        self.assertEqual((s["models"], s["search_models"]), (["x", "y"], ["z"]))
+
+    def test_pacific_midnight(self):
+        # PDT: 12:00 PDT on the 29th -> 00:00 PDT on the 30th = 07:00 UTC.
+        self.assertEqual(gemini.pacific_midnight_after(datetime(2026, 8, 29, 19, 0, tzinfo=timezone.utc)),
+                         datetime(2026, 8, 30, 7, 0, tzinfo=timezone.utc))
+        # PST in January: 08:00 UTC is already the 30th in Los Angeles? No: 08:00 UTC = 00:00 PST.
+        self.assertEqual(gemini.pacific_midnight_after(datetime(2026, 1, 30, 8, 0, tzinfo=timezone.utc)),
+                         datetime(2026, 1, 31, 8, 0, tzinfo=timezone.utc))
+        self.assertEqual(gemini.pacific_midnight_after(datetime(2026, 1, 30, 7, 59, tzinfo=timezone.utc)),
+                         datetime(2026, 1, 30, 8, 0, tzinfo=timezone.utc))
+
+    def test_quota_kind(self):
+        daily = {"details": [{"violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]},
+                             {"retryDelay": "52s"}]}
+        self.assertEqual(gemini.quota_kind(daily), "daily", "the named quota wins over a short retry delay")
+        minute = {"details": [{"violations": [{"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}]}]}
+        self.assertEqual(gemini.quota_kind(minute), "minute")
+        self.assertEqual(gemini.quota_kind({"message": "Please retry in 12s.", "details": []}), "minute")
+        self.assertEqual(gemini.quota_kind({"message": "You exceeded your current quota", "details": []}), "daily")
 
 
 if __name__ == "__main__":
