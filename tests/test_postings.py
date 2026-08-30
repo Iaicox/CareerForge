@@ -69,6 +69,21 @@ class NormalizeUrlTest(unittest.TestCase):
             "boards.greenhouse.io/acme/jobs/123?gh_jid=123",
         )
 
+    def test_parameters_boards_use_to_name_a_posting_are_kept(self):
+        # `position`, `source` and `src` were stripped as tracking noise, which
+        # collapsed two postings into one url_key and dropped the second.
+        for param in ("position", "source", "src"):
+            with self.subTest(param=param):
+                self.assertNotEqual(
+                    tracker.normalize_url(f"https://acme.example/careers?{param}=1"),
+                    tracker.normalize_url(f"https://acme.example/careers?{param}=2"),
+                )
+        # utm_source is still noise: the utm_ prefix rule covers it.
+        self.assertEqual(
+            tracker.normalize_url("https://acme.example/careers?utm_source=li"),
+            "acme.example/careers",
+        )
+
     def test_different_postings_stay_different(self):
         self.assertNotEqual(
             tracker.normalize_url("https://acme.example/jobs/1"),

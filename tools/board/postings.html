@@ -186,10 +186,17 @@ function visibleRows() {
   return state.rows.filter((r) => {
     if (filter === "open" && r.terminal) return false;
     if (filter !== "open" && filter !== "all" && r.status !== filter) return false;
-    if (min !== null && (r.score ?? -1) < min) return false;
+    if (min !== null && (r.score ?? 0) < min) return false;
     if (q && !(`${r.company ?? ""} ${r.title ?? ""}`.toLowerCase().includes(q))) return false;
     return true;
   });
+}
+
+// Posting URLs come from scraped boards and pasted text. This page serves
+// unauthenticated POST endpoints on its own origin, so a `javascript:` href
+// would be a click-to-run script against them.
+function safeHref(url) {
+  return /^https?:\/\//i.test(String(url || "")) ? url : null;
 }
 
 function statusSelect(row) {
@@ -207,9 +214,10 @@ function render() {
     return;
   }
   const body = rows.map((r) => {
-    const title = r.url
-      ? `<a href="${esc(r.url)}" target="_blank" rel="noreferrer">${esc(r.title || r.url)}</a>`
-      : esc(r.title || "—");
+    const href = safeHref(r.url);
+    const title = href
+      ? `<a href="${esc(href)}" target="_blank" rel="noreferrer">${esc(r.title || r.url)}</a>`
+      : esc(r.title || r.url || "—");
     const verdict = r.verdict ? `<span class="badge ${esc(r.verdict)}">${esc(r.verdict)}</span>` : "";
     const expired = r.is_expired && !r.terminal ? ` <span class="badge warn">past deadline</span>` : "";
     const app = r.application_slug ? `&rarr; ${esc(r.application_slug)}` : "";

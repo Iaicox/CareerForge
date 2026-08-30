@@ -18,18 +18,23 @@ tools/notion_sync.py -- neither of them talks to SQLite directly.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
 import shutil
 import sqlite3
 import sys
+import tempfile
 import tomllib
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 from urllib.parse import parse_qsl, urlencode, urlsplit
+
+import urllib.error
+import urllib.request
 
 import paths
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
@@ -242,8 +247,8 @@ def load_config(force: bool = False) -> Config:
                 _config = Config(tomllib.load(fh), candidate)
             return _config
     raise TrackerError(
-        "no configuration found: expected config/config.toml "
-        "(copy config/config.example.toml or run /setup)"
+        "no configuration found: expected data/config/config.toml "
+        "(copy data/config/config.example.toml or run /setup)"
     )
 
 
@@ -348,6 +353,123 @@ def rel(path: Path) -> str:
 def now() -> str:
     """UTC, to match SQLite's datetime('now') column defaults."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+class TransportError(TrackerError):
+    """The request produced no response: unreachable, cut off, or unreadable."""
+
+
+class Response(NamedTuple):
+    status: int
+    headers: Any
+    text: str
+    data: Any  # the parsed JSON body, or None when it was not JSON
+
+
+def _response(status: int, headers: Any, raw: bytes) -> Response:
+    text = raw.decode("utf-8", "replace")
+    try:
+        data = json.loads(text) if text.strip() else None
+    except ValueError:
+        data = None
+    return Response(status, headers, text, data)
+
+
+def http_request(url: str, *, method: str = "GET", data: bytes | None = None,
+                 headers: dict[str, str] | None = None, timeout: int = 60) -> Response:
+    """One HTTP request. It does not retry, and an error status is not raised.
+
+    Every API here wants to read the body of a 4xx -- Google names the quota
+    it exhausted there, Notion names the field it rejected -- and each has its
+    own retry policy and its own idea of what to do about a 429. So this owns
+    the transport and nothing above it. Only a request that produced no
+    response at all raises: TimeoutError when the socket went quiet, so a
+    caller can tell "slow" from "refused", and TransportError for the rest.
+    """
+    req = urllib.request.Request(url, data=data, headers=dict(headers or {}),
+                                 method=method)
+    where = urlsplit(url).netloc or url
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            return _response(res.status, res.headers, res.read())
+    except urllib.error.HTTPError as exc:
+        return _response(exc.code, exc.headers, exc.read())
+    except TimeoutError:
+        raise
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError) or "timed out" in str(exc.reason).lower():
+            raise TimeoutError(str(exc.reason)) from exc
+        raise TransportError(f"could not reach {where}: {exc.reason}") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        # The response broke after its headers arrived: a reset, a short body.
+        raise TransportError(f"the connection to {where} broke: {exc}") from exc
+
+
+def secret(names: Iterable[str], *, hint: str, files: Iterable[Path] = ()) -> str:
+    """A credential, from the environment or .env, or a legacy file beside it.
+
+    A real environment variable wins over .env, which is what load_dotenv()
+    arranges. `files` are opened when this is called and never captured, so a
+    redirected root reaches them. `hint` is the whole message a caller wants
+    the user to read, because what to do about a missing one differs: an app
+    password, an integration token and an API key are got in different places.
+    """
+    load_dotenv()
+    for name in names:
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value
+    for path in files:
+        if path.exists():
+            value = path.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+    raise TrackerError(hint)
+
+
+def has_secret(names: Iterable[str], *, files: Iterable[Path] = ()) -> bool:
+    """Whether a credential is there, without reading it out. For /doctor."""
+    try:
+        secret(names, hint="", files=files)
+        return True
+    except TrackerError:
+        return False
+
+
+def parse_iso_utc(value: object) -> datetime | None:
+    """An ISO timestamp as an aware UTC datetime, or None if it is not one.
+
+    A stamp with no offset is read as UTC, because that is how they are
+    written: now() and SQLite's datetime('now') both leave the offset off.
+    """
+    try:
+        stamp = datetime.fromisoformat(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+
+
+def write_json(path: Path, data: Any, *, indent: int = 2) -> None:
+    """Write a state file whole, or not at all.
+
+    Every one of these is read back by the next run, and a torn write is not
+    a smaller version of the file -- it is a parse error. notion.json costs a
+    re-provision to rebuild. So the bytes land in a temporary file beside the
+    target and are moved into place, which is atomic on both platforms.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=indent)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def slugify(value: str) -> str:
@@ -800,9 +922,12 @@ VERDICT_ORDER = {"strong": 0, "good": 1, "moderate": 2, "weak": 3, "poor": 4}
 
 # Query parameters that identify the click, not the posting. Everything else
 # stays: some boards name the posting in a parameter (gh_jid, jobId).
+# `position`, `source` and `src` are deliberately absent: boards use them to
+# name the posting itself (?position=<id>), and collapsing two postings into one
+# url_key loses the second silently.
 TRACKING_PARAMS = {
-    "ref", "refid", "trk", "trkinfo", "trackingid", "ebp", "position", "pagenum",
-    "refresh", "original_referer", "source", "src", "gh_src", "lever-source",
+    "ref", "refid", "trk", "trkinfo", "trackingid", "ebp", "pagenum",
+    "refresh", "original_referer", "gh_src", "lever-source",
     "lever-origin", "fbclid", "gclid", "msclkid", "mc_cid", "mc_eid", "igshid",
 }
 

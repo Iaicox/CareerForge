@@ -2,7 +2,7 @@
 """Render docs/manual.md into the published-manual HTML page.
 
     python tools/publish_manual.py
-    # -> tracker/manual-artifact.html
+    # -> docs/manual-artifact.html
 
 The manual is published as a Claude artifact so it is readable without cloning:
 
@@ -12,7 +12,7 @@ The page is generated from docs/manual.md, so it cannot drift from the manual
 in the repository. After editing the manual, regenerate and republish:
 
     1. python tools/publish_manual.py
-    2. In a Claude Code session: publish tracker/manual-artifact.html with the
+    2. In a Claude Code session: publish docs/manual-artifact.html with the
        Artifact tool, passing url=ARTIFACT_URL so the existing page updates
        instead of a second one appearing.
 
@@ -33,10 +33,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import paths  # noqa: E402
 
-REPO = paths.REPO
-SOURCE = REPO / "docs" / "manual.md"
 TEMPLATE = Path(__file__).resolve().parent / "manual_template.html"
-OUTPUT = paths.MANUAL_ARTIFACT
+
+
+def source() -> Path:
+    return paths.REPO / "docs" / "manual.md"
+
+
+def output() -> Path:
+    """Read at call time, never captured: paths.configure() has to be able
+    to move the whole layout, which a module-level constant outlives."""
+    return paths.MANUAL_ARTIFACT
 
 
 def slug(text: str) -> str:
@@ -195,7 +202,7 @@ def main() -> int:
         print(f"error: unexpected argument: {sys.argv[1]}", file=sys.stderr)
         return 2
 
-    md = SOURCE.read_text(encoding="utf-8")
+    md = source().read_text(encoding="utf-8")
     # HTML comments (the republish note at the top) are for the file's readers,
     # not the page's -- rendered naively they would appear as escaped text.
     md = re.sub(r"<!--.*?-->", "", md, flags=re.S)
@@ -227,10 +234,11 @@ def main() -> int:
             print(f"  {p}", file=sys.stderr)
         return 1
 
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(page, encoding="utf-8")
+    out = output()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(page, encoding="utf-8")
     print(f"sections : {len(toc)}")
-    print(f"page     : {len(page)} chars -> {OUTPUT.relative_to(REPO)}")
+    print(f"page     : {len(page)} chars -> {out.relative_to(paths.REPO)}")
     print(f"artifact : {ARTIFACT_URL}")
     print("republish by publishing that file with the Artifact tool, "
           "passing this url so the existing page updates.")

@@ -594,8 +594,9 @@ the board and `/triage` all read the same table.
 
 ### Secrets
 
-One `.env` file in the repo root holds them all. The tools load it themselves —
-a real environment variable always wins over the file.
+One `.env` file in the repo root holds them all; `cp .env.sample .env` starts
+it from the committed template. The tools load it themselves — a real
+environment variable always wins over the file.
 
 ```
 GEMINI_API_KEY=...        # the Gemini API (research, extraction, ranking)
@@ -649,10 +650,18 @@ A model that answers with a quota error is set aside and the next one is
 asked at once. A per-minute limit keeps it out for the retry delay the API
 names, or a minute; a daily quota until the retry delay it names, or else
 the next midnight in Los Angeles, where Google resets the daily counters. A
-model the key does not know (404) is skipped for the rest of the run.
-Cooldowns are kept in `data/state/gemini-cooldowns.json`; `gemini.py check`
-shows which models are sitting out and why. Only when every model in the
-pool is out does the work fall back to Claude.
+refusal that names neither is treated as a per-minute limit, because that is
+the cheap guess to get wrong. Since the two quotas are separate, so are the
+two benches: a model sitting out plain work is still asked to ground, and the
+other way round. A model the key does not know (404) is skipped for the rest
+of the run. Cooldowns are kept in `data/state/gemini-cooldowns.json`;
+`gemini.py check` shows which models are sitting out and why, and never
+benches anything itself. Only when every model in the pool is out does the
+work fall back to Claude.
+
+`timeout_seconds` is the budget for a whole call rather than for each model in
+it: the pool shares one deadline, so a stalled API costs those seconds once,
+not once per model.
 
 Check it:
 
@@ -734,11 +743,10 @@ Set `GEMINI_API_KEY` in `.env`. Everything keeps working meanwhile.
 **`quota exhausted` or `overloaded` from Gemini**
 The key's project is over its quota for that model (free tiers are per model
 and per day — check [ai.dev/rate-limit](https://ai.dev/rate-limit)), or the
-model is under heavy demand. The tool gives up immediately rather than
-retrying for minutes; the work is done in Claude instead.
-
-**`the prompt is too long for a command line`**
-A bug: bulk input should travel over stdin. Report it with the command you ran.
+model is under heavy demand. A quota refusal is never retried — the model is
+set aside and the next one asked at once; heavy demand (503) is retried twice,
+after 5s and 15s, before moving on. When the whole pool is out, the work is
+done in Claude instead.
 
 **Mail sync: `login failed`**
 Gmail and most providers need an **app password**, not your account password.

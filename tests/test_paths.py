@@ -113,6 +113,25 @@ class NoOtherToolKnowsTheLayoutTest(unittest.TestCase):
                     offenders.append(f"{script.name}:{lineno}: {line.strip()}")
         self.assertEqual(offenders, [], "\n".join(offenders))
 
+    def test_no_tool_binds_a_root_dependent_path_at_import_time(self):
+        # The other half of the same drift: a module-level constant is
+        # computed once, at import, and outlives paths.configure(). The tools
+        # that did this could not be redirected at all, so their tests
+        # monkeypatched the constant and never confirmed where the file lands.
+        # Names that do not depend on the root -- STAGES -- are fine to bind.
+        rooted = "|".join(sorted(paths._layout(REPO)))
+        pattern = re.compile(r"^[A-Z_][A-Z0-9_]*\s*=\s*paths\.(?:%s)\b" % rooted)
+        offenders = []
+        for script in sorted(TOOLS.glob("*.py")):
+            if script.name == "paths.py":
+                continue
+            for lineno, line in enumerate(
+                script.read_text(encoding="utf-8").splitlines(), 1
+            ):
+                if pattern.match(line):
+                    offenders.append(f"{script.name}:{lineno}: {line.strip()}")
+        self.assertEqual(offenders, [], "\n".join(offenders))
+
 
 if __name__ == "__main__":
     unittest.main()

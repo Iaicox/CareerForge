@@ -150,8 +150,9 @@ Only if you want your pipeline readable on your phone.
 1. Create an internal integration at
    [notion.so/my-integrations](https://www.notion.so/my-integrations) with
    **Read**, **Update** and **Insert content**.
-2. Put the token in `.env` as `NOTION_KEY=<token>` (gitignored;
-   `NOTION_TOKEN` and a `.notion_token` file also work).
+2. Put the token in `.env` as `NOTION_KEY=<token>` (`cp .env.sample .env` if
+   you have none yet; gitignored, and `NOTION_TOKEN` or a `.notion_token` file
+   also work).
 3. Pick or create a Notion page to hold the tracker, and connect the integration
    to it: `...` → Connections → your integration.
 4. Create the databases from your own configured statuses:

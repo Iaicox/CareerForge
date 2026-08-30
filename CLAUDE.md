@@ -24,7 +24,7 @@ read; `state/` is what the tools write.
 | `data/documents/` | Career materials the user dropped in for `/setup` and `/expand` to read. Never moved or renamed. |
 | `data/pipeline/applications/`, `processing/`, `rejected/` | Per-application folders, moved by status. |
 | `data/state/` | The tracker database (applications, and every posting seen), Notion ids, logs, scratch. **Never edit by hand** — use `tools/tracker.py` and `tools/shortlist.py`. |
-| `data/config/config.example.toml`, `data/profile.example/` | The framework's templates, kept beside the files they are templates for. Committed — never put real data in them. |
+| `data/config/config.example.toml`, `data/profile.example/`, `.env.sample` | The framework's templates, kept beside the files they are templates for. Committed — never put real data in them. |
 | everything else | The framework. Do not modify it during normal work. |
 
 All of `data/` is gitignored except the two templates and the skeleton.
@@ -68,8 +68,9 @@ code 3 means it is unavailable, not that the task failed:** do the work
 yourself instead, and say which route you took. It is an optimisation, never a
 dependency.
 
-Secrets live in `.env` (gitignored): `GEMINI_API_KEY`, `NOTION_KEY`,
-`MAIL_PASSWORD`. The tools load it themselves. Never print its values.
+Secrets live in `.env` (gitignored), started from the committed `.env.sample`:
+`GEMINI_API_KEY`, `NOTION_KEY`, `MAIL_PASSWORD`. The tools load it themselves.
+Never print its values.
 
 `docs/manual.md` is published as an artifact. After editing it, run
 `python tools/publish_manual.py` and republish `docs/manual-artifact.html`

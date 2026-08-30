@@ -19,6 +19,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "tools"))
+
+import paths  # noqa: E402
+
 spec = importlib.util.spec_from_file_location("salary_lookup", REPO / "tools" / "salary_lookup.py")
 salary = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
@@ -44,12 +47,14 @@ class AddTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-salary-")).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.addCleanup(setattr, salary, "DATA_FILE", salary.DATA_FILE)
-        salary.DATA_FILE = self.tmp / "salary_data.json"
-        salary.DATA_FILE.write_text(json.dumps(FILE), encoding="utf-8")
+        self._real_repo = paths.REPO
+        self.addCleanup(paths.configure, self._real_repo)
+        paths.configure(self.tmp)
+        salary.data_file().parent.mkdir(parents=True, exist_ok=True)
+        salary.data_file().write_text(json.dumps(FILE), encoding="utf-8")
 
     def data(self) -> dict:
-        return json.loads(salary.DATA_FILE.read_text(encoding="utf-8"))
+        return json.loads(salary.data_file().read_text(encoding="utf-8"))
 
     def add(self, *argv) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()

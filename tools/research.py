@@ -50,14 +50,9 @@ def find_company(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:
 
 
 def age_days(researched_at: str | None) -> float | None:
-    if not researched_at:
+    stamp = tracker.parse_iso_utc(researched_at)
+    if stamp is None:
         return None
-    try:
-        stamp = datetime.fromisoformat(researched_at)
-    except ValueError:
-        return None
-    if stamp.tzinfo is None:
-        stamp = stamp.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - stamp).total_seconds() / 86400
 
 
@@ -84,9 +79,10 @@ def get(conn: sqlite3.Connection, name: str, url: str | None,
         force: bool, role: str | None = None, location: str | None = None) -> tuple[dict, str]:
     """Returns (research, where it came from).
 
-    With a role given, research also asks what the company pays for it. A cache
-    entry from before that question existed has no `salary` key and is
-    refreshed once; after that the usual age rule applies.
+    With a role given, research also asks what the company pays for it. The
+    `salary` key is written only when that question was answered, so an entry
+    from before it existed -- or one whose salary call was refused -- has no
+    such key and is refreshed once; after that the usual age rule applies.
     """
     if not force:
         cached, age = read_cache(conn, name)

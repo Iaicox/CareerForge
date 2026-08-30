@@ -86,6 +86,18 @@ class BoardServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("/api/postings", html)
 
+    def test_the_postings_page_gates_a_link_on_its_scheme(self):
+        # The rendering is client-side, so this only guards the source: a
+        # posting URL comes from a scraped board or a paste, and this page
+        # serves unauthenticated POST endpoints on its own origin, so a
+        # javascript: href would be click-to-run script against them. The
+        # behaviour itself is checked in a browser -- see safeHref().
+        status, html = self.request("/postings")
+        self.assertEqual(status, 200)
+        self.assertIn("function safeHref", html)
+        self.assertIn("/^https?:\\/\\//i", html)
+        self.assertNotIn('href="${esc(r.url)}"', html)
+
     def test_the_table_carries_rows_and_status_options(self):
         status, body = self.request("/api/postings")
         self.assertEqual(status, 200)

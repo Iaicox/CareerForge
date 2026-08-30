@@ -11,7 +11,8 @@ tests run against a throwaway repo.
       profile/         the source of truth for every claim   (profile.example/ beside it)
       documents/       raw material you drop in for /setup and /expand
       pipeline/        per-application folders, moved between stages by status
-      state/           what the tools write: the database, notion ids, logs
+      state/           what the tools write: the database, notion ids, logs,
+                       model cooldowns, scratch
 
 The secrets file (.env) stays at the repo root, and the published manual is a
 build product of framework docs, so neither is under data/.
