@@ -420,18 +420,32 @@ def secret(names: Iterable[str], *, hint: str, files: Iterable[Path] = ()) -> st
     password, an integration token and an API key are got in different places.
     """
     load_dotenv()
-    for name in names:
+    wanted = list(names)
+    for name in wanted:
         value = (os.environ.get(name) or "").strip()
         if value:
             return value
+    first = next(iter(wanted), "the variable")
     for path in files:
+        if path.is_dir():
+            continue  # not a file: not a credential (and Windows raises
+                      # PermissionError rather than IsADirectoryError here)
         try:
-            value = path.read_text(encoding="utf-8").strip()
-        except (OSError, UnicodeDecodeError):
-            # Missing, a directory, or bytes that are not text: none of those
-            # is a credential. /doctor asks this about every integration in
-            # turn, so one bad file must not take the whole report down.
-            continue
+            # utf-8-sig, because a shell redirect writes a BOM and plain
+            # `utf-8` would carry it into the credential -- an invisible first
+            # character that fails authentication and explains nothing.
+            value = path.read_text(encoding="utf-8-sig").strip()
+        except (FileNotFoundError, NotADirectoryError):
+            continue  # not there: not a credential
+        except (OSError, UnicodeDecodeError) as exc:
+            # It exists and holds something. Passing over it silently would
+            # tell the user to write down a secret that is already sitting in
+            # the file we just refused to read -- a permission, or UTF-16 out
+            # of a shell redirect.
+            raise TrackerError(
+                f"{rel(path)} cannot be read: {exc}. Fix it, or put the value "
+                f"in .env as {first}=<value>"
+            ) from exc
         if value:
             return value
     raise TrackerError(hint)

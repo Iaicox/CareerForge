@@ -635,26 +635,47 @@ class SecretTest(unittest.TestCase):
                 tracker.secret(("CF_TEST_SECRET",), hint="x", files=(path,)),
                 "from-the-env")
 
-    def test_a_file_that_cannot_be_read_is_simply_not_a_credential(self):
-        # A stray byte in .notion_token used to reach doctor as a
-        # UnicodeDecodeError, out of has_secret, out of run_checks, and took
-        # every other check -- including the required ones -- with it.
+    def test_nothing_there_is_skipped_and_the_next_file_is_read(self):
+        good = self.tmp / "good"
+        good.write_text("s3cret", encoding="utf-8")
+        a_directory = self.tmp / "adir"
+        a_directory.mkdir()
+        self.assertEqual(
+            tracker.secret(("CF_TEST_ABSENT",), hint="x",
+                           files=(self.tmp / "missing", a_directory, good)),
+            "s3cret")
+
+    def test_a_file_that_exists_and_will_not_read_is_named_not_skipped(self):
+        # PowerShell's redirect writes UTF-16, and a wrong ACL is routine on
+        # Windows. Passing over it silently tells the user to write down a
+        # secret that is sitting in the file we just refused to read.
+        utf16 = self.tmp / "utf16"
+        utf16.write_bytes(b"\xff\xfes\x003\x00")
+        good = self.tmp / "good"
+        good.write_text("s3cret", encoding="utf-8")
+        with self.assertRaises(tracker.TrackerError) as ctx:
+            tracker.secret(("CF_TEST_ABSENT",), hint="put it in .env", files=(utf16, good))
+        self.assertIn("utf16", str(ctx.exception))
+        self.assertIn("cannot be read", str(ctx.exception))
+
+    def test_a_byte_order_mark_does_not_travel_into_the_credential(self):
+        # The same redirect, in its other mood: `utf-8` keeps the BOM, so the
+        # token goes out with an invisible first character and the service
+        # rejects it without saying why.
+        path = self.tmp / "bom"
+        path.write_bytes(b"\xef\xbb\xbfs3cret")
+        self.assertEqual(tracker.secret(("CF_TEST_ABSENT",), hint="x", files=(path,)), "s3cret")
+
+    def test_has_secret_stays_total_whatever_the_file_holds(self):
+        # /doctor asks this about every integration in turn, so one bad file
+        # must never take the whole report down.
         binary = self.tmp / "binary"
         binary.write_bytes(b"\xff\xfe not utf-8 \x00")
-        a_directory = self.tmp / "adir"
+        a_directory = self.tmp / "adir2"
         a_directory.mkdir()
         for path in (binary, a_directory, self.tmp / "missing"):
             with self.subTest(path=path.name):
                 self.assertFalse(tracker.has_secret(("CF_TEST_ABSENT",), files=(path,)))
-
-    def test_an_unreadable_file_does_not_hide_a_good_one_behind_it(self):
-        binary = self.tmp / "binary"
-        binary.write_bytes(b"\xff\xfe")
-        good = self.tmp / "good"
-        good.write_text("s3cret", encoding="utf-8")
-        self.assertEqual(
-            tracker.secret(("CF_TEST_ABSENT",), hint="x", files=(binary, good)),
-            "s3cret")
 
     def test_nothing_anywhere_raises_the_caller_s_own_message(self):
         with self.assertRaises(tracker.TrackerError) as ctx:
