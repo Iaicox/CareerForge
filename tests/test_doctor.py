@@ -30,10 +30,11 @@ class CheckGeminiTest(unittest.TestCase):
     def setUp(self) -> None:
         self.addCleanup(setattr, gemini, "settings", gemini.settings)
         self.enabled = True
+        self.timeout = 30
         self.spawned: list = []
         gemini.settings = lambda: {
             "enabled": self.enabled, "models": ["m"], "search_models": ["m"],
-            "timeout_seconds": 30, "cache_days": 30, "tasks": [], "log": False,
+            "timeout_seconds": self.timeout, "cache_days": 30, "tasks": [], "log": False,
         }
 
     def check(self, *, stdout: str = "", timeout: bool = False) -> doctor.Check:
@@ -122,13 +123,30 @@ class CheckGeminiTest(unittest.TestCase):
         self.assertEqual(check.status, doctor.WARN)
         self.assertEqual(check.fix, "python tools/gemini.py check")
 
-    def test_the_probe_budget_covers_both_pools_and_stops_there(self):
+    def test_the_probe_budget_covers_both_pools(self):
         # It was `timeout + 30` for a check that probes two pools, so doctor
-        # timed out setups that worked; and it is sized from the probe's own
-        # ceiling, so a large working timeout_seconds cannot make a health
-        # check block for ten minutes. Nothing asserted either before.
+        # timed out setups that worked.
         self.check(stdout=self.verdict())
-        self.assertEqual(self.spawned, [2 * min(30, gemini.PROBE_TIMEOUT) + 30])
+        self.assertEqual(self.spawned, [2 * 30 + 30])
+
+    def test_a_large_working_timeout_does_not_become_the_health_check_s(self):
+        # The half the first version of this test could not see: with
+        # timeout_seconds below PROBE_TIMEOUT the capped and uncapped formulas
+        # agree, so removing the cap changed nothing and every test stayed
+        # green. A research call may take ten minutes; /doctor may not.
+        self.timeout = 600
+        self.check(stdout=self.verdict())
+        self.assertEqual(self.spawned, [2 * gemini.PROBE_TIMEOUT + 30])
+
+    def test_a_killed_probe_quotes_the_time_it_was_actually_given(self):
+        # Also untested: reverting either call site that feeds remedy_for the
+        # applied limit left the whole suite green.
+        self.timeout = 600
+        check = self.check(timeout=True)
+        budget = 2 * gemini.PROBE_TIMEOUT + 30
+        self.assertIn(f"{budget}s", check.detail)
+        self.assertIn(f"within {budget}s", check.fix)
+        self.assertNotIn("600", check.fix, "not the configured timeout, which did not apply")
 
     def test_settings_that_will_not_read_are_not_reported_as_disabled(self):
         # "disabled (optional)" is green, and /setup reads it as the toolchain

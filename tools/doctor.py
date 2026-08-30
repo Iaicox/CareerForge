@@ -278,6 +278,12 @@ def check_gemini() -> Check:
     """
     try:
         import gemini
+    except Exception as exc:
+        # Its own branch: pointing at config.toml for a module that will not
+        # import sends the reader to a file that is fine.
+        return Check("Gemini delegation", WARN, f"tools/gemini.py will not import: {exc}",
+                     "python tools/gemini.py check", required=False)
+    try:
         settings = gemini.settings()
         enabled, timeout = bool(settings["enabled"]), settings["timeout_seconds"]
     except Exception as exc:
@@ -321,8 +327,11 @@ def check_gemini() -> Check:
         if killed:
             return Check(
                 "Gemini delegation", WARN, f"the probe did not finish within {budget}s",
+                # The budget, not probe_limit: nothing here was bounded by the
+                # per-call deadline -- the whole probe overran the time doctor
+                # allowed it, and that is the number beside it in the detail.
                 gemini.remedy_for([gemini.Reason("", "timeout", "the probe was killed")],
-                                  timeout_seconds=probe_limit),
+                                  timeout_seconds=budget),
                 required=False)
         return Check("Gemini delegation", WARN, "the probe answered with something unreadable",
                      "python tools/gemini.py check", required=False)
