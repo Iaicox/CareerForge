@@ -234,16 +234,22 @@ def check_notion() -> Check:
     if not enabled:
         return Check("Notion mirror", OK, "disabled (optional)", required=False)
     sys.path.insert(0, str(REPO / "tools"))
-    from tracker import has_secret
+    from tracker import TrackerError, secret
     # The same precedence the mirror itself uses, rather than a second opinion
-    # about where a token may live.
-    token = has_secret(("NOTION_KEY", "NOTION_TOKEN"), files=(REPO / ".notion_token",))
+    # about where a token may live -- and the same message, so a token that is
+    # there but cannot be read says so instead of reading as absent.
+    try:
+        secret(("NOTION_KEY", "NOTION_TOKEN"), files=(REPO / ".notion_token",),
+               hint="no token (NOTION_KEY in .env, or .notion_token)")
+        token, why = True, ""
+    except TrackerError as exc:
+        token, why = False, str(exc)
     ids = paths.NOTION_IDS.exists()
     if token and ids:
         return Check("Notion mirror", OK, "token and database ids present", required=False)
     what = []
     if not token:
-        what.append("no token (NOTION_KEY in .env, or .notion_token)")
+        what.append(why)
     if not ids:
         what.append("no data/state/notion.json")
     return Check("Notion mirror", WARN, "; ".join(what),

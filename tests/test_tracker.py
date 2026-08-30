@@ -666,16 +666,18 @@ class SecretTest(unittest.TestCase):
         path.write_bytes(b"\xef\xbb\xbfs3cret")
         self.assertEqual(tracker.secret(("CF_TEST_ABSENT",), hint="x", files=(path,)), "s3cret")
 
-    def test_has_secret_stays_total_whatever_the_file_holds(self):
-        # /doctor asks this about every integration in turn, so one bad file
-        # must never take the whole report down.
+    def test_every_failure_is_a_trackererror_so_callers_stay_standing(self):
+        # /doctor asks this about every integration in turn and catches
+        # TrackerError. Anything else escaping -- a decode error, a permission
+        # -- ends the whole report, required checks included.
         binary = self.tmp / "binary"
         binary.write_bytes(b"\xff\xfe not utf-8 \x00")
         a_directory = self.tmp / "adir2"
         a_directory.mkdir()
         for path in (binary, a_directory, self.tmp / "missing"):
             with self.subTest(path=path.name):
-                self.assertFalse(tracker.has_secret(("CF_TEST_ABSENT",), files=(path,)))
+                with self.assertRaises(tracker.TrackerError):
+                    tracker.secret(("CF_TEST_ABSENT",), hint="absent", files=(path,))
 
     def test_nothing_anywhere_raises_the_caller_s_own_message(self):
         with self.assertRaises(tracker.TrackerError) as ctx:

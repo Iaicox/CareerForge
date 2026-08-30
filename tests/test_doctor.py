@@ -174,6 +174,17 @@ class CheckGeminiTest(unittest.TestCase):
         self.assertIn(f"within {budget}s", check.fix)
         self.assertNotIn("600", check.fix, "not the configured timeout, which did not apply")
 
+    def test_a_gemini_that_will_not_import_says_so(self):
+        # This branch was added in the commit that fixed two guards which
+        # could not fail, and had no test of its own: making it unreachable
+        # left all 358 tests green.
+        with mock.patch.dict(sys.modules, {"gemini": None}):
+            check = doctor.check_gemini()
+        self.assertEqual(check.status, doctor.WARN)
+        self.assertIn("will not import", check.detail)
+        self.assertNotIn("config.toml", check.fix,
+                         "the config is fine; the module is not")
+
     def test_settings_that_will_not_read_are_not_reported_as_disabled(self):
         # "disabled (optional)" is green, and /setup reads it as the toolchain
         # being fine. A config that cannot be parsed, or a tool that will not

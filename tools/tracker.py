@@ -457,15 +457,6 @@ def secret(names: Iterable[str], *, hint: str, files: Iterable[Path] = ()) -> st
     raise TrackerError(hint)
 
 
-def has_secret(names: Iterable[str], *, files: Iterable[Path] = ()) -> bool:
-    """Whether a credential is there, without reading it out. For /doctor."""
-    try:
-        secret(names, hint="", files=files)
-        return True
-    except TrackerError:
-        return False
-
-
 def parse_iso_utc(value: object) -> datetime | None:
     """An ISO timestamp as an aware UTC datetime, or None if it is not one.
 
