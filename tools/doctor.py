@@ -269,7 +269,13 @@ def check_dotenv() -> Check:
 
 
 def check_gemini() -> Check:
-    """Optional: bulk gathering delegated off Claude's context."""
+    """Optional: bulk gathering delegated off Claude's context.
+
+    The verdict comes from `gemini.py check --json`, because the branches that
+    classify a failure are there. Recovering the cause from the console text is
+    how this check came to advise replacing a working API key every time a
+    daily quota ran out.
+    """
     try:
         import gemini
         settings = gemini.settings()
@@ -279,30 +285,62 @@ def check_gemini() -> Check:
     if not enabled:
         return Check("Gemini delegation", OK, "disabled (optional)", required=False)
 
+    budget = 2 * timeout + 30
+    out, killed = "", False
     try:
         probe = subprocess.run(
-            [sys.executable, str(REPO / "tools" / "gemini.py"), "check"],
+            [sys.executable, str(REPO / "tools" / "gemini.py"), "check", "--json"],
             capture_output=True, text=True,
             # `check` runs the plain pool and then the search pool, and each of
             # them is allowed the configured budget. Anything less than both and
             # doctor reports a timeout of its own making.
-            timeout=2 * timeout + 30,
+            timeout=budget,
         )
+        out = probe.stdout or ""
+    except subprocess.TimeoutExpired as exc:
+        killed = True
+        raw = exc.stdout or ""
+        out = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
     except (OSError, subprocess.SubprocessError) as exc:
         return Check("Gemini delegation", WARN, f"probe failed: {exc}",
                      "python tools/gemini.py check", required=False)
-    if probe.returncode == 0:
-        return Check("Gemini delegation", OK, "key answers", required=False)
-    reason = ""
-    for line in (probe.stdout or "").splitlines():
-        if "NOT USABLE" in line:
-            reason = line.split("NOT USABLE:", 1)[-1].strip()[:80]
-    return Check(
-        "Gemini delegation", WARN, reason or "enabled but not usable",
-        "set GEMINI_API_KEY in .env (https://aistudio.google.com/apikey); "
-        "work falls back to Claude meanwhile",
-        required=False,
-    )
+
+    try:
+        report = json.loads(out)
+    except ValueError:
+        report = None
+
+    if not isinstance(report, dict):
+        if killed:
+            return Check(
+                "Gemini delegation", WARN, f"the probe did not finish within {budget}s",
+                gemini.remedy_for([gemini.Reason("", "timeout", "the probe was killed")],
+                                  timeout_seconds=timeout),
+                required=False)
+        return Check("Gemini delegation", WARN, "the probe answered with something unreadable",
+                     "python tools/gemini.py check", required=False)
+
+    # Everything below is the tool's own account, forwarded. Doctor decides
+    # nothing about the cause and authors none of the advice.
+    if not report.get("key"):
+        return Check("Gemini delegation", WARN, "no usable GEMINI_API_KEY",
+                     report.get("remedy") or "python tools/gemini.py check", required=False)
+
+    parts, healthy = [], True
+    for label in ("plain", "search"):
+        pool = (report.get("pools") or {}).get(label)
+        if not isinstance(pool, dict):
+            continue
+        if pool.get("ok"):
+            parts.append(f"{label} ok via {pool.get('model')}")
+        else:
+            healthy = False
+            parts.append(f"{label}: {pool.get('summary') or 'not usable'}")
+
+    if healthy and parts:
+        return Check("Gemini delegation", OK, "; ".join(parts), required=False)
+    return Check("Gemini delegation", WARN, "; ".join(parts) or "enabled but not usable",
+                 report.get("remedy") or "python tools/gemini.py check", required=False)
 
 
 def run_checks() -> list[Check]:

@@ -177,6 +177,20 @@
   but `notion.json` holds the database ids and costs a re-provision to rebuild.
   Both now write beside the target and move it into place.
 
+- **`/doctor` names what is wrong with Gemini, and gives advice that fits.**
+  The check recovered the cause by matching `NOT USABLE` in the probe's console
+  output, cut it at 80 characters, and printed one fixed remedy — "set
+  `GEMINI_API_KEY` in `.env`" — whatever had happened. With the plain pool
+  answering and the search pool out of its daily grounding quota, that came out
+  as a sentence truncated before the time the quota returned, no mention that
+  the plain pool was healthy, and an instruction to replace a key that was
+  working. Every failure now carries the kind the branch that produced it knew
+  — quota, cooling, unknown model, overload, timeout, auth — `gemini.py check
+  --json` reports it per pool together with a remedy derived from those kinds,
+  and doctor forwards both without forming an opinion of its own. In that
+  remedy a configuration error outranks a quota, because a quota comes back by
+  itself at a time the report can name.
+
 ### Documentation
 
 - `docs/notion-mirror.md` states what `push` actually does: applications only,

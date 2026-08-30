@@ -477,6 +477,67 @@ class RestTransportTest(unittest.TestCase):
                          "the first model spent the budget; the rest are not asked")
         self.assertIn("budget was spent", str(ctx.exception))
 
+    # -- what went wrong, as a fact rather than a sentence ------------------
+
+    def test_every_failure_carries_the_kind_the_branch_knew(self):
+        overloaded = (503, {"error": {"code": 503, "message": "high demand"}})
+        for kind, responses in (
+            ("quota_daily",
+             [self.quota(None, "GenerateRequestsPerDayPerProjectPerModel-FreeTier")] * 3),
+            ("quota_minute",
+             [self.quota("7s", "GenerateRequestsPerMinutePerProjectPerModel-FreeTier")] * 3),
+            ("unknown_model", [(404, {"error": {"code": 404, "message": "no such model"}})] * 3),
+            ("http_error",
+             [(400, {"error": {"code": 400, "message": "google_search is not supported"}})] * 3),
+            ("timeout", [TimeoutError("timed out")] * 3),
+            ("no_answer",
+             [(200, {"candidates": [], "promptFeedback": {"blockReason": "SAFETY"}})] * 3),
+            ("overloaded", [overloaded] * 9),  # three tries each, then the next model
+        ):
+            with self.subTest(kind=kind):
+                gemini.UNKNOWN_MODELS.clear()
+                gemini.save_cooldowns({})
+                self.responses = list(responses)
+                with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+                    gemini.call("instruction")
+                self.assertEqual({r.kind for r in ctx.exception.reasons}, {kind})
+                self.assertEqual([r.model for r in ctx.exception.reasons], self.POOL)
+
+    def test_a_quota_says_when_it_comes_back(self):
+        # The remedy for a daily quota is "wait", so the time has to survive as
+        # a value rather than only inside the sentence.
+        self.responses = [self.quota("52418s", "GenerateRequestsPerDayPerProjectPerModel-FreeTier")] * 3
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+            gemini.call("instruction")
+        first = ctx.exception.reasons[0]
+        self.assertEqual(first.until, (self.T0 + timedelta(seconds=52418)).isoformat(timespec="seconds"))
+
+    def test_a_cooling_model_is_its_own_kind(self):
+        for m in self.POOL:
+            gemini.cool_down(m, self.T0 + timedelta(hours=1), "daily quota")
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+            gemini.call("instruction")
+        self.assertEqual({r.kind for r in ctx.exception.reasons}, {"cooling"})
+        self.assertTrue(all(r.until for r in ctx.exception.reasons))
+
+    def test_a_bad_key_is_tagged_auth(self):
+        self.responses = [(403, {"error": {"code": 403, "message": "API key not valid"}})]
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+            gemini.call("instruction")
+        self.assertEqual(ctx.exception.kind, "auth")
+
+    def test_the_timeout_verdict_follows_the_kinds_not_the_wording(self):
+        self.responses = [TimeoutError("timed out")] * 3
+        with self.assertRaises(gemini.GeminiTimeout):
+            gemini.call("instruction")
+        # One refusal among the timeouts and the pool was not merely slow.
+        gemini.save_cooldowns({})
+        self.responses = [TimeoutError("timed out"), TimeoutError("timed out"),
+                          self.quota(None, "GenerateRequestsPerDayPerProjectPerModel-FreeTier")]
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+            gemini.call("instruction")
+        self.assertNotIsInstance(ctx.exception, gemini.GeminiTimeout)
+
     # -- 404: unknown until restart ----------------------------------------
 
     def test_an_unknown_model_is_skipped_for_the_rest_of_the_process(self):
@@ -632,6 +693,143 @@ class PoolSettingsTest(unittest.TestCase):
         self.assertEqual(gemini.quota_kind({"message": "You exceeded your current quota", "details": []}),
                          "minute",
                          "an inconclusive 429 costs one retry this way, a day the other way")
+
+
+class RemedyTest(unittest.TestCase):
+    """The advice follows the fact.
+
+    /doctor used to print "set GEMINI_API_KEY in .env" for every Gemini
+    failure, including a working key whose daily grounding quota had run out.
+    """
+
+    R = gemini.Reason
+
+    def remedy(self, *reasons, timeout_seconds=30):
+        return gemini.remedy_for(list(reasons), timeout_seconds=timeout_seconds)
+
+    def test_a_config_error_outranks_a_quota_that_fixes_itself(self):
+        text = self.remedy(
+            self.R("gemini-2.5-flash", "quota_daily", "daily quota",
+                   "2026-08-30T01:00:00+00:00"),
+            self.R("gemini-2.5-flash-lite", "unknown_model", "unknown to this key (404)"),
+        )
+        self.assertIn("does not know gemini-2.5-flash-lite", text)
+        self.assertIn("config.toml", text)
+
+    def test_a_daily_quota_says_when_it_returns_and_to_do_nothing(self):
+        text = self.remedy(self.R("m", "quota_daily", "daily quota",
+                                  "2026-08-30T01:00:00+00:00"))
+        self.assertIn("nothing to do", text)
+        self.assertIn("2026-08-30 01:00 UTC", text)
+
+    def test_the_one_line_summary_keeps_the_time_a_quota_returns(self):
+        # The 80-character truncation in /doctor used to cut exactly here.
+        self.assertEqual(
+            gemini.pool_summary([self.R("m", "quota_daily", "daily quota",
+                                        "2026-08-30T01:00:00+00:00")]),
+            "daily quota until 01:00 UTC")
+        self.assertEqual(
+            gemini.pool_summary([self.R("m", "timeout", "timed out")]),
+            "no answer in time")
+
+    def test_a_timeout_names_the_setting_that_bounds_it(self):
+        self.assertIn("timeout_seconds (45s)",
+                      self.remedy(self.R("m", "timeout", "timed out"), timeout_seconds=45))
+
+    def test_only_a_key_problem_says_anything_about_the_key(self):
+        self.assertIn("GEMINI_API_KEY", self.remedy(self.R("", "no_key", "not set")))
+        self.assertIn("replace GEMINI_API_KEY", self.remedy(self.R("", "auth", "refused")))
+        for kind in ("quota_daily", "quota_minute", "cooling", "unknown_model",
+                     "overloaded", "timeout", "http_error", "no_answer"):
+            with self.subTest(kind=kind):
+                self.assertNotIn("GEMINI_API_KEY", self.remedy(self.R("m", kind, "x")))
+
+
+class CheckReportTest(unittest.TestCase):
+    """`check` answers per pool, so "plain works, search does not" can be said."""
+
+    POOL = ["a-model", "b-model"]
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-check-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._real_repo = paths.REPO
+        self.addCleanup(paths.configure, self._real_repo)
+        paths.configure(self.tmp)
+        for name in ("settings", "api_key", "call"):
+            self.addCleanup(setattr, gemini, name, getattr(gemini, name))
+        self.enabled = True
+        gemini.settings = lambda: {
+            "enabled": self.enabled, "models": list(self.POOL),
+            "search_models": list(self.POOL), "timeout_seconds": 30,
+            "cache_days": 30, "tasks": ["research"], "log": False,
+        }
+        gemini.api_key = lambda: "test-key"
+
+    def report(self, plain=None, search=None) -> dict:
+        """plain/search: None to answer, or the exception the pool raises."""
+        def fake_call(prompt, *, search=False, **kw):
+            failure = search_exc if search else plain_exc
+            if failure:
+                raise failure
+            gemini.LAST_MODEL = "a-model"
+            return "OK"
+
+        plain_exc, search_exc = plain, search
+        gemini.call = fake_call
+        return gemini.check_report()
+
+    @staticmethod
+    def refusal(*reasons):
+        text = "no model in the search pool could answer -- " + "; ".join(
+            f"{r.model}: {r.detail}" for r in reasons)
+        return gemini.GeminiUnavailable(text, reasons=tuple(reasons))
+
+    def test_both_pools_answering_needs_no_remedy(self):
+        report = self.report()
+        self.assertEqual(report["exit_code"], 0)
+        self.assertEqual(report["remedy"], "")
+        self.assertTrue(report["pools"]["plain"]["ok"])
+        self.assertTrue(report["pools"]["search"]["ok"])
+
+    def test_one_pool_down_is_reported_without_condemning_the_other(self):
+        report = self.report(search=self.refusal(
+            gemini.Reason("a-model", "quota_daily", "daily quota", "2026-08-30T01:00:00+00:00"),
+            gemini.Reason("b-model", "unknown_model", "unknown to this key (404)"),
+        ))
+        self.assertTrue(report["pools"]["plain"]["ok"], "the plain pool still answers")
+        self.assertEqual(report["pools"]["search"]["ok"], False)
+        self.assertEqual(report["pools"]["search"]["kinds"], ["quota_daily", "unknown_model"])
+        self.assertEqual(report["pools"]["search"]["summary"], "a model this key does not know")
+        self.assertEqual(report["pools"]["search"]["until"], "2026-08-30T01:00:00+00:00")
+        self.assertIn("does not know b-model", report["remedy"])
+        self.assertEqual(report["exit_code"], 3)
+
+    def test_a_missing_key_stops_before_any_request(self):
+        gemini.api_key = lambda: (_ for _ in ()).throw(
+            gemini.GeminiUnavailable("GEMINI_API_KEY is not set -- put it in .env"))
+        report = self.report()
+        self.assertFalse(report["key"])
+        self.assertEqual(report["pools"], {})
+        self.assertIn("GEMINI_API_KEY", report["remedy"])
+
+    def test_disabled_says_which_setting_turns_it_on(self):
+        self.enabled = False
+        report = self.report()
+        self.assertEqual(report["pools"], {})
+        self.assertIn("enabled = true", report["remedy"])
+
+    def test_a_probe_never_benches_a_model(self):
+        seen = {}
+
+        def fake_call(prompt, *, search=False, cool=True, **kw):
+            seen[search] = cool
+            gemini.LAST_MODEL = "a-model"
+            return "OK"
+
+        gemini.call = fake_call
+        gemini.check_report()
+        self.assertEqual(seen, {False: False, True: False})
 
 
 if __name__ == "__main__":

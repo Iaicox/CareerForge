@@ -42,7 +42,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -79,10 +79,33 @@ UNKNOWN_MODELS: set[str] = set()
 LAST_MODEL: str | None = None
 
 
+class Reason(NamedTuple):
+    """Why one model did not answer, decided where the branch was taken.
+
+    `kind` is the fact; `detail` is the sentence built from it. Reading the
+    sentence back to work out the fact is how /doctor came to advise replacing
+    a working API key when a daily quota ran out.
+    """
+
+    model: str
+    kind: str          # timeout quota_daily quota_minute cooling
+                       # unknown_model overloaded http_error no_answer
+    detail: str
+    until: str | None = None  # ISO, when the kind says when it comes back
+
+
 class GeminiUnavailable(Exception):
     """Gemini cannot be used right now. The caller should do the work itself."""
 
     exit_code = EXIT_UNAVAILABLE
+
+    def __init__(self, message: str, *, reasons: tuple[Reason, ...] = (),
+                 kind: str | None = None) -> None:
+        super().__init__(message)
+        # What the pool ran into, per model, so a caller can tell a quota from
+        # a model this key does not know without parsing the message.
+        self.reasons: list[Reason] = list(reasons)
+        self.kind = kind
 
 
 class GeminiTimeout(GeminiUnavailable):
@@ -91,6 +114,7 @@ class GeminiTimeout(GeminiUnavailable):
 
 class GeminiBadOutput(Exception):
     exit_code = EXIT_BAD_OUTPUT
+    kind = "bad_output"
 
 
 # ---------------------------------------------------------------------------
@@ -379,17 +403,18 @@ def quota_kind(error: dict, delay: float | None = None) -> str:
     return "daily" if delay is not None and delay > 600 else "minute"
 
 
-def cooldown_for(error: dict, at: datetime) -> tuple[datetime, str]:
-    """When a model that just answered 429 may be asked again, and why."""
+def cooldown_for(error: dict, at: datetime) -> tuple[datetime, str, str]:
+    """When a model that just answered 429 may be asked again, why, and which quota."""
     delay = retry_delay(error)
     kind = quota_kind(error, delay)
     if kind == "minute":
         # A delay of zero is not a cooldown: it expires before it is read, and
         # the same model earns the same 429 again at once.
-        return at + timedelta(seconds=delay or 60), "per-minute limit"
+        return at + timedelta(seconds=delay or 60), "per-minute limit", "quota_minute"
     if delay:
-        return at + timedelta(seconds=delay), "daily quota (retryDelay)"
-    return pacific_midnight_after(at), "daily quota (resets at midnight America/Los_Angeles)"
+        return at + timedelta(seconds=delay), "daily quota (retryDelay)", "quota_daily"
+    return (pacific_midnight_after(at),
+            "daily quota (resets at midnight America/Los_Angeles)", "quota_daily")
 
 
 def is_bad_key(error: dict) -> bool:
@@ -398,10 +423,10 @@ def is_bad_key(error: dict) -> bool:
     return "API_KEY_INVALID" in blob or "API KEY NOT VALID" in blob
 
 
-def _attempt(model: str, data: bytes, limit: int, kind: str, prompt: str,
+def _attempt(model: str, data: bytes, limit: int, log_kind: str, prompt: str,
              payload: str | None, search: bool, deadline: float,
-             cool: bool = True) -> tuple[str, str]:
-    """One model. Returns ("ok", answer) or ("next", why); raises when no model would do better.
+             cool: bool = True) -> tuple[str, Reason | None, str]:
+    """One model: ("ok", None, answer) or ("next", Reason, "").
 
     Only a bad key raises: everything else is this model's problem, not the
     pool's, so the caller gets to ask the next one. A model that does not
@@ -414,41 +439,45 @@ def _attempt(model: str, data: bytes, limit: int, kind: str, prompt: str,
     while True:
         left = deadline - time.monotonic()
         if left <= 0:
-            return "next", "out of time before it was asked"
+            return "next", Reason(model, "timeout", "out of time before it was asked"), ""
         # Round up: the budget is a bound, not a stopwatch, and a socket
         # timeout of 0 would be no timeout at all.
         socket_limit = max(1, math.ceil(left))
         try:
             status, reply = http_post(url, data, socket_limit)
         except TimeoutError:
-            log_call(kind, prompt, {"error": f"{model}: timed out after {socket_limit}s"}, payload)
-            return "next", f"timed out after {socket_limit}s"
+            log_call(log_kind, prompt, {"error": f"{model}: timed out after {socket_limit}s"}, payload)
+            return "next", Reason(model, "timeout", f"timed out after {socket_limit}s"), ""
         error = reply.get("error") if isinstance(reply, dict) else None
         if status < 400 and not error:
             break
         error = error or {"code": status, "message": f"HTTP {status}"}
         message = str(error.get("message", "")).strip()
-        log_call(kind, prompt, {"error": {"model": model, **error}}, payload)
+        log_call(log_kind, prompt, {"error": {"model": model, **error}}, payload)
         if status in (401, 403) or (status == 400 and is_bad_key(error)):
-            raise GeminiUnavailable(f"not authenticated: {message[:200]}")
+            raise GeminiUnavailable(f"not authenticated: {message[:200]}", kind="auth")
         if status == 429:
-            until, reason = cooldown_for(error, now())
+            until, reason, quota = cooldown_for(error, now())
             if cool:
                 cool_down(model, until, reason, search)
             hint = " -- likely no Google Search grounding quota for this model" if search else ""
-            return "next", f"{reason}, back at {until:%Y-%m-%d %H:%M} UTC{hint}"
+            return "next", Reason(
+                model, quota, f"{reason}, back at {until:%Y-%m-%d %H:%M} UTC{hint}",
+                until.isoformat(timespec="seconds"),
+            ), ""
         if status == 404:
             UNKNOWN_MODELS.add(model)
-            return "next", "unknown to this key (404), skipped until restart"
+            return "next", Reason(
+                model, "unknown_model", "unknown to this key (404), skipped until restart"), ""
         if status in (500, 502, 503, 504):
             nap = min(OVERLOAD_BACKOFF[overload_tries], deadline - time.monotonic()) \
                 if overload_tries < len(OVERLOAD_BACKOFF) else 0
             if nap <= 0:
-                return "next", f"overloaded (HTTP {status})"
+                return "next", Reason(model, "overloaded", f"overloaded (HTTP {status})"), ""
             sleep(nap)
             overload_tries += 1
             continue
-        return "next", f"HTTP {status}: {message[:200]}"
+        return "next", Reason(model, "http_error", f"HTTP {status}: {message[:200]}"), ""
 
     candidates = reply.get("candidates") or []
     parts = (candidates[0].get("content") or {}).get("parts") or [] if candidates else []
@@ -460,11 +489,13 @@ def _attempt(model: str, data: bytes, limit: int, kind: str, prompt: str,
         "latency_s": round(time.monotonic() - started, 1),
         "grounded": bool(candidates and candidates[0].get("groundingMetadata")),
     }
-    log_call(kind, prompt, {"response": answer, "stats": stats}, payload)
+    log_call(log_kind, prompt, {"response": answer, "stats": stats}, payload)
     if not answer.strip():
         blocked = (reply.get("promptFeedback") or {}).get("blockReason")
-        return "next", f"nothing usable ({blocked or stats['finish'] or 'no candidates'})"
-    return "ok", answer
+        return "next", Reason(
+            model, "no_answer",
+            f"nothing usable ({blocked or stats['finish'] or 'no candidates'})"), ""
+    return "ok", None, answer
 
 
 def call(prompt: str, *, kind: str = "call", model: str | None = None,
@@ -511,34 +542,37 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     deadline = time.monotonic() + limit
     cooldowns = load_cooldowns()  # one read for the whole pool; it cannot change under us
-    reasons: list[str] = []
-    timeouts = 0
+    reasons: list[Reason] = []
     for candidate in pool:
         if candidate in UNKNOWN_MODELS:
-            reasons.append(f"{candidate}: unknown to this key, skipped")
+            reasons.append(Reason(candidate, "unknown_model", "unknown to this key, skipped"))
             continue
         until = cooling_until(candidate, search, cooldowns)
         if until:
-            reasons.append(f"{candidate}: cooling down until {until:%Y-%m-%d %H:%M} UTC")
+            reasons.append(Reason(
+                candidate, "cooling", f"cooling down until {until:%Y-%m-%d %H:%M} UTC",
+                until.isoformat(timespec="seconds")))
             continue
         if time.monotonic() >= deadline:
-            reasons.append(f"{candidate}: not asked, the {limit}s budget was spent")
-            timeouts += 1
+            reasons.append(Reason(
+                candidate, "timeout", f"not asked, the {limit}s budget was spent"))
             continue
-        verdict, detail = _attempt(candidate, data, limit, kind, prompt,
-                                   payload, search, deadline, cool)
+        verdict, reason, answer = _attempt(candidate, data, limit, kind, prompt,
+                                           payload, search, deadline, cool)
         if verdict == "ok":
             LAST_MODEL = candidate
-            return detail
-        reasons.append(f"{candidate}: {detail}")
-        if "timed out" in detail or "out of time" in detail:
-            timeouts += 1
+            return answer
+        reasons.append(reason)
     which = "search pool" if search else "pool"
-    text = (f"no model in the {which} could answer -- " + "; ".join(reasons)
+    text = (f"no model in the {which} could answer -- "
+            + "; ".join(f"{r.model}: {r.detail}" for r in reasons)
             + " -- work falls back to Claude")
     # A pool that ran out of time is a different answer from a pool that
     # refused: exit 4 says "slow, ask again later", exit 3 says "do it yourself".
-    raise (GeminiTimeout if timeouts and timeouts == len(reasons) else GeminiUnavailable)(text)
+    timeouts = sum(1 for r in reasons if r.kind == "timeout")
+    fell_out_of_time = bool(timeouts) and timeouts == len(reasons)
+    raise (GeminiTimeout if fell_out_of_time else GeminiUnavailable)(
+        text, reasons=tuple(reasons))
 
 
 def extract_json(text: str) -> Any:
@@ -775,51 +809,204 @@ def read_input(path: str | None, inline: str | None) -> str:
     raise TrackerError("provide --file or --text")
 
 
-def cmd_check() -> int:
+# What to do about each kind, most actionable first. A configuration error
+# outranks a quota deliberately: the quota comes back on its own at a time we
+# can name, and the config does not.
+REMEDY_ORDER = (
+    "no_key", "auth", "unknown_model", "quota_daily", "cooling", "quota_minute",
+    "overloaded", "timeout", "http_error", "no_answer", "bad_output",
+)
+
+
+def remedy_for(reasons: list[Reason], *, timeout_seconds: int) -> str:
+    """One line saying what the user should actually do about this failure.
+
+    It lives here, with the branches that classify the failure, so that no
+    reader of the output has to infer the cause from the wording -- /doctor
+    used to advise replacing the API key whatever had gone wrong, including
+    when the key was fine and a daily quota had simply run out.
+    """
+    kinds = {r.kind for r in reasons}
+    kind = next((k for k in REMEDY_ORDER if k in kinds), None)
+
+    def soonest() -> str:
+        stamps = [parse_iso_utc(r.until) for r in reasons if r.until]
+        stamps = [s for s in stamps if s]
+        return f"{min(stamps):%Y-%m-%d %H:%M} UTC" if stamps else "the next reset"
+
+    if kind == "no_key":
+        return ("GEMINI_API_KEY is not set -- put it in .env "
+                "(https://aistudio.google.com/apikey)")
+    if kind == "auth":
+        return ("the key was refused -- replace GEMINI_API_KEY in .env "
+                "(https://aistudio.google.com/apikey)")
+    if kind == "unknown_model":
+        names = sorted({r.model for r in reasons if r.kind == "unknown_model" and r.model})
+        which = ", ".join(names) or "a configured model"
+        return (f"this key does not know {which} -- remove it from [gemini] models / "
+                "search_models in data/config/config.toml")
+    if kind in ("quota_daily", "cooling"):
+        return (f"nothing to do: the quota resets at {soonest()}, and the work "
+                "falls back to Claude until then")
+    if kind == "quota_minute":
+        return "a per-minute limit -- it clears within the minute, so try again shortly"
+    if kind == "overloaded":
+        return "Google is under load for these models -- try again shortly"
+    if kind == "timeout":
+        return (f"no answer within timeout_seconds ({timeout_seconds}s) -- raise it in "
+                "data/config/config.toml, or try again later")
+    return ("run `python tools/gemini.py check` and read the last entry in "
+            f"{rel(paths.GEMINI_LOG)}")
+
+
+# A few words for a one-line report, from the same kinds as the remedy.
+KIND_PHRASE = {
+    "no_key": "no API key",
+    "auth": "the key was refused",
+    "unknown_model": "a model this key does not know",
+    "quota_daily": "daily quota",
+    "cooling": "cooling down",
+    "quota_minute": "a per-minute limit",
+    "overloaded": "Google under load",
+    "timeout": "no answer in time",
+    "http_error": "an API error",
+    "no_answer": "nothing usable came back",
+    "bad_output": "an answer that would not parse",
+}
+
+
+def pool_summary(reasons: list[Reason]) -> str:
+    """What to call this pool's failure in one line, for /doctor.
+
+    Short by construction: doctor prints a check's detail on a single line and
+    does not wrap it, which is why it used to truncate the reason at 80
+    characters -- and lose the half that said when the quota came back.
+    """
+    kinds = {r.kind for r in reasons}
+    kind = next((k for k in REMEDY_ORDER if k in kinds), None)
+    phrase = KIND_PHRASE.get(kind, "not usable")
+    stamps = [s for s in (parse_iso_utc(r.until) for r in reasons if r.until) if s]
+    if kind in ("quota_daily", "cooling") and stamps:
+        return f"{phrase} until {min(stamps):%H:%M} UTC"
+    return phrase
+
+
+def check_report(cool: bool = False) -> dict:
+    """What `check` found: the settings, each pool, and what to do about it.
+
+    `cool` is False because a probe reports a refusal, it does not act on one:
+    a check that benches the models it checks would turn three runs of /doctor
+    into a day without delegation.
+    """
     s = settings()
-    print(f"  enabled   {s['enabled']}")
-    print(f"  models    {', '.join(s['models'])}")
-    print(f"  search    {', '.join(s['search_models'])}")
-    print(f"  tasks     {', '.join(s['tasks']) or '(none)'}")
+    report: dict[str, Any] = {
+        "enabled": bool(s["enabled"]),
+        "models": list(s["models"]),
+        "search_models": list(s["search_models"]),
+        "tasks": list(s["tasks"]),
+        "timeout_seconds": s["timeout_seconds"],
+        "cooling": [],
+        "key": False,
+        "pools": {},
+        "remedy": "",
+        "exit_code": EXIT_OK,
+    }
     for key, entry in sorted(load_cooldowns().items()):
         if not _entry_until(entry):
             continue
-        mode = entry.get("mode") or ("search" if key.endswith("#search") else "plain")
-        name = entry.get("model") or key.split("#")[0]
-        print(f"  cooling   {name} ({mode}): {entry.get('reason')} until {entry.get('until')}")
+        report["cooling"].append({
+            "model": entry.get("model") or key.split("#")[0],
+            "mode": entry.get("mode") or ("search" if key.endswith("#search") else "plain"),
+            "reason": entry.get("reason"),
+            "until": entry.get("until"),
+        })
+
     try:
         api_key()
-        print("  key       GEMINI_API_KEY present")
+        report["key"] = True
     except GeminiUnavailable as exc:
-        print(f"  key       {exc}")
-        return EXIT_UNAVAILABLE
+        report["key_error"] = str(exc)
+        report["exit_code"] = EXIT_UNAVAILABLE
+        report["remedy"] = remedy_for([Reason("", "no_key", str(exc))],
+                                      timeout_seconds=s["timeout_seconds"])
+        return report
+
     if not s["enabled"]:
-        print("\n  set [gemini] enabled = true in data/config/config.toml to use it")
-        return EXIT_UNAVAILABLE
-    code = EXIT_OK
+        report["exit_code"] = EXIT_UNAVAILABLE
+        report["remedy"] = "set [gemini] enabled = true in data/config/config.toml"
+        return report
+
+    failures: list[Reason] = []
     for label, search in (("plain", False), ("search", True)):
         started = time.monotonic()
         try:
             # The configured timeout, not a shorter one: a thinking model can
             # take a minute over one word, and "timed out" would be the wrong
-            # verdict. cool=False because a probe reports a refusal, it does not
-            # act on it: a check that benches the models it checks would turn
-            # three runs of /doctor into a day without delegation.
-            reply = call("Reply with exactly: OK", kind="check", search=search, cool=False)
+            # verdict.
+            reply = call("Reply with exactly: OK", kind="check", search=search, cool=cool)
         except (GeminiUnavailable, GeminiBadOutput) as exc:
-            print(f"  {label:<9} NOT USABLE: {exc}")
-            code = getattr(exc, "exit_code", EXIT_UNAVAILABLE)
+            reasons = list(getattr(exc, "reasons", None) or [])
+            if not reasons:
+                reasons = [Reason("", getattr(exc, "kind", None) or "http_error", str(exc))]
+            failures += reasons
+            report["pools"][label] = {
+                "ok": False,
+                "summary": pool_summary(reasons),
+                "reason": str(exc),
+                "kinds": sorted({r.kind for r in reasons}),
+                "until": min((r.until for r in reasons if r.until), default=None),
+            }
+            report["exit_code"] = getattr(exc, "exit_code", EXIT_UNAVAILABLE)
             continue
-        print(f"  {label:<9} yes via {LAST_MODEL} ({reply.strip()[:20]}, {time.monotonic() - started:.1f}s)")
+        report["pools"][label] = {
+            "ok": True,
+            "model": LAST_MODEL,
+            "seconds": round(time.monotonic() - started, 1),
+            "reply": reply.strip()[:20],
+        }
+    if failures:
+        report["remedy"] = remedy_for(failures, timeout_seconds=s["timeout_seconds"])
+    return report
+
+
+def cmd_check(as_json: bool = False) -> int:
+    report = check_report()
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return report["exit_code"]
+
+    print(f"  enabled   {report['enabled']}")
+    print(f"  models    {', '.join(report['models'])}")
+    print(f"  search    {', '.join(report['search_models'])}")
+    print(f"  tasks     {', '.join(report['tasks']) or '(none)'}")
+    for entry in report["cooling"]:
+        print(f"  cooling   {entry['model']} ({entry['mode']}): "
+              f"{entry['reason']} until {entry['until']}")
+    if not report["key"]:
+        print(f"  key       {report['key_error']}")
+        return report["exit_code"]
+    print("  key       GEMINI_API_KEY present")
+    if not report["enabled"]:
+        print(f"\n  {report['remedy']} to use it")
+        return report["exit_code"]
+    for label in ("plain", "search"):
+        pool = report["pools"].get(label) or {}
+        if pool.get("ok"):
+            print(f"  {label:<9} yes via {pool['model']} ({pool['reply']}, {pool['seconds']}s)")
+        else:
+            print(f"  {label:<9} NOT USABLE: {pool.get('reason')}")
+    if report["remedy"]:
+        print(f"  remedy    {report['remedy']}")
     print(f"  log       {rel(paths.GEMINI_LOG)}")
-    return code
+    return report["exit_code"]
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Delegate bulk work to Gemini over its API")
     sub = ap.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("check", help="is Gemini configured, and does the key answer?")
+    ck = sub.add_parser("check", help="is Gemini configured, and does the key answer?")
+    ck.add_argument("--json", action="store_true", help="the same verdict, for /doctor")
 
     rc = sub.add_parser("research-company", help="research a company, with sources")
     rc.add_argument("--name", required=True)
@@ -843,7 +1030,7 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.command == "check":
-        return cmd_check()
+        return cmd_check(args.json)
 
     try:
         if args.command == "research-company":
