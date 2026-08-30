@@ -219,10 +219,15 @@ def query_source(entry: dict) -> Iterable[dict]:
     """Query a database, whichever API shape this workspace exposes."""
     if entry.get("data_source_id"):
         try:
-            yield from paginate(f"/data_sources/{entry['data_source_id']}/query", {})
-            return
+            # Collected before a single row is handed over: yielding as we go
+            # and then falling through would give the caller the first pages
+            # twice, once from each endpoint.
+            rows = list(paginate(f"/data_sources/{entry['data_source_id']}/query", {}))
         except TrackerError:
             pass  # fall back to the classic endpoint below
+        else:
+            yield from rows
+            return
     yield from paginate(f"/databases/{entry['database_id']}/query", {})
 
 

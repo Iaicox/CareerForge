@@ -189,5 +189,33 @@ class NotionRetryPolicyTest(unittest.TestCase):
         self.assertIn("not JSON", str(ctx.exception))
 
 
+class QuerySourceTest(unittest.TestCase):
+    """Falling back to the classic endpoint must not replay what was yielded."""
+
+    def test_a_failure_partway_through_does_not_hand_rows_over_twice(self):
+        # request() now raises on a 2xx whose body is not JSON -- a proxy's
+        # sign-in page -- which made this reachable on a successful status.
+        def fake_paginate(path, payload):
+            yield {"id": "page-1"}
+            if "data_sources" in path:
+                raise tracker.TrackerError("HTTP 200 with a body that is not JSON")
+            yield {"id": "page-2"}
+
+        with mock.patch.object(notion_sync, "paginate", fake_paginate):
+            rows = list(notion_sync.query_source(
+                {"data_source_id": "ds", "database_id": "db"}))
+        self.assertEqual([r["id"] for r in rows], ["page-1", "page-2"])
+
+    def test_the_modern_endpoint_is_used_whole_when_it_works(self):
+        def fake_paginate(path, payload):
+            self.assertIn("data_sources", path)
+            yield from ({"id": "a"}, {"id": "b"})
+
+        with mock.patch.object(notion_sync, "paginate", fake_paginate):
+            rows = list(notion_sync.query_source(
+                {"data_source_id": "ds", "database_id": "db"}))
+        self.assertEqual([r["id"] for r in rows], ["a", "b"])
+
+
 if __name__ == "__main__":
     unittest.main()
