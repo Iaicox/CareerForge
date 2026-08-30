@@ -18,6 +18,7 @@ tools/notion_sync.py -- neither of them talks to SQLite directly.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -29,8 +30,11 @@ import tomllib
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 from urllib.parse import parse_qsl, urlencode, urlsplit
+
+import urllib.error
+import urllib.request
 
 import paths
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
@@ -349,6 +353,56 @@ def rel(path: Path) -> str:
 def now() -> str:
     """UTC, to match SQLite's datetime('now') column defaults."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+class TransportError(TrackerError):
+    """The request produced no response: unreachable, cut off, or unreadable."""
+
+
+class Response(NamedTuple):
+    status: int
+    headers: Any
+    text: str
+    data: Any  # the parsed JSON body, or None when it was not JSON
+
+
+def _response(status: int, headers: Any, raw: bytes) -> Response:
+    text = raw.decode("utf-8", "replace")
+    try:
+        data = json.loads(text) if text.strip() else None
+    except ValueError:
+        data = None
+    return Response(status, headers, text, data)
+
+
+def http_request(url: str, *, method: str = "GET", data: bytes | None = None,
+                 headers: dict[str, str] | None = None, timeout: int = 60) -> Response:
+    """One HTTP request. It does not retry, and an error status is not raised.
+
+    Every API here wants to read the body of a 4xx -- Google names the quota
+    it exhausted there, Notion names the field it rejected -- and each has its
+    own retry policy and its own idea of what to do about a 429. So this owns
+    the transport and nothing above it. Only a request that produced no
+    response at all raises: TimeoutError when the socket went quiet, so a
+    caller can tell "slow" from "refused", and TransportError for the rest.
+    """
+    req = urllib.request.Request(url, data=data, headers=dict(headers or {}),
+                                 method=method)
+    where = urlsplit(url).netloc or url
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            return _response(res.status, res.headers, res.read())
+    except urllib.error.HTTPError as exc:
+        return _response(exc.code, exc.headers, exc.read())
+    except TimeoutError:
+        raise
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError) or "timed out" in str(exc.reason).lower():
+            raise TimeoutError(str(exc.reason)) from exc
+        raise TransportError(f"could not reach {where}: {exc.reason}") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        # The response broke after its headers arrived: a reset, a short body.
+        raise TransportError(f"the connection to {where} broke: {exc}") from exc
 
 
 def secret(names: Iterable[str], *, hint: str, files: Iterable[Path] = ()) -> str:

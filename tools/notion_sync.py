@@ -27,9 +27,7 @@ import re
 import sqlite3
 import sys
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any, Iterable
@@ -126,22 +124,21 @@ def request(
     }
     for attempt in range(retries + 1):
         pace()
-        req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                return json.loads(resp.read().decode("utf-8") or "{}")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")
-            if exc.code in (429, 502, 503, 529) and attempt < retries:
-                delay = float(exc.headers.get("Retry-After") or (2 ** attempt))
-                time.sleep(min(delay, 30))
-                continue
-            raise TrackerError(f"Notion {method} {path} -> HTTP {exc.code}: {detail}")
-        except urllib.error.URLError as exc:
+            res = tracker.http_request(url, method=method, data=body,
+                                       headers=headers, timeout=60)
+        except (TimeoutError, tracker.TransportError) as exc:
             if attempt < retries:
                 time.sleep(2 ** attempt)
                 continue
-            raise TrackerError(f"Notion {method} {path} -> {exc.reason}")
+            raise TrackerError(f"Notion {method} {path} -> {exc}")
+        if res.status < 400:
+            return res.data if res.data is not None else {}
+        if res.status in (429, 502, 503, 529) and attempt < retries:
+            delay = float(res.headers.get("Retry-After") or (2 ** attempt))
+            time.sleep(min(delay, 30))
+            continue
+        raise TrackerError(f"Notion {method} {path} -> HTTP {res.status}: {res.text}")
     raise TrackerError("unreachable")
 
 
@@ -968,24 +965,22 @@ def upload_file(path: Path) -> str:
         f"\r\n--{boundary}--\r\n".encode(),
     ])
     pace()
-    req = urllib.request.Request(
-        upload_url,
-        data=body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {token()}",
-            "Notion-Version": API_VERSION,
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-        },
-    )
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise TrackerError(
-            f"upload of {path.name} failed: HTTP {exc.code} "
-            f"{exc.read().decode('utf-8', 'replace')}"
+        res = tracker.http_request(
+            upload_url, method="POST", data=body, timeout=120,
+            headers={
+                "Authorization": f"Bearer {token()}",
+                "Notion-Version": API_VERSION,
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
         )
+    except (TimeoutError, tracker.TransportError) as exc:
+        raise TrackerError(f"upload of {path.name} failed: {exc}")
+    if res.status >= 400:
+        raise TrackerError(
+            f"upload of {path.name} failed: HTTP {res.status} {res.text}"
+        )
+    result = res.data or {}
     if result.get("status") != "uploaded":
         raise TrackerError(f"upload of {path.name} reported status {result.get('status')!r}")
     return created["id"]

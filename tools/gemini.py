@@ -35,14 +35,11 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
-import http.client
 import json
 import math
 import re
 import sys
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -51,7 +48,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import paths  # noqa: E402
 from tracker import (  # noqa: E402
-    TrackerError, load_config, parse_iso_utc, rel, secret, write_json,
+    TrackerError, TransportError, http_request, load_config, parse_iso_utc, rel,
+    secret, write_json,
 )
 
 EXIT_OK, EXIT_ERROR, EXIT_UNAVAILABLE, EXIT_TIMEOUT, EXIT_BAD_OUTPUT = 0, 1, 3, 4, 5
@@ -204,35 +202,22 @@ def http_post(url: str, data: bytes, timeout: int) -> tuple[int, dict]:
     however many models stand behind it -- the guarantee the CLI route could
     not give: a request either answers or stops.
     """
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json", "x-goog-api-key": api_key()},
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as res:
-            raw = res.read().decode("utf-8", "replace")
-            return res.status, (json.loads(raw) if raw.strip() else {})
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", "replace")
-        try:
-            return exc.code, json.loads(raw)
-        except ValueError:
-            return exc.code, {"error": {"code": exc.code, "message": raw[:500]}}
-    except TimeoutError:
-        raise
-    except urllib.error.URLError as exc:
-        if isinstance(exc.reason, TimeoutError) or "timed out" in str(exc.reason).lower():
-            raise TimeoutError(str(exc.reason))
-        raise GeminiUnavailable(f"could not reach the Gemini API: {exc.reason}")
-    except (OSError, http.client.HTTPException) as exc:
-        # The connection broke after the headers arrived: a reset, a truncated
-        # body. Unavailable like any other transport failure -- it must not
-        # escape as an exit code the callers were never told about.
-        raise GeminiUnavailable(f"the connection to the Gemini API broke: {exc}")
-    except ValueError as exc:
-        raise GeminiUnavailable(f"the Gemini API sent a body that is not JSON: {exc}")
+        res = http_request(
+            url, method="POST", data=data, timeout=timeout,
+            headers={"Content-Type": "application/json", "x-goog-api-key": api_key()},
+        )
+    except TransportError as exc:
+        # Unavailable like any other transport failure, so the caller still
+        # gets the exit 3 it was promised rather than an unknown exception.
+        raise GeminiUnavailable(str(exc)) from exc
+    if res.data is not None:
+        return res.status, res.data
+    if not res.text.strip():
+        return res.status, {}
+    # A body that will not parse is this model's problem, not the pool's: it
+    # comes back shaped like an error so _attempt moves to the next model.
+    return res.status, {"error": {"code": res.status, "message": res.text[:500]}}
 
 
 def retry_delay(error: dict) -> float | None:
