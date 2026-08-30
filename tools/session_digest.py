@@ -20,7 +20,7 @@ Three steps, so a failure in the middle does not cost the work before it:
   digest   each session -> a small JSON of decisions, rules and rejected ideas
   merge    all digests -> data/profile/history.md, organised by theme
 
-Work lands in tracker/session-digest/, which is gitignored like everything
+Work lands in data/state/session-digest/, which is gitignored like everything
 else about you.
 """
 
