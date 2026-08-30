@@ -708,13 +708,16 @@ Schema:
     if role:
         # Its own call, so a refusal here costs the salary block, not the
         # research; the reason is kept where the reader of the cache sees it.
-        # The key is written only when the question was actually answered:
-        # research.get() refreshes an entry that has none, so a refusal is
-        # asked again tomorrow instead of standing for cache_days.
+        # The key is written only when the question was answered, and a
+        # refusal records when asking again is worth the grounded call it
+        # costs -- the models that refused said when they come back.
         try:
             data["salary"] = salary_figures(name, role, location)
         except (GeminiUnavailable, GeminiBadOutput) as exc:
             data["salary_error"] = str(exc)
+            returns = sorted(r.until for r in getattr(exc, "reasons", []) if r.until)
+            data["salary_retry_after"] = returns[0] if returns else (
+                datetime.now(timezone.utc) + timedelta(days=1)).isoformat(timespec="seconds")
     data["fetched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return data
 

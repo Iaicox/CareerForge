@@ -146,6 +146,34 @@ class ResearchCacheTest(unittest.TestCase):
         _, origin = research.get(self.conn, "Acme", None, False)
         self.assertEqual(origin, "cache")
 
+    def test_a_refused_salary_call_waits_for_the_refusal_to_lift(self):
+        # Without the marker, every --role lookup re-ran the whole grounded
+        # research and spent more of the quota that had just refused.
+        soon = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(timespec="seconds")
+        with self.conn:
+            research.write_cache(self.conn, "Acme", {
+                "name": "Acme",
+                "salary_error": "no model in the search pool could answer",
+                "salary_retry_after": soon,
+            })
+        _, origin = research.get(self.conn, "Acme", None, False, role="Dev", location="Lisbon")
+        self.assertEqual((origin, len(self.calls)), ("cache", 0))
+
+        past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(timespec="seconds")
+        with self.conn:
+            research.write_cache(self.conn, "Acme", {
+                "name": "Acme", "salary_error": "...", "salary_retry_after": past})
+        _, origin = research.get(self.conn, "Acme", None, False, role="Dev", location="Lisbon")
+        self.assertEqual((origin, len(self.calls)), ("gemini", 1),
+                         "once it has lifted, ask again")
+
+    def test_an_entry_from_before_the_question_is_still_refreshed_at_once(self):
+        # No marker at all means nobody has asked, which is not a refusal.
+        with self.conn:
+            research.write_cache(self.conn, "Acme", {"name": "Acme"})
+        _, origin = research.get(self.conn, "Acme", None, False, role="Dev", location="Lisbon")
+        self.assertEqual(origin, "gemini")
+
     # -- storage -----------------------------------------------------------
 
     def test_writing_research_does_not_clobber_a_known_website(self):
@@ -332,6 +360,9 @@ class RestTransportTest(unittest.TestCase):
         # what research.get() reads to know the entry is worth refreshing. An
         # empty list here would freeze a quota blip in for cache_days.
         self.assertNotIn("salary", data)
+        # And it carries the moment the refusal lifts, so the retry is not
+        # every lookup: both search models are out until Pacific midnight.
+        self.assertEqual(data["salary_retry_after"], "2026-08-30T07:00:00+00:00")
 
     def test_research_without_a_role_claims_nothing_about_pay(self):
         # /interview researches with no --role. Writing salary: [] there would
