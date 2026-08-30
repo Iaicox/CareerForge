@@ -230,8 +230,10 @@ class RestTransportTest(unittest.TestCase):
         gemini.cooldowns_path = lambda: self.tmp / "cooldowns.json"
         gemini.now = lambda: self.clock
 
-        def fake_post(url, body, timeout):
-            self.calls.append((url, body, timeout))
+        def fake_post(url, data, timeout):
+            # The transport takes encoded bytes; the assertions below are all
+            # about what was in them.
+            self.calls.append((url, json.loads(data), timeout))
             item = self.responses.pop(0) if self.responses else (200, self.ok("OK"))
             if isinstance(item, BaseException):
                 raise item

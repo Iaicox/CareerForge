@@ -190,8 +190,11 @@ def sleep(seconds: float) -> None:
     time.sleep(seconds)
 
 
-def http_post(url: str, body: dict, timeout: int) -> tuple[int, dict]:
+def http_post(url: str, data: bytes, timeout: int) -> tuple[int, dict]:
     """One POST to the Gemini API. Returns (HTTP status, decoded JSON body).
+
+    `data` arrives encoded: the same bytes go to every model in the pool and
+    to every retry, and summarize() passes up to a megabyte of payload.
 
     The timeout is the socket's: no byte for that long ends the call. call()
     holds the budget for the whole pool, so `timeout_seconds` bounds the work
@@ -200,7 +203,7 @@ def http_post(url: str, body: dict, timeout: int) -> tuple[int, dict]:
     """
     req = urllib.request.Request(
         url,
-        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        data=data,
         headers={"Content-Type": "application/json", "x-goog-api-key": api_key()},
         method="POST",
     )
@@ -405,7 +408,7 @@ def is_bad_key(error: dict) -> bool:
     return "API_KEY_INVALID" in blob or "API KEY NOT VALID" in blob
 
 
-def _attempt(model: str, body: dict, limit: int, kind: str, prompt: str,
+def _attempt(model: str, data: bytes, limit: int, kind: str, prompt: str,
              payload: str | None, search: bool, deadline: float,
              cool: bool = True) -> tuple[str, str]:
     """One model. Returns ("ok", answer) or ("next", why); raises when no model would do better.
@@ -426,11 +429,11 @@ def _attempt(model: str, body: dict, limit: int, kind: str, prompt: str,
         # timeout of 0 would be no timeout at all.
         socket_limit = max(1, math.ceil(left))
         try:
-            status, data = http_post(url, body, socket_limit)
+            status, reply = http_post(url, data, socket_limit)
         except TimeoutError:
             log_call(kind, prompt, {"error": f"{model}: timed out after {socket_limit}s"}, payload)
             return "next", f"timed out after {socket_limit}s"
-        error = data.get("error") if isinstance(data, dict) else None
+        error = reply.get("error") if isinstance(reply, dict) else None
         if status < 400 and not error:
             break
         error = error or {"code": status, "message": f"HTTP {status}"}
@@ -457,19 +460,19 @@ def _attempt(model: str, body: dict, limit: int, kind: str, prompt: str,
             continue
         return "next", f"HTTP {status}: {message[:200]}"
 
-    candidates = data.get("candidates") or []
+    candidates = reply.get("candidates") or []
     parts = (candidates[0].get("content") or {}).get("parts") or [] if candidates else []
     answer = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
     stats = {
-        "model": data.get("modelVersion") or model,
-        "usage": data.get("usageMetadata"),
+        "model": reply.get("modelVersion") or model,
+        "usage": reply.get("usageMetadata"),
         "finish": candidates[0].get("finishReason") if candidates else None,
         "latency_s": round(time.monotonic() - started, 1),
         "grounded": bool(candidates and candidates[0].get("groundingMetadata")),
     }
     log_call(kind, prompt, {"response": answer, "stats": stats}, payload)
     if not answer.strip():
-        blocked = (data.get("promptFeedback") or {}).get("blockReason")
+        blocked = (reply.get("promptFeedback") or {}).get("blockReason")
         return "next", f"nothing usable ({blocked or stats['finish'] or 'no candidates'})"
     return "ok", answer
 
@@ -514,6 +517,8 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
     elif json_mode:
         body["generationConfig"]["responseMimeType"] = "application/json"
 
+    # Encoded once: the same bytes go to every model and every retry.
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     deadline = time.monotonic() + limit
     cooldowns = load_cooldowns()  # one read for the whole pool; it cannot change under us
     reasons: list[str] = []
@@ -530,7 +535,7 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
             reasons.append(f"{candidate}: not asked, the {limit}s budget was spent")
             timeouts += 1
             continue
-        verdict, detail = _attempt(candidate, body, limit, kind, prompt,
+        verdict, detail = _attempt(candidate, data, limit, kind, prompt,
                                    payload, search, deadline, cool)
         if verdict == "ok":
             LAST_MODEL = candidate
