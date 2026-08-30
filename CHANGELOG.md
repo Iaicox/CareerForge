@@ -134,12 +134,15 @@
   which is exactly the marker `research.py` reads to decide an entry is worth
   refreshing. A `/interview` lookup could therefore leave the later `/apply`
   with an empty salary block for `cache_days`. The key is written only when the
-  question was answered.
+  question was answered, and a refusal records when it lifts — the models that
+  refused say so — rather than being retried on every single lookup.
 
-- **Two postings no longer collapse into one.** `position`, `source` and `src`
-  were stripped from posting URLs as tracking parameters, but boards use them
-  to name the posting itself, so the second of two postings was silently
-  dropped as already known.
+- **The board will not follow a posting link that is not `http(s)`.** Posting
+  URLs come from scraped boards and pasted text, and both board pages serve
+  unauthenticated POST endpoints on their own origin, so a `javascript:` URL
+  rendered into an `href` was a click-to-run script against them: escaping the
+  quotes does not help, because the browser decodes the entities when it parses
+  the attribute. Anything that is not `http(s)` is shown as text.
 
 - **The Notion import no longer duplicates events.** `notion_sync.py import`
   deduplicated applications on their posting URL but keyed events on nothing, so
