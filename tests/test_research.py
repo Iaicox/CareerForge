@@ -213,9 +213,12 @@ class RestTransportTest(unittest.TestCase):
         self.responses: list = []
         self.sleeps: list[float] = []
         self.clock = self.T0
-        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-gemini-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-gemini-")).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        for name in ("http_post", "settings", "log_call", "api_key", "sleep", "cooldowns_path", "now"):
+        self._real_repo = paths.REPO
+        self.addCleanup(paths.configure, self._real_repo)
+        paths.configure(self.tmp)
+        for name in ("http_post", "settings", "log_call", "api_key", "sleep", "now"):
             self.addCleanup(setattr, gemini, name, getattr(gemini, name))
         self.addCleanup(gemini.UNKNOWN_MODELS.clear)
         gemini.UNKNOWN_MODELS.clear()
@@ -227,7 +230,6 @@ class RestTransportTest(unittest.TestCase):
         gemini.log_call = lambda *a, **k: None
         gemini.api_key = lambda: "test-key"
         gemini.sleep = lambda seconds: self.sleeps.append(seconds)
-        gemini.cooldowns_path = lambda: self.tmp / "cooldowns.json"
         gemini.now = lambda: self.clock
 
         def fake_post(url, data, timeout):
@@ -264,7 +266,7 @@ class RestTransportTest(unittest.TestCase):
         return [c[0].split("/models/")[1].split(":")[0] for c in self.calls]
 
     def cooldowns(self) -> dict:
-        return json.loads((self.tmp / "cooldowns.json").read_text(encoding="utf-8"))
+        return json.loads(paths.GEMINI_COOLDOWNS.read_text(encoding="utf-8"))
 
     # -- pools ---------------------------------------------------------------
 
@@ -379,6 +381,12 @@ class RestTransportTest(unittest.TestCase):
         self.calls.clear()
         gemini.call("instruction")
         self.assertEqual(self.models_called(), ["gemini-3.7-flash"], "back in rotation")
+
+    def test_the_cooldown_file_lands_under_data_state(self):
+        # The tool used to expose a cooldowns_path() seam for the tests to
+        # redirect, so nothing checked where the file actually goes.
+        gemini.cool_down("gemini-3.7-flash", self.T0 + timedelta(hours=1), "daily quota")
+        self.assertTrue((self.tmp / "data" / "state" / "gemini-cooldowns.json").exists())
 
     def test_cooldowns_survive_across_processes(self):
         # The file is the memory: another run sees the same cooldown.

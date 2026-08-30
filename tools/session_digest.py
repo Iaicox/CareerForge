@@ -38,10 +38,22 @@ import paths  # noqa: E402
 from tracker import TrackerError  # noqa: E402
 
 PROJECTS = Path.home() / ".claude" / "projects"
-WORK = paths.SESSION_DIGEST
-EXTRACTED = WORK / "sessions"
-DIGESTS = WORK / "digests"
-OUTPUT = paths.PROFILE / "history.md"
+def work_dir() -> Path:
+    """Read at call time, never captured: paths.configure() has to be able
+    to move the whole layout, which a module-level constant outlives."""
+    return paths.SESSION_DIGEST
+
+
+def extracted_dir() -> Path:
+    return work_dir() / "sessions"
+
+
+def digests_dir() -> Path:
+    return work_dir() / "digests"
+
+
+def output_file() -> Path:
+    return paths.PROFILE / "history.md"
 
 EXIT_OK, EXIT_ERROR, EXIT_NEEDS_CLAUDE = 0, 1, 3
 
@@ -154,7 +166,7 @@ def cmd_extract(args) -> int:
     if not transcripts:
         raise TrackerError(f"no .jsonl transcripts in {source}")
 
-    EXTRACTED.mkdir(parents=True, exist_ok=True)
+    extracted_dir().mkdir(parents=True, exist_ok=True)
     raw_bytes = kept_bytes = 0
     written = skipped = 0
 
@@ -166,7 +178,7 @@ def cmd_extract(args) -> int:
         if human < args.min_turns:
             skipped += 1
             continue
-        target = EXTRACTED / f"{path.stem}.txt"
+        target = extracted_dir() / f"{path.stem}.txt"
         target.write_text(text, encoding="utf-8")
         kept_bytes += len(text.encode("utf-8"))
         written += 1
@@ -177,20 +189,20 @@ def cmd_extract(args) -> int:
     print(f"raw             : {raw_bytes / 1024 / 1024:.1f} MB")
     print(f"after filtering : {kept_bytes / 1024 / 1024:.1f} MB "
           f"({kept_bytes / raw_bytes * 100:.1f}% of raw)")
-    print(f"written to      : {EXTRACTED}")
+    print(f"written to      : {extracted_dir()}")
     return EXIT_OK
 
 
 def cmd_digest(args) -> int:
-    sessions = sorted(EXTRACTED.glob("*.txt"))
+    sessions = sorted(extracted_dir().glob("*.txt"))
     if not sessions:
         raise TrackerError(f"nothing extracted yet -- run: session_digest.py extract")
 
-    DIGESTS.mkdir(parents=True, exist_ok=True)
+    digests_dir().mkdir(parents=True, exist_ok=True)
     done = failed = reused = 0
 
     for path in sessions:
-        target = DIGESTS / f"{path.stem}.json"
+        target = digests_dir() / f"{path.stem}.json"
         if target.exists() and not args.force:
             reused += 1
             continue
@@ -216,7 +228,7 @@ def cmd_digest(args) -> int:
     if failed:
         print(
             f"\nThe {failed} that failed can be done in Claude instead: read the "
-            f"files in {EXTRACTED} and write one JSON per session into {DIGESTS} "
+            f"files in {extracted_dir()} and write one JSON per session into {digests_dir()} "
             "using the schema in this file's DIGEST_PROMPT.",
             file=sys.stderr,
         )
@@ -225,9 +237,9 @@ def cmd_digest(args) -> int:
 
 
 def cmd_merge(args) -> int:
-    digests = sorted(DIGESTS.glob("*.json"))
+    digests = sorted(digests_dir().glob("*.json"))
     if not digests:
-        raise TrackerError(f"no digests in {DIGESTS} -- run: session_digest.py digest")
+        raise TrackerError(f"no digests in {digests_dir()} -- run: session_digest.py digest")
 
     combined = []
     for path in digests:
@@ -245,23 +257,23 @@ def cmd_merge(args) -> int:
             payload=payload[: args.max_chars],
         )
     except (gemini.GeminiUnavailable, gemini.GeminiBadOutput) as exc:
-        raw = WORK / "digests-combined.json"
+        raw = work_dir() / "digests-combined.json"
         raw.write_text(json.dumps(combined, ensure_ascii=False, indent=2),
                        encoding="utf-8")
         print(f"gemini unavailable: {exc}", file=sys.stderr)
         print(f"All {len(combined)} digests are combined in {raw}. "
               "Merge them in Claude and write the result to "
-              f"{OUTPUT}.", file=sys.stderr)
+              f"{output_file()}.", file=sys.stderr)
         return EXIT_NEEDS_CLAUDE
 
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    output_file().parent.mkdir(parents=True, exist_ok=True)
     header = (
         "<!-- Written by tools/session_digest.py from past Claude Code sessions.\n"
         "     Every item should be traceable to a transcript; treat anything that\n"
         "     is not as suspect and check it before acting on it. -->\n\n"
     )
-    OUTPUT.write_text(header + text.strip() + "\n", encoding="utf-8")
-    print(f"merged {len(combined)} digest(s) into {OUTPUT}")
+    output_file().write_text(header + text.strip() + "\n", encoding="utf-8")
+    print(f"merged {len(combined)} digest(s) into {output_file()}")
     return EXIT_OK
 
 

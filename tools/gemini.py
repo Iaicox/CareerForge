@@ -254,13 +254,9 @@ def now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def cooldowns_path() -> Path:
-    return paths.GEMINI_COOLDOWNS
-
-
 def load_cooldowns() -> dict[str, dict]:
     try:
-        data = json.loads(cooldowns_path().read_text(encoding="utf-8"))
+        data = json.loads(paths.GEMINI_COOLDOWNS.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -268,8 +264,8 @@ def load_cooldowns() -> dict[str, dict]:
 
 def save_cooldowns(data: dict[str, dict]) -> None:
     try:
-        cooldowns_path().parent.mkdir(parents=True, exist_ok=True)
-        cooldowns_path().write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        paths.GEMINI_COOLDOWNS.parent.mkdir(parents=True, exist_ok=True)
+        paths.GEMINI_COOLDOWNS.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     except OSError:
         pass  # a cooldown that cannot be written costs one more refusal, no worse
 

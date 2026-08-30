@@ -40,7 +40,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import paths  # noqa: E402
 
-DATA_FILE = paths.PROFILE / "salary_data.json"
+def data_file() -> Path:
+    """Read at call time, never captured: paths.configure() has to be able
+    to move the whole layout, which a module-level constant outlives."""
+    return paths.PROFILE / "salary_data.json"
 
 # Company-name normalisation. The lists live in config/config.toml under
 # [salary] so this works in any market; the values below are only the fallback
@@ -94,8 +97,9 @@ STRIP_PATTERNS = (
 
 
 def load_data():
-    if not DATA_FILE.exists():
-        print("Error: profile/salary_data.json not found.", file=sys.stderr)
+    path = data_file()
+    if not path.exists():
+        print("Error: data/profile/salary_data.json not found.", file=sys.stderr)
         print("", file=sys.stderr)
         print("This tool requires a salary data file.", file=sys.stderr)
         print("See tools/README_SALARY_TOOL.md for setup instructions.", file=sys.stderr)
@@ -103,19 +107,20 @@ def load_data():
         print("If you don't have salary data, the salary lookup", file=sys.stderr)
         print("step will be skipped during /apply.", file=sys.stderr)
         sys.exit(1)
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def save_data(data):
     """Write the file back whole, atomically, metadata and all."""
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".salary_data-", suffix=".json", dir=str(DATA_FILE.parent))
+    path = data_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".salary_data-", suffix=".json", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
             f.write("\n")
-        os.replace(tmp, DATA_FILE)
+        os.replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

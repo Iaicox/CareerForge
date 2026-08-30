@@ -44,7 +44,10 @@ import paths  # noqa: E402
 from tracker import TrackerError  # noqa: E402
 
 EXIT_OK, EXIT_ERROR, EXIT_UNCONFIGURED = 0, 1, 3
-PASSWORD_FILE = paths.REPO / ".mail_password"
+def password_file() -> Path:
+    """Read at call time, never captured: paths.configure() has to be able
+    to move the whole layout, which a module-level constant outlives."""
+    return paths.REPO / ".mail_password"
 MAX_BODY_CHARS = 4000
 
 # Ordered: the first pattern that matches wins, so an interview invitation is
@@ -110,13 +113,14 @@ def password() -> str:
     env = (os.environ.get("MAIL_PASSWORD") or "").strip()
     if env:
         return env
-    if PASSWORD_FILE.exists():
-        value = PASSWORD_FILE.read_text(encoding="utf-8").strip()
+    path = password_file()
+    if path.exists():
+        value = path.read_text(encoding="utf-8").strip()
         if value:
             return value
     raise TrackerError(
         f"no mail password. Put MAIL_PASSWORD=<app password> in .env, or in "
-        f"{tracker.rel(PASSWORD_FILE)} (both gitignored).\n"
+        f"{tracker.rel(path)} (both gitignored).\n"
         "Gmail: myaccount.google.com/apppasswords -- never your account password."
     )
 
