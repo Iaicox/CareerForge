@@ -69,19 +69,22 @@ class NormalizeUrlTest(unittest.TestCase):
             "boards.greenhouse.io/acme/jobs/123?gh_jid=123",
         )
 
-    def test_parameters_boards_use_to_name_a_posting_are_kept(self):
-        # `position`, `source` and `src` were stripped as tracking noise, which
-        # collapsed two postings into one url_key and dropped the second.
-        for param in ("position", "source", "src"):
-            with self.subTest(param=param):
-                self.assertNotEqual(
-                    tracker.normalize_url(f"https://acme.example/careers?{param}=1"),
-                    tracker.normalize_url(f"https://acme.example/careers?{param}=2"),
-                )
-        # utm_source is still noise: the utm_ prefix rule covers it.
+    def test_a_link_copied_off_a_search_page_is_the_same_posting(self):
+        # LinkedIn hangs the row's index on the link: position=3 today, 7
+        # tomorrow, the same job. It arrives with pageNum, refId and trackingId,
+        # which are stripped for exactly the same reason.
+        base = tracker.normalize_url("https://www.linkedin.com/jobs/view/4441450970/")
         self.assertEqual(
-            tracker.normalize_url("https://acme.example/careers?utm_source=li"),
-            "acme.example/careers",
+            tracker.normalize_url(
+                "https://www.linkedin.com/jobs/view/4441450970/"
+                "?position=3&pageNum=0&refId=abc%3D&trackingId=xyz%3D"),
+            base,
+        )
+        # `src` and `source` mark where the click came from on the alert links
+        # LinkedIn and Indeed send by mail.
+        self.assertEqual(
+            tracker.normalize_url("https://acme.example/jobs/1?src=rss&source=jobalert"),
+            "acme.example/jobs/1",
         )
 
     def test_different_postings_stay_different(self):

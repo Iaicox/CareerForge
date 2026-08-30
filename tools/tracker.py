@@ -922,12 +922,13 @@ VERDICT_ORDER = {"strong": 0, "good": 1, "moderate": 2, "weak": 3, "poor": 4}
 
 # Query parameters that identify the click, not the posting. Everything else
 # stays: some boards name the posting in a parameter (gh_jid, jobId).
-# `position`, `source` and `src` are deliberately absent: boards use them to
-# name the posting itself (?position=<id>), and collapsing two postings into one
-# url_key loses the second silently.
+# `position` is the row's index on a LinkedIn search page, and it travels
+# with pageNum, refId and trackingId, which are here for the same reason. A
+# board that names the posting does it the way the comment above says -- in a
+# parameter of its own, gh_jid or jobId -- not in one of these.
 TRACKING_PARAMS = {
-    "ref", "refid", "trk", "trkinfo", "trackingid", "ebp", "pagenum",
-    "refresh", "original_referer", "gh_src", "lever-source",
+    "ref", "refid", "trk", "trkinfo", "trackingid", "ebp", "position", "pagenum",
+    "refresh", "original_referer", "source", "src", "gh_src", "lever-source",
     "lever-origin", "fbclid", "gclid", "msclkid", "mc_cid", "mc_eid", "igshid",
 }
 
