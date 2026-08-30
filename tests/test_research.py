@@ -531,6 +531,42 @@ class RestTransportTest(unittest.TestCase):
         self.assertTrue(text.startswith("CRITERIA:"))
 
 
+class PacificMidnightFallbackTest(unittest.TestCase):
+    """The no-tz-database path.
+
+    It is dead wherever zoneinfo has data and live wherever it does not, so
+    the environment decides which branch a test of pacific_midnight_after()
+    exercises. These call the fallback directly.
+    """
+
+    def test_it_agrees_with_zoneinfo_across_a_year(self):
+        try:
+            from zoneinfo import ZoneInfo
+            ZoneInfo("America/Los_Angeles")
+        except Exception:  # no tz database here; the other test still runs
+            self.skipTest("no tz database to compare against")
+        when = datetime(2026, 1, 1, 5, 0, tzinfo=timezone.utc)
+        for _ in range(366):
+            self.assertEqual(gemini._pacific_midnight_by_rule(when),
+                             gemini.pacific_midnight_after(when), when.isoformat())
+            when += timedelta(days=1)
+
+    def test_both_offsets_and_the_year_rollover(self):
+        for when, expected in (
+            # 12:00 PDT, UTC-7
+            (datetime(2026, 8, 29, 19, 0, tzinfo=timezone.utc), "2026-08-30T07:00:00+00:00"),
+            # 12:00 PST, UTC-8
+            (datetime(2026, 1, 15, 20, 0, tzinfo=timezone.utc), "2026-01-16T08:00:00+00:00"),
+            # the hour after spring forward, and the hour after falling back
+            (datetime(2026, 3, 8, 11, 0, tzinfo=timezone.utc), "2026-03-09T07:00:00+00:00"),
+            (datetime(2026, 11, 1, 10, 0, tzinfo=timezone.utc), "2026-11-02T08:00:00+00:00"),
+            # the last day of the year, into the next
+            (datetime(2026, 12, 31, 20, 0, tzinfo=timezone.utc), "2027-01-01T08:00:00+00:00"),
+        ):
+            with self.subTest(when=when):
+                self.assertEqual(gemini._pacific_midnight_by_rule(when).isoformat(), expected)
+
+
 class PoolSettingsTest(unittest.TestCase):
     """Where the pools come from: config lists, then a preferred model, then defaults."""
 

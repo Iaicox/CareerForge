@@ -315,23 +315,14 @@ def cool_down(model: str, until: datetime, reason: str, search: bool = False) ->
     save_cooldowns(data)
 
 
-def pacific_midnight_after(when: datetime) -> datetime:
-    """The next 00:00 in America/Los_Angeles after `when`, as UTC.
+def _pacific_midnight_by_rule(when: datetime) -> datetime:
+    """pacific_midnight_after with no tz database: the US rule by hand.
 
-    Gemini's daily free-tier quotas reset then. With no tz database at hand,
-    PST/PDT is worked out by the US rule: second Sunday of March to first
-    Sunday of November.
+    Second Sunday of March to first Sunday of November. This is the live path
+    wherever zoneinfo has nothing to read -- a bare Windows Python, which
+    bundles no IANA database -- and docs/manual.md promises the tooling needs
+    no pip install, so it stays rather than becoming a tzdata dependency.
     """
-    try:
-        from zoneinfo import ZoneInfo
-
-        tz = ZoneInfo("America/Los_Angeles")
-        local = when.astimezone(tz)
-        next_day = (local + timedelta(days=1)).date()
-        return datetime.combine(next_day, datetime.min.time(), tzinfo=tz).astimezone(timezone.utc)
-    except Exception:
-        pass
-
     def offset_hours(utc: datetime) -> int:
         def nth_sunday(month: int, n: int) -> datetime:
             first = datetime(utc.year, month, 1, tzinfo=timezone.utc)
@@ -345,6 +336,27 @@ def pacific_midnight_after(when: datetime) -> datetime:
     wall = datetime.combine(local.date() + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
     guess = wall - timedelta(hours=offset_hours(utc))
     return wall - timedelta(hours=offset_hours(guess))
+
+
+def pacific_midnight_after(when: datetime) -> datetime:
+    """The next 00:00 in America/Los_Angeles after `when`, as UTC.
+
+    Gemini's daily free-tier quotas reset then. Only a missing tz database
+    falls back to the hand-worked rule -- catching everything here would hide
+    a real bug in this branch behind sixteen lines of date arithmetic that
+    then run everywhere without anyone noticing.
+    """
+    try:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    except ImportError:
+        return _pacific_midnight_by_rule(when)
+    try:
+        tz = ZoneInfo("America/Los_Angeles")
+    except ZoneInfoNotFoundError:
+        return _pacific_midnight_by_rule(when)
+    local = when.astimezone(tz)
+    next_day = (local + timedelta(days=1)).date()
+    return datetime.combine(next_day, datetime.min.time(), tzinfo=tz).astimezone(timezone.utc)
 
 
 def quota_ids(error: dict) -> list[str]:
