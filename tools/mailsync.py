@@ -29,7 +29,6 @@ import email
 import email.utils
 import imaplib
 import json
-import os
 import re
 import ssl
 import sys
@@ -48,6 +47,17 @@ def password_file() -> Path:
     """Read at call time, never captured: paths.configure() has to be able
     to move the whole layout, which a module-level constant outlives."""
     return paths.REPO / ".mail_password"
+
+
+def password() -> str:
+    path = password_file()
+    return tracker.secret(
+        ("MAIL_PASSWORD",),
+        files=(path,),
+        hint=f"no mail password. Put MAIL_PASSWORD=<app password> in .env, or in "
+             f"{tracker.rel(path)} (both gitignored).\n"
+             "Gmail: myaccount.google.com/apppasswords -- never your account password.",
+    )
 MAX_BODY_CHARS = 4000
 
 # Ordered: the first pattern that matches wins, so an interview invitation is
@@ -106,23 +116,6 @@ def load_mail_config() -> dict:
     cfg.setdefault("mailbox", "INBOX")
     cfg.setdefault("ssl", True)
     return cfg
-
-
-def password() -> str:
-    tracker.load_dotenv()
-    env = (os.environ.get("MAIL_PASSWORD") or "").strip()
-    if env:
-        return env
-    path = password_file()
-    if path.exists():
-        value = path.read_text(encoding="utf-8").strip()
-        if value:
-            return value
-    raise TrackerError(
-        f"no mail password. Put MAIL_PASSWORD=<app password> in .env, or in "
-        f"{tracker.rel(path)} (both gitignored).\n"
-        "Gmail: myaccount.google.com/apppasswords -- never your account password."
-    )
 
 
 # ---------------------------------------------------------------------------

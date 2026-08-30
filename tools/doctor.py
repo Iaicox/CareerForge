@@ -233,13 +233,11 @@ def check_notion() -> Check:
             enabled = False
     if not enabled:
         return Check("Notion mirror", OK, "disabled (optional)", required=False)
-    import os
-    _load_dotenv()
-    token = (
-        os.environ.get("NOTION_KEY")
-        or os.environ.get("NOTION_TOKEN")
-        or (REPO / ".notion_token").exists()
-    )
+    sys.path.insert(0, str(REPO / "tools"))
+    from tracker import has_secret
+    # The same precedence the mirror itself uses, rather than a second opinion
+    # about where a token may live.
+    token = has_secret(("NOTION_KEY", "NOTION_TOKEN"), files=(REPO / ".notion_token",))
     ids = paths.NOTION_IDS.exists()
     if token and ids:
         return Check("Notion mirror", OK, "token and database ids present", required=False)
@@ -251,15 +249,6 @@ def check_notion() -> Check:
     return Check("Notion mirror", WARN, "; ".join(what),
                  "python tools/notion_sync.py provision", required=False)
 
-
-def _load_dotenv() -> None:
-    """Doctor must see the same secrets the tools do."""
-    try:
-        sys.path.insert(0, str(REPO / "tools"))
-        from tracker import load_dotenv
-        load_dotenv()
-    except Exception:
-        pass
 
 
 def check_dotenv() -> Check:

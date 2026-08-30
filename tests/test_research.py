@@ -527,7 +527,7 @@ class RestTransportTest(unittest.TestCase):
         from unittest import mock
         gemini.api_key = REAL_API_KEY
         with mock.patch.dict(os.environ, {"GEMINI_API_KEY": ""}), \
-                mock.patch.object(gemini, "load_dotenv", lambda: None):
+                mock.patch.object(tracker, "load_dotenv", lambda: None):
             with self.assertRaises(gemini.GeminiUnavailable) as ctx:
                 gemini.api_key()
         self.assertIn(".env", str(ctx.exception))

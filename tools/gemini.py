@@ -38,7 +38,6 @@ import argparse
 import http.client
 import json
 import math
-import os
 import re
 import sys
 import time
@@ -52,7 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import paths  # noqa: E402
 from tracker import (  # noqa: E402
-    TrackerError, load_config, load_dotenv, parse_iso_utc, rel, write_json,
+    TrackerError, load_config, parse_iso_utc, rel, secret, write_json,
 )
 
 EXIT_OK, EXIT_ERROR, EXIT_UNAVAILABLE, EXIT_TIMEOUT, EXIT_BAD_OUTPUT = 0, 1, 3, 4, 5
@@ -146,14 +145,16 @@ def task_enabled(task: str) -> bool:
 
 
 def api_key() -> str:
-    load_dotenv()
-    key = (os.environ.get("GEMINI_API_KEY") or "").strip()
-    if not key:
-        raise GeminiUnavailable(
-            "GEMINI_API_KEY is not set -- put it in .env "
-            "(https://aistudio.google.com/apikey)"
+    try:
+        return secret(
+            ("GEMINI_API_KEY",),
+            hint="GEMINI_API_KEY is not set -- put it in .env "
+                 "(https://aistudio.google.com/apikey)",
         )
-    return key
+    except TrackerError as exc:
+        # Exit 3, like every other way Gemini can be unusable: the caller does
+        # the work itself rather than treating a missing key as a failure.
+        raise GeminiUnavailable(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

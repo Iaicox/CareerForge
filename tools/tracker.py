@@ -351,6 +351,37 @@ def now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def secret(names: Iterable[str], *, hint: str, files: Iterable[Path] = ()) -> str:
+    """A credential, from the environment or .env, or a legacy file beside it.
+
+    A real environment variable wins over .env, which is what load_dotenv()
+    arranges. `files` are opened when this is called and never captured, so a
+    redirected root reaches them. `hint` is the whole message a caller wants
+    the user to read, because what to do about a missing one differs: an app
+    password, an integration token and an API key are got in different places.
+    """
+    load_dotenv()
+    for name in names:
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value
+    for path in files:
+        if path.exists():
+            value = path.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+    raise TrackerError(hint)
+
+
+def has_secret(names: Iterable[str], *, files: Iterable[Path] = ()) -> bool:
+    """Whether a credential is there, without reading it out. For /doctor."""
+    try:
+        secret(names, hint="", files=files)
+        return True
+    except TrackerError:
+        return False
+
+
 def parse_iso_utc(value: object) -> datetime | None:
     """An ISO timestamp as an aware UTC datetime, or None if it is not one.
 

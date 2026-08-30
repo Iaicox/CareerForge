@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
-import os
 import re
 import sqlite3
 import sys
@@ -91,22 +90,14 @@ _last_call = 0.0
 
 
 def token() -> str:
-    tracker.load_dotenv()
     # NOTION_KEY is the name the user's .env uses; NOTION_TOKEN is kept for
     # compatibility, and the legacy token file still works as a last resort.
-    for name in ("NOTION_KEY", "NOTION_TOKEN"):
-        value = (os.environ.get(name) or "").strip()
-        if value:
-            return value
-    path = paths.REPO / ".notion_token"
-    if path.exists():
-        value = path.read_text(encoding="utf-8").strip()
-        if value:
-            return value
-    raise TrackerError(
-        "no Notion token. Put NOTION_KEY=<token> in .env (or set NOTION_TOKEN). "
-        "Create one at notion.so/my-integrations (Read + Update + Insert "
-        "content), then share the tracker page with it."
+    return tracker.secret(
+        ("NOTION_KEY", "NOTION_TOKEN"),
+        files=(paths.REPO / ".notion_token",),
+        hint="no Notion token. Put NOTION_KEY=<token> in .env (or set NOTION_TOKEN). "
+             "Create one at notion.so/my-integrations (Read + Update + Insert "
+             "content), then share the tracker page with it.",
     )
 
 
