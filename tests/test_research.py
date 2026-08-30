@@ -477,6 +477,67 @@ class RestTransportTest(unittest.TestCase):
                          "the first model spent the budget; the rest are not asked")
         self.assertIn("budget was spent", str(ctx.exception))
 
+    # -- what went wrong, as a fact rather than a sentence ------------------
+
+    def test_every_failure_carries_the_kind_the_branch_knew(self):
+        overloaded = (503, {"error": {"code": 503, "message": "high demand"}})
+        for kind, responses in (
+            ("quota_daily",
+             [self.quota(None, "GenerateRequestsPerDayPerProjectPerModel-FreeTier")] * 3),
+            ("quota_minute",
+             [self.quota("7s", "GenerateRequestsPerMinutePerProjectPerModel-FreeTier")] * 3),
+            ("unknown_model", [(404, {"error": {"code": 404, "message": "no such model"}})] * 3),
+            ("http_error",
+             [(400, {"error": {"code": 400, "message": "google_search is not supported"}})] * 3),
+            ("timeout", [TimeoutError("timed out")] * 3),
+            ("no_answer",
+             [(200, {"candidates": [], "promptFeedback": {"blockReason": "SAFETY"}})] * 3),
+            ("overloaded", [overloaded] * 9),  # three tries each, then the next model
+        ):
+            with self.subTest(kind=kind):
+                gemini.UNKNOWN_MODELS.clear()
+                gemini.save_cooldowns({})
+                self.responses = list(responses)
+                with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+                    gemini.call("instruction")
+                self.assertEqual({r.kind for r in ctx.exception.reasons}, {kind})
+                self.assertEqual([r.model for r in ctx.exception.reasons], self.POOL)
+
+    def test_a_quota_says_when_it_comes_back(self):
+        # The remedy for a daily quota is "wait", so the time has to survive as
+        # a value rather than only inside the sentence.
+        self.responses = [self.quota("52418s", "GenerateRequestsPerDayPerProjectPerModel-FreeTier")] * 3
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+            gemini.call("instruction")
+        first = ctx.exception.reasons[0]
+        self.assertEqual(first.until, (self.T0 + timedelta(seconds=52418)).isoformat(timespec="seconds"))
+
+    def test_a_cooling_model_is_its_own_kind(self):
+        for m in self.POOL:
+            gemini.cool_down(m, self.T0 + timedelta(hours=1), "daily quota")
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+            gemini.call("instruction")
+        self.assertEqual({r.kind for r in ctx.exception.reasons}, {"cooling"})
+        self.assertTrue(all(r.until for r in ctx.exception.reasons))
+
+    def test_a_bad_key_is_tagged_auth(self):
+        self.responses = [(403, {"error": {"code": 403, "message": "API key not valid"}})]
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+            gemini.call("instruction")
+        self.assertEqual(ctx.exception.kind, "auth")
+
+    def test_the_timeout_verdict_follows_the_kinds_not_the_wording(self):
+        self.responses = [TimeoutError("timed out")] * 3
+        with self.assertRaises(gemini.GeminiTimeout):
+            gemini.call("instruction")
+        # One refusal among the timeouts and the pool was not merely slow.
+        gemini.save_cooldowns({})
+        self.responses = [TimeoutError("timed out"), TimeoutError("timed out"),
+                          self.quota(None, "GenerateRequestsPerDayPerProjectPerModel-FreeTier")]
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+            gemini.call("instruction")
+        self.assertNotIsInstance(ctx.exception, gemini.GeminiTimeout)
+
     # -- 404: unknown until restart ----------------------------------------
 
     def test_an_unknown_model_is_skipped_for_the_rest_of_the_process(self):
