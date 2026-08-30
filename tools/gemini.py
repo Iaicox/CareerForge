@@ -292,8 +292,16 @@ def cooldown_key(model: str, search: bool) -> str:
     return f"{model}#search" if search else model
 
 
-def _entry_until(entry: dict) -> datetime | None:
-    """When this cooldown entry runs out, or None if it already has."""
+def _entry_until(entry: object) -> datetime | None:
+    """When this cooldown entry runs out, or None if it already has.
+
+    Anything that is not a readable entry means "not cooling". The file is
+    ours, but an older version of it, a half-written one or a hand edit can
+    leave anything in a value, and a cooldown that cannot be read costs one
+    more refusal -- it must not take `check` and /doctor down with it.
+    """
+    if not isinstance(entry, dict):
+        return None
     until = parse_iso_utc(entry.get("until"))
     return until if until is not None and until > now() else None
 

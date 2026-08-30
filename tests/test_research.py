@@ -538,6 +538,19 @@ class RestTransportTest(unittest.TestCase):
             gemini.call("instruction")
         self.assertNotIsInstance(ctx.exception, gemini.GeminiTimeout)
 
+    def test_a_cooldown_file_full_of_junk_does_not_stop_the_pool(self):
+        paths.GEMINI_COOLDOWNS.parent.mkdir(parents=True, exist_ok=True)
+        paths.GEMINI_COOLDOWNS.write_text(json.dumps({
+            "gemini-3.7-flash": "not a dict at all",
+            "gemini-3.6-flash": {"until": "nonsense"},
+            "gemini-2.5-flash": None,
+            "stray": [1, 2, 3],
+        }), encoding="utf-8")
+        self.assertIsNone(gemini.cooling_until("gemini-3.7-flash"))
+        self.assertEqual(gemini.call("instruction"), "OK")
+        self.assertEqual(self.models_called(), ["gemini-3.7-flash"],
+                         "an unreadable cooldown means not cooling")
+
     # -- 404: unknown until restart ----------------------------------------
 
     def test_an_unknown_model_is_skipped_for_the_rest_of_the_process(self):
@@ -818,6 +831,15 @@ class CheckReportTest(unittest.TestCase):
         report = self.report()
         self.assertEqual(report["pools"], {})
         self.assertIn("enabled = true", report["remedy"])
+
+    def test_a_junk_cooldown_entry_does_not_break_the_report(self):
+        # check_report reads the file to list what is sitting out, and used to
+        # call .get() on whatever it found there.
+        paths.GEMINI_COOLDOWNS.parent.mkdir(parents=True, exist_ok=True)
+        paths.GEMINI_COOLDOWNS.write_text('{"a-model": "not a dict"}', encoding="utf-8")
+        report = self.report()
+        self.assertEqual(report["cooling"], [])
+        self.assertEqual(report["exit_code"], 0)
 
     def test_a_probe_never_benches_a_model(self):
         seen = {}
