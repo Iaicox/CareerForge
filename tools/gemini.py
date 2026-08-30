@@ -809,51 +809,204 @@ def read_input(path: str | None, inline: str | None) -> str:
     raise TrackerError("provide --file or --text")
 
 
-def cmd_check() -> int:
+# What to do about each kind, most actionable first. A configuration error
+# outranks a quota deliberately: the quota comes back on its own at a time we
+# can name, and the config does not.
+REMEDY_ORDER = (
+    "no_key", "auth", "unknown_model", "quota_daily", "cooling", "quota_minute",
+    "overloaded", "timeout", "http_error", "no_answer", "bad_output",
+)
+
+
+def remedy_for(reasons: list[Reason], *, timeout_seconds: int) -> str:
+    """One line saying what the user should actually do about this failure.
+
+    It lives here, with the branches that classify the failure, so that no
+    reader of the output has to infer the cause from the wording -- /doctor
+    used to advise replacing the API key whatever had gone wrong, including
+    when the key was fine and a daily quota had simply run out.
+    """
+    kinds = {r.kind for r in reasons}
+    kind = next((k for k in REMEDY_ORDER if k in kinds), None)
+
+    def soonest() -> str:
+        stamps = [parse_iso_utc(r.until) for r in reasons if r.until]
+        stamps = [s for s in stamps if s]
+        return f"{min(stamps):%Y-%m-%d %H:%M} UTC" if stamps else "the next reset"
+
+    if kind == "no_key":
+        return ("GEMINI_API_KEY is not set -- put it in .env "
+                "(https://aistudio.google.com/apikey)")
+    if kind == "auth":
+        return ("the key was refused -- replace GEMINI_API_KEY in .env "
+                "(https://aistudio.google.com/apikey)")
+    if kind == "unknown_model":
+        names = sorted({r.model for r in reasons if r.kind == "unknown_model" and r.model})
+        which = ", ".join(names) or "a configured model"
+        return (f"this key does not know {which} -- remove it from [gemini] models / "
+                "search_models in data/config/config.toml")
+    if kind in ("quota_daily", "cooling"):
+        return (f"nothing to do: the quota resets at {soonest()}, and the work "
+                "falls back to Claude until then")
+    if kind == "quota_minute":
+        return "a per-minute limit -- it clears within the minute, so try again shortly"
+    if kind == "overloaded":
+        return "Google is under load for these models -- try again shortly"
+    if kind == "timeout":
+        return (f"no answer within timeout_seconds ({timeout_seconds}s) -- raise it in "
+                "data/config/config.toml, or try again later")
+    return ("run `python tools/gemini.py check` and read the last entry in "
+            f"{rel(paths.GEMINI_LOG)}")
+
+
+# A few words for a one-line report, from the same kinds as the remedy.
+KIND_PHRASE = {
+    "no_key": "no API key",
+    "auth": "the key was refused",
+    "unknown_model": "a model this key does not know",
+    "quota_daily": "daily quota",
+    "cooling": "cooling down",
+    "quota_minute": "a per-minute limit",
+    "overloaded": "Google under load",
+    "timeout": "no answer in time",
+    "http_error": "an API error",
+    "no_answer": "nothing usable came back",
+    "bad_output": "an answer that would not parse",
+}
+
+
+def pool_summary(reasons: list[Reason]) -> str:
+    """What to call this pool's failure in one line, for /doctor.
+
+    Short by construction: doctor prints a check's detail on a single line and
+    does not wrap it, which is why it used to truncate the reason at 80
+    characters -- and lose the half that said when the quota came back.
+    """
+    kinds = {r.kind for r in reasons}
+    kind = next((k for k in REMEDY_ORDER if k in kinds), None)
+    phrase = KIND_PHRASE.get(kind, "not usable")
+    stamps = [s for s in (parse_iso_utc(r.until) for r in reasons if r.until) if s]
+    if kind in ("quota_daily", "cooling") and stamps:
+        return f"{phrase} until {min(stamps):%H:%M} UTC"
+    return phrase
+
+
+def check_report(cool: bool = False) -> dict:
+    """What `check` found: the settings, each pool, and what to do about it.
+
+    `cool` is False because a probe reports a refusal, it does not act on one:
+    a check that benches the models it checks would turn three runs of /doctor
+    into a day without delegation.
+    """
     s = settings()
-    print(f"  enabled   {s['enabled']}")
-    print(f"  models    {', '.join(s['models'])}")
-    print(f"  search    {', '.join(s['search_models'])}")
-    print(f"  tasks     {', '.join(s['tasks']) or '(none)'}")
+    report: dict[str, Any] = {
+        "enabled": bool(s["enabled"]),
+        "models": list(s["models"]),
+        "search_models": list(s["search_models"]),
+        "tasks": list(s["tasks"]),
+        "timeout_seconds": s["timeout_seconds"],
+        "cooling": [],
+        "key": False,
+        "pools": {},
+        "remedy": "",
+        "exit_code": EXIT_OK,
+    }
     for key, entry in sorted(load_cooldowns().items()):
         if not _entry_until(entry):
             continue
-        mode = entry.get("mode") or ("search" if key.endswith("#search") else "plain")
-        name = entry.get("model") or key.split("#")[0]
-        print(f"  cooling   {name} ({mode}): {entry.get('reason')} until {entry.get('until')}")
+        report["cooling"].append({
+            "model": entry.get("model") or key.split("#")[0],
+            "mode": entry.get("mode") or ("search" if key.endswith("#search") else "plain"),
+            "reason": entry.get("reason"),
+            "until": entry.get("until"),
+        })
+
     try:
         api_key()
-        print("  key       GEMINI_API_KEY present")
+        report["key"] = True
     except GeminiUnavailable as exc:
-        print(f"  key       {exc}")
-        return EXIT_UNAVAILABLE
+        report["key_error"] = str(exc)
+        report["exit_code"] = EXIT_UNAVAILABLE
+        report["remedy"] = remedy_for([Reason("", "no_key", str(exc))],
+                                      timeout_seconds=s["timeout_seconds"])
+        return report
+
     if not s["enabled"]:
-        print("\n  set [gemini] enabled = true in data/config/config.toml to use it")
-        return EXIT_UNAVAILABLE
-    code = EXIT_OK
+        report["exit_code"] = EXIT_UNAVAILABLE
+        report["remedy"] = "set [gemini] enabled = true in data/config/config.toml"
+        return report
+
+    failures: list[Reason] = []
     for label, search in (("plain", False), ("search", True)):
         started = time.monotonic()
         try:
             # The configured timeout, not a shorter one: a thinking model can
             # take a minute over one word, and "timed out" would be the wrong
-            # verdict. cool=False because a probe reports a refusal, it does not
-            # act on it: a check that benches the models it checks would turn
-            # three runs of /doctor into a day without delegation.
-            reply = call("Reply with exactly: OK", kind="check", search=search, cool=False)
+            # verdict.
+            reply = call("Reply with exactly: OK", kind="check", search=search, cool=cool)
         except (GeminiUnavailable, GeminiBadOutput) as exc:
-            print(f"  {label:<9} NOT USABLE: {exc}")
-            code = getattr(exc, "exit_code", EXIT_UNAVAILABLE)
+            reasons = list(getattr(exc, "reasons", None) or [])
+            if not reasons:
+                reasons = [Reason("", getattr(exc, "kind", None) or "http_error", str(exc))]
+            failures += reasons
+            report["pools"][label] = {
+                "ok": False,
+                "summary": pool_summary(reasons),
+                "reason": str(exc),
+                "kinds": sorted({r.kind for r in reasons}),
+                "until": min((r.until for r in reasons if r.until), default=None),
+            }
+            report["exit_code"] = getattr(exc, "exit_code", EXIT_UNAVAILABLE)
             continue
-        print(f"  {label:<9} yes via {LAST_MODEL} ({reply.strip()[:20]}, {time.monotonic() - started:.1f}s)")
+        report["pools"][label] = {
+            "ok": True,
+            "model": LAST_MODEL,
+            "seconds": round(time.monotonic() - started, 1),
+            "reply": reply.strip()[:20],
+        }
+    if failures:
+        report["remedy"] = remedy_for(failures, timeout_seconds=s["timeout_seconds"])
+    return report
+
+
+def cmd_check(as_json: bool = False) -> int:
+    report = check_report()
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return report["exit_code"]
+
+    print(f"  enabled   {report['enabled']}")
+    print(f"  models    {', '.join(report['models'])}")
+    print(f"  search    {', '.join(report['search_models'])}")
+    print(f"  tasks     {', '.join(report['tasks']) or '(none)'}")
+    for entry in report["cooling"]:
+        print(f"  cooling   {entry['model']} ({entry['mode']}): "
+              f"{entry['reason']} until {entry['until']}")
+    if not report["key"]:
+        print(f"  key       {report['key_error']}")
+        return report["exit_code"]
+    print("  key       GEMINI_API_KEY present")
+    if not report["enabled"]:
+        print(f"\n  {report['remedy']} to use it")
+        return report["exit_code"]
+    for label in ("plain", "search"):
+        pool = report["pools"].get(label) or {}
+        if pool.get("ok"):
+            print(f"  {label:<9} yes via {pool['model']} ({pool['reply']}, {pool['seconds']}s)")
+        else:
+            print(f"  {label:<9} NOT USABLE: {pool.get('reason')}")
+    if report["remedy"]:
+        print(f"  remedy    {report['remedy']}")
     print(f"  log       {rel(paths.GEMINI_LOG)}")
-    return code
+    return report["exit_code"]
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Delegate bulk work to Gemini over its API")
     sub = ap.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("check", help="is Gemini configured, and does the key answer?")
+    ck = sub.add_parser("check", help="is Gemini configured, and does the key answer?")
+    ck.add_argument("--json", action="store_true", help="the same verdict, for /doctor")
 
     rc = sub.add_parser("research-company", help="research a company, with sources")
     rc.add_argument("--name", required=True)
@@ -877,7 +1030,7 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.command == "check":
-        return cmd_check()
+        return cmd_check(args.json)
 
     try:
         if args.command == "research-company":
