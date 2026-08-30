@@ -280,8 +280,14 @@ def check_gemini() -> Check:
         import gemini
         settings = gemini.settings()
         enabled, timeout = bool(settings["enabled"]), settings["timeout_seconds"]
-    except Exception:
-        enabled, timeout = False, 120
+    except Exception as exc:
+        # Not the same thing as switched off. Reporting "disabled (optional)"
+        # in green for a config that cannot be read -- or a tool that will not
+        # import -- tells the user the toolchain is fine when it is not.
+        return Check("Gemini delegation", WARN,
+                     f"cannot read the [gemini] settings: {exc}",
+                     "check the [gemini] section of data/config/config.toml",
+                     required=False)
     if not enabled:
         return Check("Gemini delegation", OK, "disabled (optional)", required=False)
 

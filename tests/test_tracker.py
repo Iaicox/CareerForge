@@ -616,5 +616,51 @@ class TrackerTestCase(unittest.TestCase):
         )
 
 
+class SecretTest(unittest.TestCase):
+    """One reader for every credential, and it never takes /doctor down."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-secret-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.addCleanup(setattr, tracker, "load_dotenv", tracker.load_dotenv)
+        tracker.load_dotenv = lambda: None
+
+    def test_the_environment_wins_over_a_file(self):
+        from unittest import mock
+        import os
+        path = self.tmp / "token"
+        path.write_text("from-the-file", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"CF_TEST_SECRET": "from-the-env"}):
+            self.assertEqual(
+                tracker.secret(("CF_TEST_SECRET",), hint="x", files=(path,)),
+                "from-the-env")
+
+    def test_a_file_that_cannot_be_read_is_simply_not_a_credential(self):
+        # A stray byte in .notion_token used to reach doctor as a
+        # UnicodeDecodeError, out of has_secret, out of run_checks, and took
+        # every other check -- including the required ones -- with it.
+        binary = self.tmp / "binary"
+        binary.write_bytes(b"\xff\xfe not utf-8 \x00")
+        a_directory = self.tmp / "adir"
+        a_directory.mkdir()
+        for path in (binary, a_directory, self.tmp / "missing"):
+            with self.subTest(path=path.name):
+                self.assertFalse(tracker.has_secret(("CF_TEST_ABSENT",), files=(path,)))
+
+    def test_an_unreadable_file_does_not_hide_a_good_one_behind_it(self):
+        binary = self.tmp / "binary"
+        binary.write_bytes(b"\xff\xfe")
+        good = self.tmp / "good"
+        good.write_text("s3cret", encoding="utf-8")
+        self.assertEqual(
+            tracker.secret(("CF_TEST_ABSENT",), hint="x", files=(binary, good)),
+            "s3cret")
+
+    def test_nothing_anywhere_raises_the_caller_s_own_message(self):
+        with self.assertRaises(tracker.TrackerError) as ctx:
+            tracker.secret(("CF_TEST_ABSENT",), hint="put it in .env, like this")
+        self.assertEqual(str(ctx.exception), "put it in .env, like this")
+
+
 if __name__ == "__main__":
     unittest.main()

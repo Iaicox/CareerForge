@@ -120,6 +120,16 @@ class CheckGeminiTest(unittest.TestCase):
         self.assertEqual(check.status, doctor.WARN)
         self.assertEqual(check.fix, "python tools/gemini.py check")
 
+    def test_settings_that_will_not_read_are_not_reported_as_disabled(self):
+        # "disabled (optional)" is green, and /setup reads it as the toolchain
+        # being fine. A config that cannot be parsed, or a tool that will not
+        # import, is not the same as switched off.
+        gemini.settings = lambda: (_ for _ in ()).throw(ValueError("bad TOML"))
+        check = self.check()
+        self.assertEqual(check.status, doctor.WARN)
+        self.assertIn("cannot read the [gemini] settings", check.detail)
+        self.assertIn("config.toml", check.fix)
+
     def test_disabled_is_ok_and_spawns_nothing(self):
         self.enabled = False
         calls = []

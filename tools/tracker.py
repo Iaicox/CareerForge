@@ -420,10 +420,15 @@ def secret(names: Iterable[str], *, hint: str, files: Iterable[Path] = ()) -> st
         if value:
             return value
     for path in files:
-        if path.exists():
+        try:
             value = path.read_text(encoding="utf-8").strip()
-            if value:
-                return value
+        except (OSError, UnicodeDecodeError):
+            # Missing, a directory, or bytes that are not text: none of those
+            # is a credential. /doctor asks this about every integration in
+            # turn, so one bad file must not take the whole report down.
+            continue
+        if value:
+            return value
     raise TrackerError(hint)
 
 
