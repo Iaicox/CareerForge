@@ -51,7 +51,9 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import paths  # noqa: E402
-from tracker import TrackerError, load_config, load_dotenv, rel  # noqa: E402
+from tracker import (  # noqa: E402
+    TrackerError, load_config, load_dotenv, parse_iso_utc, rel, write_json,
+)
 
 EXIT_OK, EXIT_ERROR, EXIT_UNAVAILABLE, EXIT_TIMEOUT, EXIT_BAD_OUTPUT = 0, 1, 3, 4, 5
 
@@ -264,8 +266,7 @@ def load_cooldowns() -> dict[str, dict]:
 
 def save_cooldowns(data: dict[str, dict]) -> None:
     try:
-        paths.GEMINI_COOLDOWNS.parent.mkdir(parents=True, exist_ok=True)
-        paths.GEMINI_COOLDOWNS.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        write_json(paths.GEMINI_COOLDOWNS, data)
     except OSError:
         pass  # a cooldown that cannot be written costs one more refusal, no worse
 
@@ -283,13 +284,8 @@ def cooldown_key(model: str, search: bool) -> str:
 
 def _entry_until(entry: dict) -> datetime | None:
     """When this cooldown entry runs out, or None if it already has."""
-    try:
-        until = datetime.fromisoformat(entry["until"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    if until.tzinfo is None:
-        until = until.replace(tzinfo=timezone.utc)
-    return until if until > now() else None
+    until = parse_iso_utc(entry.get("until"))
+    return until if until is not None and until > now() else None
 
 
 def cooling_until(model: str, search: bool = False,

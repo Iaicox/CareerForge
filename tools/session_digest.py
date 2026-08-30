@@ -18,7 +18,7 @@ Three steps, so a failure in the middle does not cost the work before it:
            and none of the reasoning, so dropping them takes a corpus from
            tens of megabytes to a couple.
   digest   each session -> a small JSON of decisions, rules and rejected ideas
-  merge    all digests -> profile/history.md, organised by theme
+  merge    all digests -> data/profile/history.md, organised by theme
 
 Work lands in tracker/session-digest/, which is gitignored like everything
 else about you.
@@ -290,7 +290,7 @@ def cmd_run(args) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Digest past sessions into profile/history.md")
+    ap = argparse.ArgumentParser(description="Digest past sessions into data/profile/history.md")
     sub = ap.add_subparsers(dest="command", required=True)
 
     def common(sp):
@@ -305,7 +305,7 @@ def main() -> int:
 
     common(sub.add_parser("extract", help="transcripts -> readable session files"))
     common(sub.add_parser("digest", help="session files -> per-session JSON"))
-    common(sub.add_parser("merge", help="digests -> profile/history.md"))
+    common(sub.add_parser("merge", help="digests -> data/profile/history.md"))
     common(sub.add_parser("run", help="all three in order"))
 
     args = ap.parse_args()

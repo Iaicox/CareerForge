@@ -364,12 +364,16 @@ def cmd_scan(args) -> int:
         return EXIT_OK
 
     if args.since:
-        since = datetime.fromisoformat(args.since).replace(tzinfo=timezone.utc)
+        since = tracker.parse_iso_utc(args.since)
+        if since is None:
+            raise TrackerError(f"--since {args.since!r} is not a date I can read (YYYY-MM-DD)")
     else:
         oldest = min(
             (a["created_at"] or "")[:10] for a in applications if a.get("created_at")
         )
-        since = datetime.fromisoformat(oldest).replace(tzinfo=timezone.utc)
+        since = tracker.parse_iso_utc(oldest)
+        if since is None:
+            raise TrackerError(f"cannot read the oldest application date: {oldest!r}")
         since -= timedelta(days=1)
 
     conn = connect_mailbox(cfg)

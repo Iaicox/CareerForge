@@ -50,14 +50,9 @@ def find_company(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:
 
 
 def age_days(researched_at: str | None) -> float | None:
-    if not researched_at:
+    stamp = tracker.parse_iso_utc(researched_at)
+    if stamp is None:
         return None
-    try:
-        stamp = datetime.fromisoformat(researched_at)
-    except ValueError:
-        return None
-    if stamp.tzinfo is None:
-        stamp = stamp.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - stamp).total_seconds() / 86400
 
 

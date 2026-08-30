@@ -24,6 +24,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import tempfile
 import tomllib
 import unicodedata
 from datetime import datetime, timedelta, timezone
@@ -348,6 +349,42 @@ def rel(path: Path) -> str:
 def now() -> str:
     """UTC, to match SQLite's datetime('now') column defaults."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def parse_iso_utc(value: object) -> datetime | None:
+    """An ISO timestamp as an aware UTC datetime, or None if it is not one.
+
+    A stamp with no offset is read as UTC, because that is how they are
+    written: now() and SQLite's datetime('now') both leave the offset off.
+    """
+    try:
+        stamp = datetime.fromisoformat(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+
+
+def write_json(path: Path, data: Any, *, indent: int = 2) -> None:
+    """Write a state file whole, or not at all.
+
+    Every one of these is read back by the next run, and a torn write is not
+    a smaller version of the file -- it is a parse error. notion.json costs a
+    re-provision to rebuild. So the bytes land in a temporary file beside the
+    target and are moved into place, which is atomic on both platforms.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=indent)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def slugify(value: str) -> str:

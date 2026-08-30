@@ -216,10 +216,7 @@ def load_ids() -> dict:
 
 
 def save_ids(ids: dict) -> None:
-    paths.NOTION_IDS.parent.mkdir(parents=True, exist_ok=True)
-    paths.NOTION_IDS.write_text(
-        json.dumps(ids, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    tracker.write_json(paths.NOTION_IDS, ids)
 
 
 def query_source(entry: dict) -> Iterable[dict]:
