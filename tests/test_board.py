@@ -71,7 +71,8 @@ class BoardServerTest(unittest.TestCase):
             with urllib.request.urlopen(req, timeout=5) as res:
                 return res.status, res.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            return exc.code, exc.read().decode("utf-8")
+            with exc:  # it is a response: leaving it open warns on every run
+                return exc.code, exc.read().decode("utf-8")
 
     def rows(self) -> list[dict]:
         status, body = self.request("/api/postings")

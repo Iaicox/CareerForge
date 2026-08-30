@@ -139,8 +139,10 @@ class NotionRetryPolicyTest(unittest.TestCase):
             return notion_sync.request("GET", "/v1/x", retries=retries)
 
     @staticmethod
-    def reply(status, data=None, headers=None, text=""):
-        return tracker.Response(status, headers or {}, text or json.dumps(data or {}), data)
+    def reply(status, data=None, headers=None, text=None):
+        # `text=""` has to mean an empty body, not "fall back to the data".
+        body = json.dumps(data or {}) if text is None else text
+        return tracker.Response(status, headers or {}, body, data)
 
     def test_a_429_waits_the_delay_the_server_named(self):
         out = self.ask(self.reply(429, {"m": "slow"}, {"Retry-After": "7"}),
@@ -177,6 +179,14 @@ class NotionRetryPolicyTest(unittest.TestCase):
 
     def test_a_success_with_no_body_is_an_empty_dict(self):
         self.assertEqual(self.ask(self.reply(204, None, text="")), {})
+
+    def test_a_success_that_is_not_json_is_an_error_not_an_empty_result(self):
+        # A captive portal answering 200 with an HTML page. Treated as an empty
+        # query result, push() concludes every page is missing and creates them
+        # all again.
+        with self.assertRaises(tracker.TrackerError) as ctx:
+            self.ask(self.reply(200, None, text="<html>sign in to continue</html>"))
+        self.assertIn("not JSON", str(ctx.exception))
 
 
 if __name__ == "__main__":

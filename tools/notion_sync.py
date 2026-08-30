@@ -133,6 +133,14 @@ def request(
                 continue
             raise TrackerError(f"Notion {method} {path} -> {exc}")
         if res.status < 400:
+            if res.data is None and res.text.strip():
+                # A proxy or captive portal answering 200 with an HTML page.
+                # Read as an empty result it is far worse than an error: a
+                # query that returns nothing tells push() every page is
+                # missing, and it creates them all a second time.
+                raise TrackerError(
+                    f"Notion {method} {path} -> HTTP {res.status} with a body that is "
+                    f"not JSON: {res.text[:200]}")
             return res.data if res.data is not None else {}
         if res.status in (429, 502, 503, 529) and attempt < retries:
             delay = float(res.headers.get("Retry-After") or (2 ** attempt))

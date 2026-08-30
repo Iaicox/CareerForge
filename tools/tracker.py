@@ -393,7 +393,12 @@ def http_request(url: str, *, method: str = "GET", data: bytes | None = None,
         with urllib.request.urlopen(req, timeout=timeout) as res:
             return _response(res.status, res.headers, res.read())
     except urllib.error.HTTPError as exc:
-        return _response(exc.code, exc.headers, exc.read())
+        # HTTPError is a response: every 4xx and 5xx in this project now comes
+        # through here, and each one holds a socket until it is closed.
+        try:
+            return _response(exc.code, exc.headers, exc.read())
+        finally:
+            exc.close()
     except TimeoutError:
         raise
     except urllib.error.URLError as exc:
