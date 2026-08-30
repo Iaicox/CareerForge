@@ -166,6 +166,15 @@ let toastTimer = null;
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+// esc() escapes the quotes, not the scheme, and the browser decodes entities
+// when it parses the attribute -- so a `javascript:` URL still runs on click.
+// These pages serve unauthenticated POST endpoints on their own origin, and
+// the URLs come from scraped boards and pasted text. Anything that is not
+// http(s) is rendered as text.
+function safeHref(url) {
+  return /^https?:\/\//i.test(String(url || "")) ? url : null;
+}
+
 function toast(message, ok = false) {
   toastEl.textContent = message;
   toastEl.classList.toggle("ok", ok);
@@ -290,14 +299,16 @@ function openPanel(id, focus) {
     .concat(state.outcomes.map((o) => `<option value="${esc(o.id)}">${esc(o.label)}</option>`))
     .join("");
 
+  const postingHref = safeHref(card.url);
+
   panelBody.innerHTML = `
     <h2>${esc(card.company_name)}</h2>
     <div class="sub">${esc(card.role)}</div>
     <dl>
       <dt>Status</dt><dd>${esc(card.status_label)}</dd>
-      <dt>Posting</dt><dd>${card.url
-        ? `<a href="${esc(card.url)}" target="_blank" rel="noreferrer">${esc(card.url)}</a>`
-        : "&mdash;"}</dd>
+      <dt>Posting</dt><dd>${postingHref
+        ? `<a href="${esc(postingHref)}" target="_blank" rel="noreferrer">${esc(card.url)}</a>`
+        : esc(card.url) || "&mdash;"}</dd>
       <dt>Folder</dt><dd>${esc(card.folder || "not created yet")}</dd>
       <dt>Work mode</dt><dd>${esc(card.work_mode_label || "—")}</dd>
       <dt>Contact</dt><dd>${esc(card.hr_name || "—")}${

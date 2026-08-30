@@ -71,7 +71,8 @@ class BoardServerTest(unittest.TestCase):
             with urllib.request.urlopen(req, timeout=5) as res:
                 return res.status, res.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            return exc.code, exc.read().decode("utf-8")
+            with exc:  # it is a response: leaving it open warns on every run
+                return exc.code, exc.read().decode("utf-8")
 
     def rows(self) -> list[dict]:
         status, body = self.request("/api/postings")
@@ -86,17 +87,25 @@ class BoardServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("/api/postings", html)
 
-    def test_the_postings_page_gates_a_link_on_its_scheme(self):
-        # The rendering is client-side, so this only guards the source: a
-        # posting URL comes from a scraped board or a paste, and this page
-        # serves unauthenticated POST endpoints on its own origin, so a
-        # javascript: href would be click-to-run script against them. The
-        # behaviour itself is checked in a browser -- see safeHref().
-        status, html = self.request("/postings")
-        self.assertEqual(status, 200)
-        self.assertIn("function safeHref", html)
-        self.assertIn("/^https?:\\/\\//i", html)
-        self.assertNotIn('href="${esc(r.url)}"', html)
+    def test_both_pages_gate_a_link_on_its_scheme(self):
+        # The rendering is client-side, so this only guards the source: these
+        # URLs come from scraped boards and pasted text, and both pages serve
+        # unauthenticated POST endpoints on their own origin, so a javascript:
+        # href would be click-to-run script against them. The behaviour itself
+        # is checked in a browser -- see safeHref().
+        #
+        # Both pages, because the fix landed on the postings table first and
+        # the kanban kept the hole for two commits.
+        for route, raw in (("/postings", 'href="${esc(r.url)}"'),
+                           ("/", 'href="${esc(card.url)}"')):
+            with self.subTest(route=route):
+                status, html = self.request(route)
+                self.assertEqual(status, 200)
+                self.assertIn("function safeHref", html)
+                self.assertIn("/^https?:\\/\\//i", html)
+                self.assertIn("safeHref(", html.split("function safeHref", 1)[1],
+                              "defined but never called")
+                self.assertNotIn(raw, html)
 
     def test_the_table_carries_rows_and_status_options(self):
         status, body = self.request("/api/postings")

@@ -113,6 +113,23 @@ class NoOtherToolKnowsTheLayoutTest(unittest.TestCase):
                     offenders.append(f"{script.name}:{lineno}: {line.strip()}")
         self.assertEqual(offenders, [], "\n".join(offenders))
 
+    def test_no_tool_imports_a_path_out_of_the_module(self):
+        # paths.py's own docstring: "Tools read paths.X at call time -- never
+        # `from paths import X`". A name bound that way is a copy taken at
+        # import, so configure() cannot reach it -- and neither the pattern
+        # above nor the one below would see it, because the text says
+        # `STATE / "x"` rather than `paths.STATE` or `REPO / "state"`.
+        offenders = []
+        for script in sorted(TOOLS.glob("*.py")):
+            if script.name == "paths.py":
+                continue
+            for lineno, line in enumerate(
+                script.read_text(encoding="utf-8").splitlines(), 1
+            ):
+                if re.match(r"^\s*from paths import\b", line):
+                    offenders.append(f"{script.name}:{lineno}: {line.strip()}")
+        self.assertEqual(offenders, [], "\n".join(offenders))
+
     def test_no_tool_binds_a_root_dependent_path_at_import_time(self):
         # The other half of the same drift: a module-level constant is
         # computed once, at import, and outlives paths.configure(). The tools

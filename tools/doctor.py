@@ -234,16 +234,22 @@ def check_notion() -> Check:
     if not enabled:
         return Check("Notion mirror", OK, "disabled (optional)", required=False)
     sys.path.insert(0, str(REPO / "tools"))
-    from tracker import has_secret
+    from tracker import TrackerError, secret
     # The same precedence the mirror itself uses, rather than a second opinion
-    # about where a token may live.
-    token = has_secret(("NOTION_KEY", "NOTION_TOKEN"), files=(REPO / ".notion_token",))
+    # about where a token may live -- and the same message, so a token that is
+    # there but cannot be read says so instead of reading as absent.
+    try:
+        secret(("NOTION_KEY", "NOTION_TOKEN"), files=(REPO / ".notion_token",),
+               hint="no token (NOTION_KEY in .env, or .notion_token)")
+        token, why = True, ""
+    except TrackerError as exc:
+        token, why = False, str(exc)
     ids = paths.NOTION_IDS.exists()
     if token and ids:
         return Check("Notion mirror", OK, "token and database ids present", required=False)
     what = []
     if not token:
-        what.append("no token (NOTION_KEY in .env, or .notion_token)")
+        what.append(why)
     if not ids:
         what.append("no data/state/notion.json")
     return Check("Notion mirror", WARN, "; ".join(what),
@@ -260,11 +266,15 @@ def check_dotenv() -> Check:
     try:
         keys = [
             line.split("=", 1)[0].strip()
-            for line in path.read_text(encoding="utf-8").splitlines()
+            for line in path.read_text(encoding="utf-8-sig").splitlines()
             if line.strip() and not line.strip().startswith("#") and "=" in line
         ]
-    except OSError as exc:
-        return Check(".env", WARN, f"unreadable: {exc}", required=False)
+    except (OSError, UnicodeDecodeError) as exc:
+        # This check runs before the ones that use the secrets, so an
+        # unreadable .env used to end the whole report with a traceback.
+        return Check(".env", WARN, f"unreadable: {exc}",
+                     "save it as UTF-8 -- a shell redirect on Windows writes UTF-16",
+                     required=False)
     return Check(".env", OK, f"keys: {', '.join(keys) or '(none)'}", required=False)
 
 
@@ -278,22 +288,35 @@ def check_gemini() -> Check:
     """
     try:
         import gemini
+    except Exception as exc:
+        # Its own branch: pointing at config.toml for a module that will not
+        # import sends the reader to a file that is fine.
+        return Check("Gemini delegation", WARN, f"tools/gemini.py will not import: {exc}",
+                     "python tools/gemini.py check", required=False)
+    try:
         settings = gemini.settings()
         enabled, timeout = bool(settings["enabled"]), settings["timeout_seconds"]
-    except Exception:
-        enabled, timeout = False, 120
+    except Exception as exc:
+        # Not the same thing as switched off. Reporting "disabled (optional)"
+        # in green for a config that cannot be read -- or a tool that will not
+        # import -- tells the user the toolchain is fine when it is not.
+        return Check("Gemini delegation", WARN,
+                     f"cannot read the [gemini] settings: {exc}",
+                     "check the [gemini] section of data/config/config.toml",
+                     required=False)
     if not enabled:
         return Check("Gemini delegation", OK, "disabled (optional)", required=False)
 
-    budget = 2 * timeout + 30
+    # From the probe's own ceiling, not from the working timeout: the check is
+    # bounded by what a health check may cost, not by what a research call may
+    # take. `check` walks two pools, hence twice.
+    probe_limit = min(timeout, gemini.PROBE_TIMEOUT)
+    budget = 2 * probe_limit + 30
     out, killed = "", False
     try:
         probe = subprocess.run(
             [sys.executable, str(REPO / "tools" / "gemini.py"), "check", "--json"],
             capture_output=True, text=True,
-            # `check` runs the plain pool and then the search pool, and each of
-            # them is allowed the configured budget. Anything less than both and
-            # doctor reports a timeout of its own making.
             timeout=budget,
         )
         out = probe.stdout or ""
@@ -314,8 +337,11 @@ def check_gemini() -> Check:
         if killed:
             return Check(
                 "Gemini delegation", WARN, f"the probe did not finish within {budget}s",
+                # The budget, not probe_limit: nothing here was bounded by the
+                # per-call deadline -- the whole probe overran the time doctor
+                # allowed it, and that is the number beside it in the detail.
                 gemini.remedy_for([gemini.Reason("", "timeout", "the probe was killed")],
-                                  timeout_seconds=timeout),
+                                  timeout_seconds=budget),
                 required=False)
         return Check("Gemini delegation", WARN, "the probe answered with something unreadable",
                      "python tools/gemini.py check", required=False)

@@ -146,6 +146,34 @@ class ResearchCacheTest(unittest.TestCase):
         _, origin = research.get(self.conn, "Acme", None, False)
         self.assertEqual(origin, "cache")
 
+    def test_a_refused_salary_call_waits_for_the_refusal_to_lift(self):
+        # Without the marker, every --role lookup re-ran the whole grounded
+        # research and spent more of the quota that had just refused.
+        soon = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(timespec="seconds")
+        with self.conn:
+            research.write_cache(self.conn, "Acme", {
+                "name": "Acme",
+                "salary_error": "no model in the search pool could answer",
+                "salary_retry_after": soon,
+            })
+        _, origin = research.get(self.conn, "Acme", None, False, role="Dev", location="Lisbon")
+        self.assertEqual((origin, len(self.calls)), ("cache", 0))
+
+        past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(timespec="seconds")
+        with self.conn:
+            research.write_cache(self.conn, "Acme", {
+                "name": "Acme", "salary_error": "...", "salary_retry_after": past})
+        _, origin = research.get(self.conn, "Acme", None, False, role="Dev", location="Lisbon")
+        self.assertEqual((origin, len(self.calls)), ("gemini", 1),
+                         "once it has lifted, ask again")
+
+    def test_an_entry_from_before_the_question_is_still_refreshed_at_once(self):
+        # No marker at all means nobody has asked, which is not a refusal.
+        with self.conn:
+            research.write_cache(self.conn, "Acme", {"name": "Acme"})
+        _, origin = research.get(self.conn, "Acme", None, False, role="Dev", location="Lisbon")
+        self.assertEqual(origin, "gemini")
+
     # -- storage -----------------------------------------------------------
 
     def test_writing_research_does_not_clobber_a_known_website(self):
@@ -332,6 +360,9 @@ class RestTransportTest(unittest.TestCase):
         # what research.get() reads to know the entry is worth refreshing. An
         # empty list here would freeze a quota blip in for cache_days.
         self.assertNotIn("salary", data)
+        # And it carries the moment the refusal lifts, so the retry is not
+        # every lookup: both search models are out until Pacific midnight.
+        self.assertEqual(data["salary_retry_after"], "2026-08-30T07:00:00+00:00")
 
     def test_research_without_a_role_claims_nothing_about_pay(self):
         # /interview researches with no --role. Writing salary: [] there would
@@ -481,18 +512,20 @@ class RestTransportTest(unittest.TestCase):
 
     def test_every_failure_carries_the_kind_the_branch_knew(self):
         overloaded = (503, {"error": {"code": 503, "message": "high demand"}})
-        for kind, responses in (
+        for kind, responses, tried in (
             ("quota_daily",
-             [self.quota(None, "GenerateRequestsPerDayPerProjectPerModel-FreeTier")] * 3),
+             [self.quota(None, "GenerateRequestsPerDayPerProjectPerModel-FreeTier")] * 3, 3),
             ("quota_minute",
-             [self.quota("7s", "GenerateRequestsPerMinutePerProjectPerModel-FreeTier")] * 3),
-            ("unknown_model", [(404, {"error": {"code": 404, "message": "no such model"}})] * 3),
+             [self.quota("7s", "GenerateRequestsPerMinutePerProjectPerModel-FreeTier")] * 3, 3),
+            ("unknown_model", [(404, {"error": {"code": 404, "message": "no such model"}})] * 3, 3),
+            # Two models, the same complaint: the third is not asked. See
+            # test_the_same_400_from_two_models_is_the_request_s_fault.
             ("http_error",
-             [(400, {"error": {"code": 400, "message": "google_search is not supported"}})] * 3),
-            ("timeout", [TimeoutError("timed out")] * 3),
+             [(400, {"error": {"code": 400, "message": "google_search is not supported"}})] * 3, 2),
+            ("timeout", [TimeoutError("timed out")] * 3, 3),
             ("no_answer",
-             [(200, {"candidates": [], "promptFeedback": {"blockReason": "SAFETY"}})] * 3),
-            ("overloaded", [overloaded] * 9),  # three tries each, then the next model
+             [(200, {"candidates": [], "promptFeedback": {"blockReason": "SAFETY"}})] * 3, 3),
+            ("overloaded", [overloaded] * 9, 3),  # three tries each, then the next model
         ):
             with self.subTest(kind=kind):
                 gemini.UNKNOWN_MODELS.clear()
@@ -501,7 +534,30 @@ class RestTransportTest(unittest.TestCase):
                 with self.assertRaises(gemini.GeminiUnavailable) as ctx:
                     gemini.call("instruction")
                 self.assertEqual({r.kind for r in ctx.exception.reasons}, {kind})
-                self.assertEqual([r.model for r in ctx.exception.reasons], self.POOL)
+                self.assertEqual([r.model for r in ctx.exception.reasons], self.POOL[:tried])
+
+    def test_the_same_400_from_two_models_is_the_request_s_fault(self):
+        # summarize() sends up to a megabyte, so "payload size exceeds the
+        # limit" is reachable -- and re-uploading it to the rest of the pool
+        # cannot change any model's mind.
+        same = (400, {"error": {"code": 400,
+                                "message": "request payload size exceeds the limit"}})
+        self.responses = [same] * 3
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+            gemini.call("instruction", payload="x" * 5000)
+        self.assertEqual(len(ctx.exception.reasons), 2)
+        self.assertEqual(len(self.calls), 2, "the third model is never uploaded to")
+
+    def test_two_different_400s_are_each_that_model_s_own_problem(self):
+        # The common case: a model that will not take the search tool, behind
+        # one that will not take JSON mode, in front of one that answers.
+        self.responses = [
+            (400, {"error": {"code": 400, "message": "google_search is not supported"}}),
+            (400, {"error": {"code": 400, "message": "responseMimeType is not supported"}}),
+            (200, self.ok("OK")),
+        ]
+        self.assertEqual(gemini.call("instruction"), "OK")
+        self.assertEqual(self.models_called(), self.POOL)
 
     def test_a_quota_says_when_it_comes_back(self):
         # The remedy for a daily quota is "wait", so the time has to survive as
@@ -537,6 +593,19 @@ class RestTransportTest(unittest.TestCase):
         with self.assertRaises(gemini.GeminiUnavailable) as ctx:
             gemini.call("instruction")
         self.assertNotIsInstance(ctx.exception, gemini.GeminiTimeout)
+
+    def test_a_cooldown_file_full_of_junk_does_not_stop_the_pool(self):
+        paths.GEMINI_COOLDOWNS.parent.mkdir(parents=True, exist_ok=True)
+        paths.GEMINI_COOLDOWNS.write_text(json.dumps({
+            "gemini-3.7-flash": "not a dict at all",
+            "gemini-3.6-flash": {"until": "nonsense"},
+            "gemini-2.5-flash": None,
+            "stray": [1, 2, 3],
+        }), encoding="utf-8")
+        self.assertIsNone(gemini.cooling_until("gemini-3.7-flash"))
+        self.assertEqual(gemini.call("instruction"), "OK")
+        self.assertEqual(self.models_called(), ["gemini-3.7-flash"],
+                         "an unreadable cooldown means not cooling")
 
     # -- 404: unknown until restart ----------------------------------------
 
@@ -732,9 +801,13 @@ class RemedyTest(unittest.TestCase):
             gemini.pool_summary([self.R("m", "timeout", "timed out")]),
             "no answer in time")
 
-    def test_a_timeout_names_the_setting_that_bounds_it(self):
-        self.assertIn("timeout_seconds (45s)",
-                      self.remedy(self.R("m", "timeout", "timed out"), timeout_seconds=45))
+    def test_a_timeout_reports_the_limit_that_actually_applied(self):
+        # The probe is capped at PROBE_TIMEOUT, so quoting the configured
+        # timeout_seconds here would advise raising a setting that does not
+        # bound what just happened.
+        text = self.remedy(self.R("m", "timeout", "timed out"), timeout_seconds=45)
+        self.assertIn("within 45s", text)
+        self.assertNotIn("timeout_seconds (45s)", text)
 
     def test_only_a_key_problem_says_anything_about_the_key(self):
         self.assertIn("GEMINI_API_KEY", self.remedy(self.R("", "no_key", "not set")))
@@ -818,6 +891,15 @@ class CheckReportTest(unittest.TestCase):
         report = self.report()
         self.assertEqual(report["pools"], {})
         self.assertIn("enabled = true", report["remedy"])
+
+    def test_a_junk_cooldown_entry_does_not_break_the_report(self):
+        # check_report reads the file to list what is sitting out, and used to
+        # call .get() on whatever it found there.
+        paths.GEMINI_COOLDOWNS.parent.mkdir(parents=True, exist_ok=True)
+        paths.GEMINI_COOLDOWNS.write_text('{"a-model": "not a dict"}', encoding="utf-8")
+        report = self.report()
+        self.assertEqual(report["cooling"], [])
+        self.assertEqual(report["exit_code"], 0)
 
     def test_a_probe_never_benches_a_model(self):
         seen = {}

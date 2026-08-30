@@ -71,6 +71,13 @@ DEFAULT_SEARCH_MODELS = ("gemini-2.5-flash", "gemini-2.5-flash-lite")
 # the next model.
 OVERLOAD_BACKOFF = (5, 15)
 
+# The ceiling on one `check` probe, whatever timeout_seconds says. The probe
+# asks for one word, so the configured budget for real work -- 300s in the
+# shipped config, and it walks two pools -- would let a health check block
+# /doctor for ten minutes. Still generous: the slowest real probe measured
+# here was 35s.
+PROBE_TIMEOUT = 120
+
 # Models the key does not know (404). Skipped until the process ends; the
 # next run asks again, in case the key gained access.
 UNKNOWN_MODELS: set[str] = set()
@@ -292,8 +299,16 @@ def cooldown_key(model: str, search: bool) -> str:
     return f"{model}#search" if search else model
 
 
-def _entry_until(entry: dict) -> datetime | None:
-    """When this cooldown entry runs out, or None if it already has."""
+def _entry_until(entry: object) -> datetime | None:
+    """When this cooldown entry runs out, or None if it already has.
+
+    Anything that is not a readable entry means "not cooling". The file is
+    ours, but an older version of it, a half-written one or a hand edit can
+    leave anything in a value, and a cooldown that cannot be read costs one
+    more refusal -- it must not take `check` and /doctor down with it.
+    """
+    if not isinstance(entry, dict):
+        return None
     until = parse_iso_utc(entry.get("until"))
     return until if until is not None and until > now() else None
 
@@ -423,7 +438,7 @@ def is_bad_key(error: dict) -> bool:
     return "API_KEY_INVALID" in blob or "API KEY NOT VALID" in blob
 
 
-def _attempt(model: str, data: bytes, limit: int, log_kind: str, prompt: str,
+def _attempt(model: str, data: bytes, log_kind: str, prompt: str,
              payload: str | None, search: bool, deadline: float,
              cool: bool = True) -> tuple[str, Reason | None, str]:
     """One model: ("ok", None, answer) or ("next", Reason, "").
@@ -543,6 +558,7 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
     deadline = time.monotonic() + limit
     cooldowns = load_cooldowns()  # one read for the whole pool; it cannot change under us
     reasons: list[Reason] = []
+    seen_http_errors: set[str] = set()
     for candidate in pool:
         if candidate in UNKNOWN_MODELS:
             reasons.append(Reason(candidate, "unknown_model", "unknown to this key, skipped"))
@@ -557,12 +573,19 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
             reasons.append(Reason(
                 candidate, "timeout", f"not asked, the {limit}s budget was spent"))
             continue
-        verdict, reason, answer = _attempt(candidate, data, limit, kind, prompt,
+        verdict, reason, answer = _attempt(candidate, data, kind, prompt,
                                            payload, search, deadline, cool)
         if verdict == "ok":
             LAST_MODEL = candidate
             return answer
         reasons.append(reason)
+        # A 400 is usually this model's -- it will not take the search tool, or
+        # JSON mode. The identical complaint from a second model is the
+        # request's, and re-uploading a megabyte to the rest of the pool will
+        # not change its mind.
+        if reason.kind == "http_error" and reason.detail in seen_http_errors:
+            break
+        seen_http_errors.add(reason.detail)
     which = "search pool" if search else "pool"
     text = (f"no model in the {which} could answer -- "
             + "; ".join(f"{r.model}: {r.detail}" for r in reasons)
@@ -700,13 +723,16 @@ Schema:
     if role:
         # Its own call, so a refusal here costs the salary block, not the
         # research; the reason is kept where the reader of the cache sees it.
-        # The key is written only when the question was actually answered:
-        # research.get() refreshes an entry that has none, so a refusal is
-        # asked again tomorrow instead of standing for cache_days.
+        # The key is written only when the question was answered, and a
+        # refusal records when asking again is worth the grounded call it
+        # costs -- the models that refused said when they come back.
         try:
             data["salary"] = salary_figures(name, role, location)
         except (GeminiUnavailable, GeminiBadOutput) as exc:
             data["salary_error"] = str(exc)
+            returns = sorted(r.until for r in getattr(exc, "reasons", []) if r.until)
+            data["salary_retry_after"] = returns[0] if returns else (
+                datetime.now(timezone.utc) + timedelta(days=1)).isoformat(timespec="seconds")
     data["fetched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return data
 
@@ -853,8 +879,11 @@ def remedy_for(reasons: list[Reason], *, timeout_seconds: int) -> str:
     if kind == "overloaded":
         return "Google is under load for these models -- try again shortly"
     if kind == "timeout":
-        return (f"no answer within timeout_seconds ({timeout_seconds}s) -- raise it in "
-                "data/config/config.toml, or try again later")
+        # Not simply "raise timeout_seconds": a probe is capped at
+        # PROBE_TIMEOUT, so raising the setting past that changes nothing here.
+        return (f"no answer within {timeout_seconds}s -- the models are slow or "
+                "unreachable; try again, and raise [gemini] timeout_seconds in "
+                "data/config/config.toml if real calls time out too")
     return ("run `python tools/gemini.py check` and read the last entry in "
             f"{rel(paths.GEMINI_LOG)}")
 
@@ -936,14 +965,17 @@ def check_report(cool: bool = False) -> dict:
         report["remedy"] = "set [gemini] enabled = true in data/config/config.toml"
         return report
 
+    probe_limit = min(s["timeout_seconds"], PROBE_TIMEOUT)
+    report["probe_timeout"] = probe_limit
     failures: list[Reason] = []
     for label, search in (("plain", False), ("search", True)):
         started = time.monotonic()
         try:
-            # The configured timeout, not a shorter one: a thinking model can
-            # take a minute over one word, and "timed out" would be the wrong
-            # verdict.
-            reply = call("Reply with exactly: OK", kind="check", search=search, cool=cool)
+            # Bounded by PROBE_TIMEOUT rather than the working budget: the
+            # question is one word, and a health check that can block for ten
+            # minutes is not one.
+            reply = call("Reply with exactly: OK", kind="check", search=search,
+                         cool=cool, timeout=probe_limit)
         except (GeminiUnavailable, GeminiBadOutput) as exc:
             reasons = list(getattr(exc, "reasons", None) or [])
             if not reasons:
@@ -965,7 +997,7 @@ def check_report(cool: bool = False) -> dict:
             "reply": reply.strip()[:20],
         }
     if failures:
-        report["remedy"] = remedy_for(failures, timeout_seconds=s["timeout_seconds"])
+        report["remedy"] = remedy_for(failures, timeout_seconds=probe_limit)
     return report
 
 

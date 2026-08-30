@@ -75,19 +75,34 @@ def write_cache(conn: sqlite3.Connection, name: str, data: dict,
     )
 
 
+def salary_due(cached: dict) -> bool:
+    """Whether asking what this company pays is worth another grounded call.
+
+    The `salary` key is written only when the question was answered, so an
+    entry from before it existed has none and is refreshed. An entry whose
+    salary call was refused has none either -- but refreshing that one on
+    every lookup re-runs the whole grounded research and spends more of the
+    quota that refused in the first place, so the refusal carries the time it
+    lifts and the entry stands until then.
+    """
+    if "salary" in cached:
+        return False
+    after = tracker.parse_iso_utc(cached.get("salary_retry_after"))
+    return after is None or datetime.now(timezone.utc) >= after
+
+
 def get(conn: sqlite3.Connection, name: str, url: str | None,
         force: bool, role: str | None = None, location: str | None = None) -> tuple[dict, str]:
     """Returns (research, where it came from).
 
-    With a role given, research also asks what the company pays for it. The
-    `salary` key is written only when that question was answered, so an entry
-    from before it existed -- or one whose salary call was refused -- has no
-    such key and is refreshed once; after that the usual age rule applies.
+    With a role given, research also asks what the company pays for it, and an
+    entry that has not answered that question yet is refreshed -- see
+    salary_due() for when a refused one is asked again.
     """
     if not force:
         cached, age = read_cache(conn, name)
         if cached is not None and age is not None and age <= cache_days():
-            if not (role and "salary" not in cached):
+            if not (role and salary_due(cached)):
                 cached["cache_age_days"] = round(age, 1)
                 return cached, "cache"
 

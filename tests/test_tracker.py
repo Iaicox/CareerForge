@@ -616,5 +616,108 @@ class TrackerTestCase(unittest.TestCase):
         )
 
 
+class SecretTest(unittest.TestCase):
+    """One reader for every credential, and it never takes /doctor down."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-secret-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.addCleanup(setattr, tracker, "load_dotenv", tracker.load_dotenv)
+        tracker.load_dotenv = lambda: None
+
+    def test_the_environment_wins_over_a_file(self):
+        from unittest import mock
+        import os
+        path = self.tmp / "token"
+        path.write_text("from-the-file", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"CF_TEST_SECRET": "from-the-env"}):
+            self.assertEqual(
+                tracker.secret(("CF_TEST_SECRET",), hint="x", files=(path,)),
+                "from-the-env")
+
+    def test_nothing_there_is_skipped_and_the_next_file_is_read(self):
+        good = self.tmp / "good"
+        good.write_text("s3cret", encoding="utf-8")
+        a_directory = self.tmp / "adir"
+        a_directory.mkdir()
+        self.assertEqual(
+            tracker.secret(("CF_TEST_ABSENT",), hint="x",
+                           files=(self.tmp / "missing", a_directory, good)),
+            "s3cret")
+
+    def test_a_file_that_exists_and_will_not_read_is_named_not_skipped(self):
+        # PowerShell's redirect writes UTF-16, and a wrong ACL is routine on
+        # Windows. Passing over it silently tells the user to write down a
+        # secret that is sitting in the file we just refused to read.
+        utf16 = self.tmp / "utf16"
+        utf16.write_bytes(b"\xff\xfes\x003\x00")
+        good = self.tmp / "good"
+        good.write_text("s3cret", encoding="utf-8")
+        with self.assertRaises(tracker.TrackerError) as ctx:
+            tracker.secret(("CF_TEST_ABSENT",), hint="put it in .env", files=(utf16, good))
+        self.assertIn("utf16", str(ctx.exception))
+        self.assertIn("cannot be read", str(ctx.exception))
+
+    def test_a_byte_order_mark_does_not_travel_into_the_credential(self):
+        # The same redirect, in its other mood: `utf-8` keeps the BOM, so the
+        # token goes out with an invisible first character and the service
+        # rejects it without saying why.
+        path = self.tmp / "bom"
+        path.write_bytes(b"\xef\xbb\xbfs3cret")
+        self.assertEqual(tracker.secret(("CF_TEST_ABSENT",), hint="x", files=(path,)), "s3cret")
+
+    def test_every_failure_is_a_trackererror_so_callers_stay_standing(self):
+        # /doctor asks this about every integration in turn and catches
+        # TrackerError. Anything else escaping -- a decode error, a permission
+        # -- ends the whole report, required checks included.
+        binary = self.tmp / "binary"
+        binary.write_bytes(b"\xff\xfe not utf-8 \x00")
+        a_directory = self.tmp / "adir2"
+        a_directory.mkdir()
+        for path in (binary, a_directory, self.tmp / "missing"):
+            with self.subTest(path=path.name):
+                with self.assertRaises(tracker.TrackerError):
+                    tracker.secret(("CF_TEST_ABSENT",), hint="absent", files=(path,))
+
+    def test_nothing_anywhere_raises_the_caller_s_own_message(self):
+        with self.assertRaises(tracker.TrackerError) as ctx:
+            tracker.secret(("CF_TEST_ABSENT",), hint="put it in .env, like this")
+        self.assertEqual(str(ctx.exception), "put it in .env, like this")
+
+
+class DotenvTest(unittest.TestCase):
+    """.env is where all three secrets live, so it is read the way one is written."""
+
+    def setUp(self) -> None:
+        import os
+        self.os = os
+        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-dotenv-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._real_repo = paths.REPO
+        self.addCleanup(paths.configure, self._real_repo)
+        self.addCleanup(setattr, tracker, "_dotenv_loaded", False)
+        paths.configure(self.tmp)
+        paths.ENV.parent.mkdir(parents=True, exist_ok=True)
+
+    def load(self) -> None:
+        tracker._dotenv_loaded = False
+        tracker.load_dotenv()
+
+    def test_a_byte_order_mark_does_not_become_part_of_the_key_name(self):
+        # A shell redirect writes one, plain utf-8 keeps it, and the first key
+        # then parses as "\ufeffGEMINI_API_KEY" -- which nothing matches, so
+        # the user is told the key is not set while it sits in the file.
+        paths.ENV.write_bytes(b"\xef\xbb\xbfCF_TEST_BOM=abc123\n")
+        self.addCleanup(self.os.environ.pop, "CF_TEST_BOM", None)
+        self.load()
+        self.assertEqual(self.os.environ.get("CF_TEST_BOM"), "abc123")
+
+    def test_a_utf16_env_does_not_take_the_caller_down(self):
+        # UnicodeDecodeError is not an OSError, so it escaped load_dotenv and
+        # ended /doctor's whole report with a traceback.
+        paths.ENV.write_bytes(b"\xff\xfeC\x00F\x00=\x00x\x00")
+        self.load()  # must not raise
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -139,8 +139,10 @@ class NotionRetryPolicyTest(unittest.TestCase):
             return notion_sync.request("GET", "/v1/x", retries=retries)
 
     @staticmethod
-    def reply(status, data=None, headers=None, text=""):
-        return tracker.Response(status, headers or {}, text or json.dumps(data or {}), data)
+    def reply(status, data=None, headers=None, text=None):
+        # `text=""` has to mean an empty body, not "fall back to the data".
+        body = json.dumps(data or {}) if text is None else text
+        return tracker.Response(status, headers or {}, body, data)
 
     def test_a_429_waits_the_delay_the_server_named(self):
         out = self.ask(self.reply(429, {"m": "slow"}, {"Retry-After": "7"}),
@@ -177,6 +179,77 @@ class NotionRetryPolicyTest(unittest.TestCase):
 
     def test_a_success_with_no_body_is_an_empty_dict(self):
         self.assertEqual(self.ask(self.reply(204, None, text="")), {})
+
+    def test_a_success_that_is_not_json_is_an_error_not_an_empty_result(self):
+        # A captive portal answering 200 with an HTML page. Treated as an empty
+        # query result, push() concludes every page is missing and creates them
+        # all again.
+        with self.assertRaises(tracker.TrackerError) as ctx:
+            self.ask(self.reply(200, None, text="<html>sign in to continue</html>"))
+        self.assertIn("not JSON", str(ctx.exception))
+
+
+class QuerySourceTest(unittest.TestCase):
+    """Falling back to the classic endpoint must not replay what was yielded."""
+
+    def test_a_failure_after_rows_went_out_is_raised_not_papered_over(self):
+        # request() raises on a 2xx whose body is not JSON -- a proxy's sign-in
+        # page -- which made this reachable on a successful status. Falling
+        # back here would hand the caller the first pages a second time, and
+        # duplicate rows are how push() decides a page is missing.
+        def fake_paginate(path, payload):
+            yield {"id": "page-1"}
+            if "data_sources" in path:
+                raise tracker.TrackerError("HTTP 200 with a body that is not JSON")
+            yield {"id": "page-2"}
+
+        rows = []
+        with mock.patch.object(notion_sync, "paginate", fake_paginate):
+            with self.assertRaises(tracker.TrackerError):
+                for row in notion_sync.query_source(
+                        {"data_source_id": "ds", "database_id": "db"}):
+                    rows.append(row)
+        self.assertEqual([r["id"] for r in rows], ["page-1"], "and never a second time")
+
+    def test_a_failure_before_any_row_still_falls_back(self):
+        # The case the fallback was written for: this workspace does not expose
+        # the modern endpoint at all.
+        def fake_paginate(path, payload):
+            if "data_sources" in path:
+                raise tracker.TrackerError("data sources are not available here")
+            yield from ({"id": "a"}, {"id": "b"})
+
+        with mock.patch.object(notion_sync, "paginate", fake_paginate):
+            rows = list(notion_sync.query_source(
+                {"data_source_id": "ds", "database_id": "db"}))
+        self.assertEqual([r["id"] for r in rows], ["a", "b"])
+
+    def test_a_caller_that_stops_early_does_not_pull_the_whole_database(self):
+        # company_page() returns on the first match. Collecting the pages
+        # before yielding walked every one of them instead -- at PACE_SECONDS
+        # of deliberate pacing per request, once per application in a push.
+        pulled = []
+
+        def fake_paginate(path, payload):
+            for n in range(100):
+                pulled.append(n)
+                yield {"id": f"page-{n}"}
+
+        with mock.patch.object(notion_sync, "paginate", fake_paginate):
+            rows = notion_sync.query_source({"data_source_id": "ds", "database_id": "db"})
+            first = next(iter(rows))
+        self.assertEqual(first["id"], "page-0")
+        self.assertEqual(pulled, [0], "only the row the caller asked for")
+
+    def test_the_modern_endpoint_is_used_whole_when_it_works(self):
+        def fake_paginate(path, payload):
+            self.assertIn("data_sources", path)
+            yield from ({"id": "a"}, {"id": "b"})
+
+        with mock.patch.object(notion_sync, "paginate", fake_paginate):
+            rows = list(notion_sync.query_source(
+                {"data_source_id": "ds", "database_id": "db"}))
+        self.assertEqual([r["id"] for r in rows], ["a", "b"])
 
 
 if __name__ == "__main__":

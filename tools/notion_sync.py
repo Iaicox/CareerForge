@@ -133,6 +133,14 @@ def request(
                 continue
             raise TrackerError(f"Notion {method} {path} -> {exc}")
         if res.status < 400:
+            if res.data is None and res.text.strip():
+                # A proxy or captive portal answering 200 with an HTML page.
+                # Read as an empty result it is far worse than an error: a
+                # query that returns nothing tells push() every page is
+                # missing, and it creates them all a second time.
+                raise TrackerError(
+                    f"Notion {method} {path} -> HTTP {res.status} with a body that is "
+                    f"not JSON: {res.text[:200]}")
             return res.data if res.data is not None else {}
         if res.status in (429, 502, 503, 529) and attempt < retries:
             delay = float(res.headers.get("Retry-After") or (2 ** attempt))
@@ -210,11 +218,19 @@ def save_ids(ids: dict) -> None:
 def query_source(entry: dict) -> Iterable[dict]:
     """Query a database, whichever API shape this workspace exposes."""
     if entry.get("data_source_id"):
+        handed_over = False
         try:
-            yield from paginate(f"/data_sources/{entry['data_source_id']}/query", {})
+            for row in paginate(f"/data_sources/{entry['data_source_id']}/query", {}):
+                handed_over = True
+                yield row
             return
         except TrackerError:
-            pass  # fall back to the classic endpoint below
+            if handed_over:
+                # The caller already has these rows. Querying the other
+                # endpoint would hand them the same pages a second time, and
+                # duplicate rows are how push() decides a page is missing.
+                raise
+            # Nothing went out yet, so the classic endpoint can start clean.
     yield from paginate(f"/databases/{entry['database_id']}/query", {})
 
 

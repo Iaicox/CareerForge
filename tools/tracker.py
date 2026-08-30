@@ -89,8 +89,14 @@ def load_dotenv() -> None:
     if not path.exists():
         return
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
+        # utf-8-sig: a shell redirect writes a byte-order mark, and plain
+        # utf-8 keeps it -- the first line then parses as "﻿GEMINI_API_KEY",
+        # which no lookup matches, and the user is told the key is not set
+        # while it sits in the file. UTF-16 from the same redirect raises
+        # UnicodeDecodeError, which is not an OSError; unread here, reported
+        # by /doctor's .env check, and never a reason to take a tool down.
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except (OSError, UnicodeDecodeError):
         return
     for line in lines:
         line = line.strip()
@@ -393,7 +399,12 @@ def http_request(url: str, *, method: str = "GET", data: bytes | None = None,
         with urllib.request.urlopen(req, timeout=timeout) as res:
             return _response(res.status, res.headers, res.read())
     except urllib.error.HTTPError as exc:
-        return _response(exc.code, exc.headers, exc.read())
+        # HTTPError is a response: every 4xx and 5xx in this project now comes
+        # through here, and each one holds a socket until it is closed.
+        try:
+            return _response(exc.code, exc.headers, exc.read())
+        finally:
+            exc.close()
     except TimeoutError:
         raise
     except urllib.error.URLError as exc:
@@ -415,25 +426,35 @@ def secret(names: Iterable[str], *, hint: str, files: Iterable[Path] = ()) -> st
     password, an integration token and an API key are got in different places.
     """
     load_dotenv()
-    for name in names:
+    wanted = list(names)
+    for name in wanted:
         value = (os.environ.get(name) or "").strip()
         if value:
             return value
+    first = next(iter(wanted), "the variable")
     for path in files:
-        if path.exists():
-            value = path.read_text(encoding="utf-8").strip()
-            if value:
-                return value
+        if path.is_dir():
+            continue  # not a file: not a credential (and Windows raises
+                      # PermissionError rather than IsADirectoryError here)
+        try:
+            # utf-8-sig, because a shell redirect writes a BOM and plain
+            # `utf-8` would carry it into the credential -- an invisible first
+            # character that fails authentication and explains nothing.
+            value = path.read_text(encoding="utf-8-sig").strip()
+        except (FileNotFoundError, NotADirectoryError):
+            continue  # not there: not a credential
+        except (OSError, UnicodeDecodeError) as exc:
+            # It exists and holds something. Passing over it silently would
+            # tell the user to write down a secret that is already sitting in
+            # the file we just refused to read -- a permission, or UTF-16 out
+            # of a shell redirect.
+            raise TrackerError(
+                f"{rel(path)} cannot be read: {exc}. Fix it, or put the value "
+                f"in .env as {first}=<value>"
+            ) from exc
+        if value:
+            return value
     raise TrackerError(hint)
-
-
-def has_secret(names: Iterable[str], *, files: Iterable[Path] = ()) -> bool:
-    """Whether a credential is there, without reading it out. For /doctor."""
-    try:
-        secret(names, hint="", files=files)
-        return True
-    except TrackerError:
-        return False
 
 
 def parse_iso_utc(value: object) -> datetime | None:
@@ -922,12 +943,13 @@ VERDICT_ORDER = {"strong": 0, "good": 1, "moderate": 2, "weak": 3, "poor": 4}
 
 # Query parameters that identify the click, not the posting. Everything else
 # stays: some boards name the posting in a parameter (gh_jid, jobId).
-# `position`, `source` and `src` are deliberately absent: boards use them to
-# name the posting itself (?position=<id>), and collapsing two postings into one
-# url_key loses the second silently.
+# `position` is the row's index on a LinkedIn search page, and it travels
+# with pageNum, refId and trackingId, which are here for the same reason. A
+# board that names the posting does it the way the comment above says -- in a
+# parameter of its own, gh_jid or jobId -- not in one of these.
 TRACKING_PARAMS = {
-    "ref", "refid", "trk", "trkinfo", "trackingid", "ebp", "pagenum",
-    "refresh", "original_referer", "gh_src", "lever-source",
+    "ref", "refid", "trk", "trkinfo", "trackingid", "ebp", "position", "pagenum",
+    "refresh", "original_referer", "source", "src", "gh_src", "lever-source",
     "lever-origin", "fbclid", "gclid", "msclkid", "mc_cid", "mc_eid", "igshid",
 }
 

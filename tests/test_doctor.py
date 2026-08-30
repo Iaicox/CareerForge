@@ -12,8 +12,10 @@ Nothing covered this check before.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,19 +26,46 @@ sys.path.insert(0, str(REPO / "tools"))
 
 import doctor  # noqa: E402
 import gemini  # noqa: E402
+import paths  # noqa: E402
+
+
+class CheckDotenvTest(unittest.TestCase):
+    """.env is read before every check that needs a secret."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-dotenv-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._real_repo = paths.REPO
+        self.addCleanup(paths.configure, self._real_repo)
+        paths.configure(self.tmp)
+        paths.ENV.parent.mkdir(parents=True, exist_ok=True)
+
+    def test_a_byte_order_mark_does_not_become_part_of_a_key_name(self):
+        paths.ENV.write_bytes(b"\xef\xbb\xbfGEMINI_API_KEY=abc\n")
+        self.assertEqual(doctor.check_dotenv().detail, "keys: GEMINI_API_KEY")
+
+    def test_an_unreadable_env_is_a_warning_not_the_end_of_the_report(self):
+        paths.ENV.write_bytes(b"\xff\xfeG\x00=\x00x\x00")
+        check = doctor.check_dotenv()
+        self.assertEqual(check.status, doctor.WARN)
+        self.assertIn("unreadable", check.detail)
+        self.assertIn("UTF-8", check.fix)
 
 
 class CheckGeminiTest(unittest.TestCase):
     def setUp(self) -> None:
         self.addCleanup(setattr, gemini, "settings", gemini.settings)
         self.enabled = True
+        self.timeout = 30
+        self.spawned: list = []
         gemini.settings = lambda: {
             "enabled": self.enabled, "models": ["m"], "search_models": ["m"],
-            "timeout_seconds": 30, "cache_days": 30, "tasks": [], "log": False,
+            "timeout_seconds": self.timeout, "cache_days": 30, "tasks": [], "log": False,
         }
 
     def check(self, *, stdout: str = "", timeout: bool = False) -> doctor.Check:
         def fake_run(*args, **kwargs):
+            self.spawned.append(kwargs.get("timeout"))
             if timeout:
                 raise subprocess.TimeoutExpired(cmd="gemini.py", timeout=90, output=stdout)
             return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
@@ -119,6 +148,52 @@ class CheckGeminiTest(unittest.TestCase):
         check = self.check(stdout="this is not json")
         self.assertEqual(check.status, doctor.WARN)
         self.assertEqual(check.fix, "python tools/gemini.py check")
+
+    def test_the_probe_budget_covers_both_pools(self):
+        # It was `timeout + 30` for a check that probes two pools, so doctor
+        # timed out setups that worked.
+        self.check(stdout=self.verdict())
+        self.assertEqual(self.spawned, [2 * 30 + 30])
+
+    def test_a_large_working_timeout_does_not_become_the_health_check_s(self):
+        # The half the first version of this test could not see: with
+        # timeout_seconds below PROBE_TIMEOUT the capped and uncapped formulas
+        # agree, so removing the cap changed nothing and every test stayed
+        # green. A research call may take ten minutes; /doctor may not.
+        self.timeout = 600
+        self.check(stdout=self.verdict())
+        self.assertEqual(self.spawned, [2 * gemini.PROBE_TIMEOUT + 30])
+
+    def test_a_killed_probe_quotes_the_time_it_was_actually_given(self):
+        # Also untested: reverting either call site that feeds remedy_for the
+        # applied limit left the whole suite green.
+        self.timeout = 600
+        check = self.check(timeout=True)
+        budget = 2 * gemini.PROBE_TIMEOUT + 30
+        self.assertIn(f"{budget}s", check.detail)
+        self.assertIn(f"within {budget}s", check.fix)
+        self.assertNotIn("600", check.fix, "not the configured timeout, which did not apply")
+
+    def test_a_gemini_that_will_not_import_says_so(self):
+        # This branch was added in the commit that fixed two guards which
+        # could not fail, and had no test of its own: making it unreachable
+        # left all 358 tests green.
+        with mock.patch.dict(sys.modules, {"gemini": None}):
+            check = doctor.check_gemini()
+        self.assertEqual(check.status, doctor.WARN)
+        self.assertIn("will not import", check.detail)
+        self.assertNotIn("config.toml", check.fix,
+                         "the config is fine; the module is not")
+
+    def test_settings_that_will_not_read_are_not_reported_as_disabled(self):
+        # "disabled (optional)" is green, and /setup reads it as the toolchain
+        # being fine. A config that cannot be parsed, or a tool that will not
+        # import, is not the same as switched off.
+        gemini.settings = lambda: (_ for _ in ()).throw(ValueError("bad TOML"))
+        check = self.check()
+        self.assertEqual(check.status, doctor.WARN)
+        self.assertIn("cannot read the [gemini] settings", check.detail)
+        self.assertIn("config.toml", check.fix)
 
     def test_disabled_is_ok_and_spawns_nothing(self):
         self.enabled = False
