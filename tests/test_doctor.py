@@ -12,8 +12,10 @@ Nothing covered this check before.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +26,30 @@ sys.path.insert(0, str(REPO / "tools"))
 
 import doctor  # noqa: E402
 import gemini  # noqa: E402
+import paths  # noqa: E402
+
+
+class CheckDotenvTest(unittest.TestCase):
+    """.env is read before every check that needs a secret."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-dotenv-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._real_repo = paths.REPO
+        self.addCleanup(paths.configure, self._real_repo)
+        paths.configure(self.tmp)
+        paths.ENV.parent.mkdir(parents=True, exist_ok=True)
+
+    def test_a_byte_order_mark_does_not_become_part_of_a_key_name(self):
+        paths.ENV.write_bytes(b"\xef\xbb\xbfGEMINI_API_KEY=abc\n")
+        self.assertEqual(doctor.check_dotenv().detail, "keys: GEMINI_API_KEY")
+
+    def test_an_unreadable_env_is_a_warning_not_the_end_of_the_report(self):
+        paths.ENV.write_bytes(b"\xff\xfeG\x00=\x00x\x00")
+        check = doctor.check_dotenv()
+        self.assertEqual(check.status, doctor.WARN)
+        self.assertIn("unreadable", check.detail)
+        self.assertIn("UTF-8", check.fix)
 
 
 class CheckGeminiTest(unittest.TestCase):

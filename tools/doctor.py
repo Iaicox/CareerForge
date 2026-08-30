@@ -260,11 +260,15 @@ def check_dotenv() -> Check:
     try:
         keys = [
             line.split("=", 1)[0].strip()
-            for line in path.read_text(encoding="utf-8").splitlines()
+            for line in path.read_text(encoding="utf-8-sig").splitlines()
             if line.strip() and not line.strip().startswith("#") and "=" in line
         ]
-    except OSError as exc:
-        return Check(".env", WARN, f"unreadable: {exc}", required=False)
+    except (OSError, UnicodeDecodeError) as exc:
+        # This check runs before the ones that use the secrets, so an
+        # unreadable .env used to end the whole report with a traceback.
+        return Check(".env", WARN, f"unreadable: {exc}",
+                     "save it as UTF-8 -- a shell redirect on Windows writes UTF-16",
+                     required=False)
     return Check(".env", OK, f"keys: {', '.join(keys) or '(none)'}", required=False)
 
 

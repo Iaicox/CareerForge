@@ -89,8 +89,14 @@ def load_dotenv() -> None:
     if not path.exists():
         return
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
+        # utf-8-sig: a shell redirect writes a byte-order mark, and plain
+        # utf-8 keeps it -- the first line then parses as "﻿GEMINI_API_KEY",
+        # which no lookup matches, and the user is told the key is not set
+        # while it sits in the file. UTF-16 from the same redirect raises
+        # UnicodeDecodeError, which is not an OSError; unread here, reported
+        # by /doctor's .env check, and never a reason to take a tool down.
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except (OSError, UnicodeDecodeError):
         return
     for line in lines:
         line = line.strip()

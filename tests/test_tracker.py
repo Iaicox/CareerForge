@@ -683,5 +683,39 @@ class SecretTest(unittest.TestCase):
         self.assertEqual(str(ctx.exception), "put it in .env, like this")
 
 
+class DotenvTest(unittest.TestCase):
+    """.env is where all three secrets live, so it is read the way one is written."""
+
+    def setUp(self) -> None:
+        import os
+        self.os = os
+        self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-dotenv-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._real_repo = paths.REPO
+        self.addCleanup(paths.configure, self._real_repo)
+        self.addCleanup(setattr, tracker, "_dotenv_loaded", False)
+        paths.configure(self.tmp)
+        paths.ENV.parent.mkdir(parents=True, exist_ok=True)
+
+    def load(self) -> None:
+        tracker._dotenv_loaded = False
+        tracker.load_dotenv()
+
+    def test_a_byte_order_mark_does_not_become_part_of_the_key_name(self):
+        # A shell redirect writes one, plain utf-8 keeps it, and the first key
+        # then parses as "\ufeffGEMINI_API_KEY" -- which nothing matches, so
+        # the user is told the key is not set while it sits in the file.
+        paths.ENV.write_bytes(b"\xef\xbb\xbfCF_TEST_BOM=abc123\n")
+        self.addCleanup(self.os.environ.pop, "CF_TEST_BOM", None)
+        self.load()
+        self.assertEqual(self.os.environ.get("CF_TEST_BOM"), "abc123")
+
+    def test_a_utf16_env_does_not_take_the_caller_down(self):
+        # UnicodeDecodeError is not an OSError, so it escaped load_dotenv and
+        # ended /doctor's whole report with a traceback.
+        paths.ENV.write_bytes(b"\xff\xfeC\x00F\x00=\x00x\x00")
+        self.load()  # must not raise
+
+
 if __name__ == "__main__":
     unittest.main()
