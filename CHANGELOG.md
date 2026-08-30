@@ -163,6 +163,20 @@
   already-present are now reported on separate lines, for applications and
   events alike.
 
+- **The Notion mirror survives a slow connection.** `notion_sync.request`
+  retried a refused or dropped connection four times but not a read timeout: a
+  socket timeout is not a `URLError`, so it escaped the retry loop and came out
+  as a bare `TimeoutError` in the middle of a push. Gemini and the mirror now
+  share one transport, which classifies a timeout the same way for both; each
+  keeps its own retry policy, pacing and error type on top of it.
+
+- **A state file is written whole, or not at all.** `data/state/notion.json`
+  and `gemini-cooldowns.json` were written straight over the target, so an
+  interrupted write left a parse error rather than a shorter file. The
+  cooldowns file recovers by itself — an unreadable one reads as no cooldowns —
+  but `notion.json` holds the database ids and costs a re-provision to rebuild.
+  Both now write beside the target and move it into place.
+
 ### Documentation
 
 - `docs/notion-mirror.md` states what `push` actually does: applications only,
