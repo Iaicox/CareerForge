@@ -71,6 +71,13 @@ DEFAULT_SEARCH_MODELS = ("gemini-2.5-flash", "gemini-2.5-flash-lite")
 # the next model.
 OVERLOAD_BACKOFF = (5, 15)
 
+# The ceiling on one `check` probe, whatever timeout_seconds says. The probe
+# asks for one word, so the configured budget for real work -- 300s in the
+# shipped config, and it walks two pools -- would let a health check block
+# /doctor for ten minutes. Still generous: the slowest real probe measured
+# here was 35s.
+PROBE_TIMEOUT = 120
+
 # Models the key does not know (404). Skipped until the process ends; the
 # next run asks again, in case the key gained access.
 UNKNOWN_MODELS: set[str] = set()
@@ -947,14 +954,17 @@ def check_report(cool: bool = False) -> dict:
         report["remedy"] = "set [gemini] enabled = true in data/config/config.toml"
         return report
 
+    probe_limit = min(s["timeout_seconds"], PROBE_TIMEOUT)
+    report["probe_timeout"] = probe_limit
     failures: list[Reason] = []
     for label, search in (("plain", False), ("search", True)):
         started = time.monotonic()
         try:
-            # The configured timeout, not a shorter one: a thinking model can
-            # take a minute over one word, and "timed out" would be the wrong
-            # verdict.
-            reply = call("Reply with exactly: OK", kind="check", search=search, cool=cool)
+            # Bounded by PROBE_TIMEOUT rather than the working budget: the
+            # question is one word, and a health check that can block for ten
+            # minutes is not one.
+            reply = call("Reply with exactly: OK", kind="check", search=search,
+                         cool=cool, timeout=probe_limit)
         except (GeminiUnavailable, GeminiBadOutput) as exc:
             reasons = list(getattr(exc, "reasons", None) or [])
             if not reasons:

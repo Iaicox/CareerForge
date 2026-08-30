@@ -285,7 +285,10 @@ def check_gemini() -> Check:
     if not enabled:
         return Check("Gemini delegation", OK, "disabled (optional)", required=False)
 
-    budget = 2 * timeout + 30
+    # From the probe's own ceiling, not from the working timeout: the check
+    # is bounded by what a health check may cost, not by what a research call
+    # may take.
+    budget = 2 * min(timeout, gemini.PROBE_TIMEOUT) + 30
     out, killed = "", False
     try:
         probe = subprocess.run(
