@@ -879,8 +879,11 @@ def remedy_for(reasons: list[Reason], *, timeout_seconds: int) -> str:
     if kind == "overloaded":
         return "Google is under load for these models -- try again shortly"
     if kind == "timeout":
-        return (f"no answer within timeout_seconds ({timeout_seconds}s) -- raise it in "
-                "data/config/config.toml, or try again later")
+        # Not simply "raise timeout_seconds": a probe is capped at
+        # PROBE_TIMEOUT, so raising the setting past that changes nothing here.
+        return (f"no answer within {timeout_seconds}s -- the models are slow or "
+                "unreachable; try again, and raise [gemini] timeout_seconds in "
+                "data/config/config.toml if real calls time out too")
     return ("run `python tools/gemini.py check` and read the last entry in "
             f"{rel(paths.GEMINI_LOG)}")
 
@@ -994,7 +997,7 @@ def check_report(cool: bool = False) -> dict:
             "reply": reply.strip()[:20],
         }
     if failures:
-        report["remedy"] = remedy_for(failures, timeout_seconds=s["timeout_seconds"])
+        report["remedy"] = remedy_for(failures, timeout_seconds=probe_limit)
     return report
 
 

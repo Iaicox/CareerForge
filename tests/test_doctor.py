@@ -30,6 +30,7 @@ class CheckGeminiTest(unittest.TestCase):
     def setUp(self) -> None:
         self.addCleanup(setattr, gemini, "settings", gemini.settings)
         self.enabled = True
+        self.spawned: list = []
         gemini.settings = lambda: {
             "enabled": self.enabled, "models": ["m"], "search_models": ["m"],
             "timeout_seconds": 30, "cache_days": 30, "tasks": [], "log": False,
@@ -37,6 +38,7 @@ class CheckGeminiTest(unittest.TestCase):
 
     def check(self, *, stdout: str = "", timeout: bool = False) -> doctor.Check:
         def fake_run(*args, **kwargs):
+            self.spawned.append(kwargs.get("timeout"))
             if timeout:
                 raise subprocess.TimeoutExpired(cmd="gemini.py", timeout=90, output=stdout)
             return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
@@ -119,6 +121,14 @@ class CheckGeminiTest(unittest.TestCase):
         check = self.check(stdout="this is not json")
         self.assertEqual(check.status, doctor.WARN)
         self.assertEqual(check.fix, "python tools/gemini.py check")
+
+    def test_the_probe_budget_covers_both_pools_and_stops_there(self):
+        # It was `timeout + 30` for a check that probes two pools, so doctor
+        # timed out setups that worked; and it is sized from the probe's own
+        # ceiling, so a large working timeout_seconds cannot make a health
+        # check block for ten minutes. Nothing asserted either before.
+        self.check(stdout=self.verdict())
+        self.assertEqual(self.spawned, [2 * min(30, gemini.PROBE_TIMEOUT) + 30])
 
     def test_settings_that_will_not_read_are_not_reported_as_disabled(self):
         # "disabled (optional)" is green, and /setup reads it as the toolchain

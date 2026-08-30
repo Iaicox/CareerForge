@@ -801,9 +801,13 @@ class RemedyTest(unittest.TestCase):
             gemini.pool_summary([self.R("m", "timeout", "timed out")]),
             "no answer in time")
 
-    def test_a_timeout_names_the_setting_that_bounds_it(self):
-        self.assertIn("timeout_seconds (45s)",
-                      self.remedy(self.R("m", "timeout", "timed out"), timeout_seconds=45))
+    def test_a_timeout_reports_the_limit_that_actually_applied(self):
+        # The probe is capped at PROBE_TIMEOUT, so quoting the configured
+        # timeout_seconds here would advise raising a setting that does not
+        # bound what just happened.
+        text = self.remedy(self.R("m", "timeout", "timed out"), timeout_seconds=45)
+        self.assertIn("within 45s", text)
+        self.assertNotIn("timeout_seconds (45s)", text)
 
     def test_only_a_key_problem_says_anything_about_the_key(self):
         self.assertIn("GEMINI_API_KEY", self.remedy(self.R("", "no_key", "not set")))

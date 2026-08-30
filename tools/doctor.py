@@ -291,18 +291,16 @@ def check_gemini() -> Check:
     if not enabled:
         return Check("Gemini delegation", OK, "disabled (optional)", required=False)
 
-    # From the probe's own ceiling, not from the working timeout: the check
-    # is bounded by what a health check may cost, not by what a research call
-    # may take.
-    budget = 2 * min(timeout, gemini.PROBE_TIMEOUT) + 30
+    # From the probe's own ceiling, not from the working timeout: the check is
+    # bounded by what a health check may cost, not by what a research call may
+    # take. `check` walks two pools, hence twice.
+    probe_limit = min(timeout, gemini.PROBE_TIMEOUT)
+    budget = 2 * probe_limit + 30
     out, killed = "", False
     try:
         probe = subprocess.run(
             [sys.executable, str(REPO / "tools" / "gemini.py"), "check", "--json"],
             capture_output=True, text=True,
-            # `check` runs the plain pool and then the search pool, and each of
-            # them is allowed the configured budget. Anything less than both and
-            # doctor reports a timeout of its own making.
             timeout=budget,
         )
         out = probe.stdout or ""
@@ -324,7 +322,7 @@ def check_gemini() -> Check:
             return Check(
                 "Gemini delegation", WARN, f"the probe did not finish within {budget}s",
                 gemini.remedy_for([gemini.Reason("", "timeout", "the probe was killed")],
-                                  timeout_seconds=timeout),
+                                  timeout_seconds=probe_limit),
                 required=False)
         return Check("Gemini delegation", WARN, "the probe answered with something unreadable",
                      "python tools/gemini.py check", required=False)
