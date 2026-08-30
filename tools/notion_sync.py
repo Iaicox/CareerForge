@@ -218,16 +218,19 @@ def save_ids(ids: dict) -> None:
 def query_source(entry: dict) -> Iterable[dict]:
     """Query a database, whichever API shape this workspace exposes."""
     if entry.get("data_source_id"):
+        handed_over = False
         try:
-            # Collected before a single row is handed over: yielding as we go
-            # and then falling through would give the caller the first pages
-            # twice, once from each endpoint.
-            rows = list(paginate(f"/data_sources/{entry['data_source_id']}/query", {}))
-        except TrackerError:
-            pass  # fall back to the classic endpoint below
-        else:
-            yield from rows
+            for row in paginate(f"/data_sources/{entry['data_source_id']}/query", {}):
+                handed_over = True
+                yield row
             return
+        except TrackerError:
+            if handed_over:
+                # The caller already has these rows. Querying the other
+                # endpoint would hand them the same pages a second time, and
+                # duplicate rows are how push() decides a page is missing.
+                raise
+            # Nothing went out yet, so the classic endpoint can start clean.
     yield from paginate(f"/databases/{entry['database_id']}/query", {})
 
 

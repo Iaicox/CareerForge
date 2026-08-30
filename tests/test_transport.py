@@ -192,19 +192,54 @@ class NotionRetryPolicyTest(unittest.TestCase):
 class QuerySourceTest(unittest.TestCase):
     """Falling back to the classic endpoint must not replay what was yielded."""
 
-    def test_a_failure_partway_through_does_not_hand_rows_over_twice(self):
-        # request() now raises on a 2xx whose body is not JSON -- a proxy's
-        # sign-in page -- which made this reachable on a successful status.
+    def test_a_failure_after_rows_went_out_is_raised_not_papered_over(self):
+        # request() raises on a 2xx whose body is not JSON -- a proxy's sign-in
+        # page -- which made this reachable on a successful status. Falling
+        # back here would hand the caller the first pages a second time, and
+        # duplicate rows are how push() decides a page is missing.
         def fake_paginate(path, payload):
             yield {"id": "page-1"}
             if "data_sources" in path:
                 raise tracker.TrackerError("HTTP 200 with a body that is not JSON")
             yield {"id": "page-2"}
 
+        rows = []
+        with mock.patch.object(notion_sync, "paginate", fake_paginate):
+            with self.assertRaises(tracker.TrackerError):
+                for row in notion_sync.query_source(
+                        {"data_source_id": "ds", "database_id": "db"}):
+                    rows.append(row)
+        self.assertEqual([r["id"] for r in rows], ["page-1"], "and never a second time")
+
+    def test_a_failure_before_any_row_still_falls_back(self):
+        # The case the fallback was written for: this workspace does not expose
+        # the modern endpoint at all.
+        def fake_paginate(path, payload):
+            if "data_sources" in path:
+                raise tracker.TrackerError("data sources are not available here")
+            yield from ({"id": "a"}, {"id": "b"})
+
         with mock.patch.object(notion_sync, "paginate", fake_paginate):
             rows = list(notion_sync.query_source(
                 {"data_source_id": "ds", "database_id": "db"}))
-        self.assertEqual([r["id"] for r in rows], ["page-1", "page-2"])
+        self.assertEqual([r["id"] for r in rows], ["a", "b"])
+
+    def test_a_caller_that_stops_early_does_not_pull_the_whole_database(self):
+        # company_page() returns on the first match. Collecting the pages
+        # before yielding walked every one of them instead -- at PACE_SECONDS
+        # of deliberate pacing per request, once per application in a push.
+        pulled = []
+
+        def fake_paginate(path, payload):
+            for n in range(100):
+                pulled.append(n)
+                yield {"id": f"page-{n}"}
+
+        with mock.patch.object(notion_sync, "paginate", fake_paginate):
+            rows = notion_sync.query_source({"data_source_id": "ds", "database_id": "db"})
+            first = next(iter(rows))
+        self.assertEqual(first["id"], "page-0")
+        self.assertEqual(pulled, [0], "only the row the caller asked for")
 
     def test_the_modern_endpoint_is_used_whole_when_it_works(self):
         def fake_paginate(path, payload):
