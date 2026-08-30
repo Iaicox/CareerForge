@@ -438,7 +438,7 @@ def is_bad_key(error: dict) -> bool:
     return "API_KEY_INVALID" in blob or "API KEY NOT VALID" in blob
 
 
-def _attempt(model: str, data: bytes, limit: int, log_kind: str, prompt: str,
+def _attempt(model: str, data: bytes, log_kind: str, prompt: str,
              payload: str | None, search: bool, deadline: float,
              cool: bool = True) -> tuple[str, Reason | None, str]:
     """One model: ("ok", None, answer) or ("next", Reason, "").
@@ -558,6 +558,7 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
     deadline = time.monotonic() + limit
     cooldowns = load_cooldowns()  # one read for the whole pool; it cannot change under us
     reasons: list[Reason] = []
+    seen_http_errors: set[str] = set()
     for candidate in pool:
         if candidate in UNKNOWN_MODELS:
             reasons.append(Reason(candidate, "unknown_model", "unknown to this key, skipped"))
@@ -572,12 +573,19 @@ def call(prompt: str, *, kind: str = "call", model: str | None = None,
             reasons.append(Reason(
                 candidate, "timeout", f"not asked, the {limit}s budget was spent"))
             continue
-        verdict, reason, answer = _attempt(candidate, data, limit, kind, prompt,
+        verdict, reason, answer = _attempt(candidate, data, kind, prompt,
                                            payload, search, deadline, cool)
         if verdict == "ok":
             LAST_MODEL = candidate
             return answer
         reasons.append(reason)
+        # A 400 is usually this model's -- it will not take the search tool, or
+        # JSON mode. The identical complaint from a second model is the
+        # request's, and re-uploading a megabyte to the rest of the pool will
+        # not change its mind.
+        if reason.kind == "http_error" and reason.detail in seen_http_errors:
+            break
+        seen_http_errors.add(reason.detail)
     which = "search pool" if search else "pool"
     text = (f"no model in the {which} could answer -- "
             + "; ".join(f"{r.model}: {r.detail}" for r in reasons)

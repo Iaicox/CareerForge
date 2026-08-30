@@ -512,18 +512,20 @@ class RestTransportTest(unittest.TestCase):
 
     def test_every_failure_carries_the_kind_the_branch_knew(self):
         overloaded = (503, {"error": {"code": 503, "message": "high demand"}})
-        for kind, responses in (
+        for kind, responses, tried in (
             ("quota_daily",
-             [self.quota(None, "GenerateRequestsPerDayPerProjectPerModel-FreeTier")] * 3),
+             [self.quota(None, "GenerateRequestsPerDayPerProjectPerModel-FreeTier")] * 3, 3),
             ("quota_minute",
-             [self.quota("7s", "GenerateRequestsPerMinutePerProjectPerModel-FreeTier")] * 3),
-            ("unknown_model", [(404, {"error": {"code": 404, "message": "no such model"}})] * 3),
+             [self.quota("7s", "GenerateRequestsPerMinutePerProjectPerModel-FreeTier")] * 3, 3),
+            ("unknown_model", [(404, {"error": {"code": 404, "message": "no such model"}})] * 3, 3),
+            # Two models, the same complaint: the third is not asked. See
+            # test_the_same_400_from_two_models_is_the_request_s_fault.
             ("http_error",
-             [(400, {"error": {"code": 400, "message": "google_search is not supported"}})] * 3),
-            ("timeout", [TimeoutError("timed out")] * 3),
+             [(400, {"error": {"code": 400, "message": "google_search is not supported"}})] * 3, 2),
+            ("timeout", [TimeoutError("timed out")] * 3, 3),
             ("no_answer",
-             [(200, {"candidates": [], "promptFeedback": {"blockReason": "SAFETY"}})] * 3),
-            ("overloaded", [overloaded] * 9),  # three tries each, then the next model
+             [(200, {"candidates": [], "promptFeedback": {"blockReason": "SAFETY"}})] * 3, 3),
+            ("overloaded", [overloaded] * 9, 3),  # three tries each, then the next model
         ):
             with self.subTest(kind=kind):
                 gemini.UNKNOWN_MODELS.clear()
@@ -532,7 +534,30 @@ class RestTransportTest(unittest.TestCase):
                 with self.assertRaises(gemini.GeminiUnavailable) as ctx:
                     gemini.call("instruction")
                 self.assertEqual({r.kind for r in ctx.exception.reasons}, {kind})
-                self.assertEqual([r.model for r in ctx.exception.reasons], self.POOL)
+                self.assertEqual([r.model for r in ctx.exception.reasons], self.POOL[:tried])
+
+    def test_the_same_400_from_two_models_is_the_request_s_fault(self):
+        # summarize() sends up to a megabyte, so "payload size exceeds the
+        # limit" is reachable -- and re-uploading it to the rest of the pool
+        # cannot change any model's mind.
+        same = (400, {"error": {"code": 400,
+                                "message": "request payload size exceeds the limit"}})
+        self.responses = [same] * 3
+        with self.assertRaises(gemini.GeminiUnavailable) as ctx:
+            gemini.call("instruction", payload="x" * 5000)
+        self.assertEqual(len(ctx.exception.reasons), 2)
+        self.assertEqual(len(self.calls), 2, "the third model is never uploaded to")
+
+    def test_two_different_400s_are_each_that_model_s_own_problem(self):
+        # The common case: a model that will not take the search tool, behind
+        # one that will not take JSON mode, in front of one that answers.
+        self.responses = [
+            (400, {"error": {"code": 400, "message": "google_search is not supported"}}),
+            (400, {"error": {"code": 400, "message": "responseMimeType is not supported"}}),
+            (200, self.ok("OK")),
+        ]
+        self.assertEqual(gemini.call("instruction"), "OK")
+        self.assertEqual(self.models_called(), self.POOL)
 
     def test_a_quota_says_when_it_comes_back(self):
         # The remedy for a daily quota is "wait", so the time has to survive as
