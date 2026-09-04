@@ -79,6 +79,15 @@ class TrackerTestCase(unittest.TestCase):
             )
         )
 
+    def attachment_rows(self):
+        # Ids included: a row deleted and written again is not a no-op.
+        return sorted(
+            tuple(r)
+            for r in self.conn.execute(
+                "SELECT id, application_id, kind, path FROM attachments"
+            )
+        )
+
     # -- deduplication -----------------------------------------------------
 
     def test_duplicate_url_is_refused(self):
@@ -573,6 +582,72 @@ class TrackerTestCase(unittest.TestCase):
             "data/pipeline/applications/acme/cv.pdf",
             "data/pipeline/rejected/acme/cover.pdf",
         ])
+
+    def replay_migration(self, name):
+        """Run one migration for real on a database that recorded it baselined."""
+        with self.conn:
+            self.conn.execute("DELETE FROM migrations WHERE name = ?", (name,))
+        return tracker.apply_migrations(self.conn)
+
+    def test_migration_006_repoints_attachments_at_the_folder_on_disk(self):
+        # Which stage a slug belongs to is not on the row: the status-to-stage
+        # map is the user's config, and the folder can drift from the status
+        # anyway. The folder on disk is the ground truth.
+        row = self.add()
+        (paths.stage_dir("rejected") / row["slug"]).mkdir(parents=True)
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO attachments(application_id, kind, path) VALUES (?,?,?)",
+                (row["id"], "cv", f"data/pipeline/applications/{row['slug']}/cv.pdf"),
+            )
+
+        self.assertEqual(
+            self.replay_migration("006_attachment_stage_paths.py"),
+            ["006_attachment_stage_paths.py"],
+        )
+        self.assertEqual(
+            self.attachment_paths(row),
+            [f"data/pipeline/rejected/{row['slug']}/cv.pdf"],
+        )
+
+    def test_migration_006_collapses_the_duplicate_rather_than_leaving_both(self):
+        # The shape the live database was in: the folder had moved to rejected/,
+        # both documents were attached again there, and the rows written under
+        # applications/ stayed behind. Two rows per kind, one live and one dead.
+        row = self.add()
+        folder = paths.stage_dir("rejected") / row["slug"]
+        folder.mkdir(parents=True)
+        for kind, name in (("cv", "cv.pdf"), ("cover", "cover.pdf")):
+            (folder / name).write_text("x", encoding="utf-8")
+            with self.conn:
+                for stage in ("applications", "rejected"):
+                    self.conn.execute(
+                        "INSERT INTO attachments(application_id, kind, path) "
+                        "VALUES (?,?,?)",
+                        (row["id"], kind, f"data/pipeline/{stage}/{row['slug']}/{name}"),
+                    )
+
+        self.replay_migration("006_attachment_stage_paths.py")
+
+        self.assertEqual(
+            self.attachment_paths(row),
+            [
+                f"data/pipeline/rejected/{row['slug']}/cover.pdf",
+                f"data/pipeline/rejected/{row['slug']}/cv.pdf",
+            ],
+        )
+
+    def test_migration_006_is_a_no_op_when_the_paths_are_already_right(self):
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        self.attach(row, "cover", "cover.pdf")
+        before = self.attachment_rows()
+
+        self.replay_migration("006_attachment_stage_paths.py")
+        self.assertEqual(self.attachment_rows(), before)
+        # And again, on the database it has just walked over.
+        self.replay_migration("006_attachment_stage_paths.py")
+        self.assertEqual(self.attachment_rows(), before)
 
     def columns(self, table="applications"):
         return {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}

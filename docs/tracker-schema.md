@@ -176,7 +176,12 @@ rows of `attachments`: their paths are repo-relative, and the stage directories
 moved from the repo root to `data/pipeline/`. `005_postings.sql` creates the
 `postings` table on an existing database; `tracker.py init` then gives every
 application its `applied` row, and `shortlist.py import-json` brings the old
-`seen_jobs.json` in.
+`seen_jobs.json` in. `006_attachment_stage_paths.py` repairs that same column
+once more: `set_status` used to move an application's folder between stage
+directories without taking its attachment paths along, so the migration
+repoints each row at the stage its folder is actually in — and where the
+document was attached a second time at the right path, collapses the pair onto
+the row that is already correct.
 
 ## Backups
 
