@@ -71,12 +71,18 @@ set independently.
 tracker.py set-status <slug> screening
     -> move_folder(slug, stage_of("screening"))    # data/pipeline/applications/ -> data/pipeline/processing/
     -> UPDATE applications SET status = 'screening'
+    -> UPDATE attachments SET path = ...           # same documents, one stage over
 ```
 
 The move happens **before** the database write, so a refused move leaves the
 status untouched. A name collision in the target directory is reported and
 nothing is changed — overwriting someone's application documents is not a
 recoverable mistake.
+
+The two database writes share a single transaction. Attachment paths are stored
+repo-relative with the stage directory inside them, so a status that changed
+without them would leave every document row pointing at a file that is no
+longer there — and `add_attachment` cannot take a stale row back out.
 
 `/triage` exists because reality still drifts: it compares `folder_in_sync`
 across the pipeline and proposes fixes.

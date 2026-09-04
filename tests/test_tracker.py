@@ -55,6 +55,24 @@ class TrackerTestCase(unittest.TestCase):
                 self.conn, self.cfg, company=company, role=role, url=url, **kw
             )
 
+    def attach(self, row, kind="cv", name="cv.pdf", stage="applications"):
+        """A real file in the application's folder, recorded as an attachment."""
+        folder = paths.stage_dir(stage) / row["slug"]
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_text("x", encoding="utf-8")
+        with self.conn:
+            return tracker.add_attachment(
+                self.conn, row["slug"], kind, str(folder / name)
+            )
+
+    def attachment_paths(self, row):
+        return sorted(
+            r["path"]
+            for r in self.conn.execute(
+                "SELECT path FROM attachments WHERE application_id = ?", (row["id"],)
+            )
+        )
+
     # -- deduplication -----------------------------------------------------
 
     def test_duplicate_url_is_refused(self):
@@ -112,6 +130,85 @@ class TrackerTestCase(unittest.TestCase):
         with self.conn:
             _, note = tracker.set_status(self.conn, self.cfg, row["slug"], "applied")
         self.assertIn("no folder", note)
+
+    # -- attachment paths follow the folder --------------------------------
+
+    def test_a_stage_move_takes_the_attachment_paths_with_it(self):
+        # Paths are stored with the stage directory inside them, so a folder
+        # that moves without them leaves every row pointing at nothing.
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        self.attach(row, "cover", "cover.pdf")
+
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+
+        self.assertEqual(
+            self.attachment_paths(row),
+            [
+                f"data/pipeline/processing/{row['slug']}/cover.pdf",
+                f"data/pipeline/processing/{row['slug']}/cv.pdf",
+            ],
+        )
+        for stored in self.attachment_paths(row):
+            self.assertTrue((paths.REPO / stored).exists(), stored)
+
+    def test_no_move_leaves_the_attachment_paths_alone(self):
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        before = self.attachment_paths(row)
+
+        with self.conn:
+            tracker.set_status(
+                self.conn, self.cfg, row["slug"], "screening", move=False
+            )
+
+        self.assertEqual(self.attachment_paths(row), before)
+
+    def test_a_path_already_taken_collapses_to_one_row(self):
+        # add_attachment is INSERT OR IGNORE against UNIQUE(application_id,
+        # kind, path), so re-attaching the right path after a move appended a
+        # second row instead of replacing the stale one. Rewriting the stale row
+        # onto the live one has to collapse the pair, not raise IntegrityError.
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO attachments(application_id, kind, path) VALUES (?,?,?)",
+                (row["id"], "cv", f"data/pipeline/processing/{row['slug']}/cv.pdf"),
+            )
+
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+
+        self.assertEqual(
+            self.attachment_paths(row),
+            [f"data/pipeline/processing/{row['slug']}/cv.pdf"],
+        )
+
+    def test_only_rows_under_the_moved_folder_are_rewritten(self):
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        strays = [
+            "data/documents/cv_master.pdf",
+            # Another application whose slug starts with this one.
+            f"data/pipeline/applications/{row['slug']}-2/cv.pdf",
+            f"data/pipeline/rejected/{row['slug']}/cv.pdf",
+        ]
+        with self.conn:
+            for i, stray in enumerate(strays):
+                self.conn.execute(
+                    "INSERT INTO attachments(application_id, kind, path) VALUES (?,?,?)",
+                    (row["id"], f"other{i}", stray),
+                )
+
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+
+        self.assertEqual(
+            self.attachment_paths(row),
+            sorted(strays + [f"data/pipeline/processing/{row['slug']}/cv.pdf"]),
+        )
 
     # -- optimistic locking ------------------------------------------------
 

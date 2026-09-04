@@ -729,18 +729,35 @@ def folder_for(slug: str) -> tuple[Path | None, str | None]:
     return None, None
 
 
-def move_folder(slug: str, target_stage: str) -> str:
+class Move(NamedTuple):
+    """What move_folder() did. from_stage is None when nothing moved."""
+
+    from_stage: str | None
+    to_stage: str | None
+    note: str
+
+    @property
+    def moved(self) -> bool:
+        return self.from_stage is not None
+
+
+def move_folder(slug: str, target_stage: str) -> Move:
     """Move an application folder between stage directories.
 
     Refuses to overwrite: a name collision is reported, never resolved silently.
+
+    Returns the stages, not only a sentence about them: attachment paths carry
+    the stage directory inside them, so set_status has to know where the folder
+    came from and where it went, and reading that back out of prose is not a
+    thing to build on.
     """
     if target_stage not in STAGES:
         raise TrackerError(f"unknown stage {target_stage!r}")
     current, current_stage = folder_for(slug)
     if current is None:
-        return f"no folder for {slug} yet (nothing to move)"
+        return Move(None, None, f"no folder for {slug} yet (nothing to move)")
     if current_stage == target_stage:
-        return f"folder already in {target_stage}/"
+        return Move(None, None, f"folder already in {target_stage}/")
 
     target = paths.stage_dir(target_stage) / slug
     if target.exists():
@@ -750,7 +767,11 @@ def move_folder(slug: str, target_stage: str) -> str:
         )
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(current), str(target))
-    return f"moved {current_stage}/{slug} -> {target_stage}/{slug}"
+    return Move(
+        current_stage,
+        target_stage,
+        f"moved {current_stage}/{slug} -> {target_stage}/{slug}",
+    )
 
 
 def set_status(
@@ -772,12 +793,24 @@ def set_status(
 
     # Move the folder first: if it collides we must not have already claimed
     # the new status in the database.
-    note = move_folder(row["slug"], cfg.stage_of(status)) if move else ""
+    folder_move = (
+        move_folder(row["slug"], cfg.stage_of(status)) if move else Move(None, None, "")
+    )
+
+    # No `with conn:` here, deliberately. Both callers already wrap this call in
+    # one, and sqlite3's context manager does not nest -- opening one would
+    # commit theirs early. Staying out of it is what puts the status and the
+    # attachment paths in a single transaction: neither half lands without the
+    # other.
     conn.execute(
         "UPDATE applications SET status = ?, updated_at = ? WHERE id = ?",
         (status, now(), row["id"]),
     )
-    return resolve(conn, str(row["id"])), note
+    if folder_move.moved:
+        retarget_attachments(
+            conn, row["id"], row["slug"], folder_move.from_stage, folder_move.to_stage
+        )
+    return resolve(conn, str(row["id"])), folder_move.note
 
 
 # ---------------------------------------------------------------------------
@@ -899,6 +932,59 @@ def add_event(
         "UPDATE applications SET updated_at = ? WHERE id = ?", (now(), row["id"])
     )
     return conn.execute("SELECT * FROM events WHERE id = ?", (cur.lastrowid,)).fetchone()
+
+
+def retarget_attachments(
+    conn: sqlite3.Connection,
+    application_id: int,
+    slug: str,
+    from_stage: str,
+    to_stage: str,
+) -> int:
+    """Follow this application's attachments into the stage folder it moved to.
+
+    Paths are stored repo-relative with the stage directory inside them, so a
+    folder that moves leaves every row pointing at a file that is no longer
+    there: `show` prints the dead path, notion_sync skips it as missing, and
+    add_attachment's INSERT OR IGNORE means re-attaching the right path appends
+    a second row instead of replacing the stale one.
+
+    Returns how many rows were rewritten or dropped.
+    """
+    if from_stage == to_stage:
+        return 0
+    old = f"data/pipeline/{from_stage}/{slug}/"
+    new = f"data/pipeline/{to_stage}/{slug}/"
+    # fetchall() first, because the loop writes to the table it is reading.
+    rows = conn.execute(
+        "SELECT id, kind, path FROM attachments WHERE application_id = ? ORDER BY id",
+        (application_id,),
+    ).fetchall()
+    changed = 0
+    for row in rows:
+        # startswith, not LIKE: a slug may hold `_` or `%` -- `_platform-cv` and
+        # `revolut_senior-web-developer` are both real -- and LIKE would read
+        # them as wildcards. Anything not under this folder is left alone.
+        if not row["path"].startswith(old):
+            continue
+        target = new + row["path"][len(old) :]
+        # UNIQUE(application_id, kind, path): when the rewritten path is already
+        # there the row cannot be updated onto it, so the pair collapses onto the
+        # one that is already correct. Re-queried per row, so two rows landing on
+        # the same target see each other.
+        twin = conn.execute(
+            "SELECT id FROM attachments "
+            "WHERE application_id = ? AND kind = ? AND path = ? AND id <> ?",
+            (application_id, row["kind"], target, row["id"]),
+        ).fetchone()
+        if twin is None:
+            conn.execute(
+                "UPDATE attachments SET path = ? WHERE id = ?", (target, row["id"])
+            )
+        else:
+            conn.execute("DELETE FROM attachments WHERE id = ?", (row["id"],))
+        changed += 1
+    return changed
 
 
 def add_attachment(conn: sqlite3.Connection, ident: str, kind: str, path: str) -> str:
