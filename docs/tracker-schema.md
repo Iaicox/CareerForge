@@ -165,6 +165,12 @@ Each migration runs in its own transaction together with the row that records
 it, so one that fails partway leaves the database exactly as it was and can be
 retried once fixed.
 
+A migration is a `.sql` file, or a `.py` file defining `migrate(conn, tracker)`
+— for the repairs SQL cannot express, the ones that have to look at the
+filesystem or reach the status-to-stage map, which lives in your `config.toml`
+and not in the database. The runner hands the tracker module in rather than
+letting the file import it, and owns the transaction either way.
+
 Not every migration adds a column. `004_attachments_data_dir.sql` rewrites the
 rows of `attachments`: their paths are repo-relative, and the stage directories
 moved from the repo root to `data/pipeline/`. `005_postings.sql` creates the

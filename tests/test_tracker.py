@@ -25,6 +25,12 @@ import tracker  # noqa: E402
 from tracker import TrackerError  # noqa: E402
 
 
+PROBE_MIGRATION = (
+    "def migrate(conn, tracker):\n"
+    "    conn.execute('ALTER TABLE applications ADD COLUMN probe_one TEXT')\n"
+)
+
+
 class TrackerTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-test-")).resolve()
@@ -540,7 +546,11 @@ class TrackerTestCase(unittest.TestCase):
         # everything the migrations would add. Replaying them would fail on
         # duplicate columns, so they must be recorded as a baseline instead.
         recorded = {r["name"] for r in self.conn.execute("SELECT name FROM migrations")}
-        on_disk = {p.name for p in tracker.MIGRATIONS_DIR.glob("*.sql")}
+        on_disk = {
+            p.name
+            for p in tracker.MIGRATIONS_DIR.glob("*")
+            if p.suffix in tracker.MIGRATION_SUFFIXES
+        }
         self.assertEqual(recorded, on_disk)
 
     def test_migration_004_moves_attachment_paths_under_data(self):
@@ -567,11 +577,11 @@ class TrackerTestCase(unittest.TestCase):
     def columns(self, table="applications"):
         return {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
 
-    def use_migrations(self, sql, name="900_test.sql"):
+    def use_migrations(self, source, name="900_test.sql"):
         """Point the module at a throwaway migrations directory."""
         d = self.tmp / "migrations"
         d.mkdir(exist_ok=True)
-        (d / name).write_text(sql, encoding="utf-8")
+        (d / name).write_text(source, encoding="utf-8")
         self.addCleanup(setattr, tracker, "MIGRATIONS_DIR", tracker.MIGRATIONS_DIR)
         tracker.MIGRATIONS_DIR = d
         return d
@@ -616,6 +626,36 @@ class TrackerTestCase(unittest.TestCase):
         self.assertIn("900_test.sql", recorded)
         # And it runs exactly once.
         self.assertEqual(tracker.apply_migrations(self.conn), [])
+
+    def test_a_python_migration_runs_and_records_itself(self):
+        self.use_migrations(PROBE_MIGRATION, name="900_test.py")
+        self.assertEqual(tracker.apply_migrations(self.conn), ["900_test.py"])
+        self.assertIn("probe_one", self.columns())
+        recorded = {r["name"] for r in self.conn.execute("SELECT name FROM migrations")}
+        self.assertIn("900_test.py", recorded)
+        # And it runs exactly once.
+        self.assertEqual(tracker.apply_migrations(self.conn), [])
+
+    def test_a_python_migration_that_fails_halfway_leaves_nothing_behind(self):
+        # No executescript() here, so the runner's `with conn:` really does own
+        # the transaction -- as long as one was opened, which pure DDL does not
+        # do by itself.
+        self.use_migrations(
+            PROBE_MIGRATION + "    raise RuntimeError('halfway')\n",
+            name="900_test.py",
+        )
+        with self.assertRaises(RuntimeError):
+            tracker.apply_migrations(self.conn)
+
+        self.assertNotIn("probe_one", self.columns())
+        recorded = {r["name"] for r in self.conn.execute("SELECT name FROM migrations")}
+        self.assertNotIn("900_test.py", recorded)
+
+    def test_a_python_migration_without_a_migrate_function_is_refused(self):
+        self.use_migrations("answer = 42\n", name="900_test.py")
+        with self.assertRaises(TrackerError) as ctx:
+            tracker.apply_migrations(self.conn)
+        self.assertIn("migrate(conn, tracker)", str(ctx.exception))
 
     # -- the schema document -----------------------------------------------
 

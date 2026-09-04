@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import importlib.util
 import json
 import os
 import re
@@ -38,8 +39,10 @@ import urllib.request
 
 import paths
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-# What a file in here may contain. apply_migrations() wraps it in BEGIN/COMMIT
-# together with the row that records it, so:
+# What a file in here may contain. A migration is either .sql or .py.
+#
+# A .sql file: apply_migrations() wraps it in BEGIN/COMMIT together with the
+# row that records it, so:
 #   - no transaction control of its own -- no BEGIN, COMMIT or SAVEPOINT;
 #   - no PRAGMA. SQLite ignores `PRAGMA foreign_keys` inside a transaction,
 #     silently, so the documented table-rebuild recipe cannot be written here as
@@ -49,7 +52,16 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 #   - every statement terminated with `;`. The bookkeeping INSERT is appended
 #     to the text, so a missing final semicolon glues it onto the last statement
 #     and the syntax error points at the INSERT rather than at the file.
+#
+# A .py file defines `migrate(conn, tracker)`, and nothing else in it is
+# called. It is for the repairs SQL cannot express: ones that have to look at
+# the filesystem, or reach the status-to-stage map, which lives in the user's
+# config rather than in the database. This module is handed in rather than
+# imported by the file -- run as `python tools/tracker.py` it is __main__, and
+# a self-import would load a second copy of it against a sys.path the file has
+# no business assuming. Transactions stay the runner's, same as for .sql.
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+MIGRATION_SUFFIXES = (".sql", ".py")
 SCHEMA_VERSION = "4"
 STAGES = paths.STAGES
 
@@ -318,12 +330,26 @@ def apply_migrations(conn: sqlite3.Connection, baseline: bool = False) -> list[s
     would add, so replaying them would fail on duplicate columns.
     """
     done = {r["name"] for r in conn.execute("SELECT name FROM migrations")}
-    pending = sorted(p for p in MIGRATIONS_DIR.glob("*.sql") if p.name not in done)
+    # glob("*") rather than iterdir(), which raises when the directory is gone;
+    # the suffix filter drops __pycache__ along with anything else.
+    pending = sorted(
+        (
+            p
+            for p in MIGRATIONS_DIR.glob("*")
+            if p.suffix in MIGRATION_SUFFIXES and p.name not in done
+        ),
+        key=lambda p: p.name,
+    )
     applied: list[str] = []
     for path in pending:
         if baseline:
             with conn:
                 conn.execute("INSERT INTO migrations(name) VALUES (?)", (path.name,))
+            continue
+
+        if path.suffix == ".py":
+            _run_python_migration(conn, path)
+            applied.append(path.name)
             continue
 
         # executescript() COMMITs any open transaction before it runs a single
@@ -347,6 +373,33 @@ def apply_migrations(conn: sqlite3.Connection, baseline: bool = False) -> list[s
             raise
         applied.append(path.name)
     return applied
+
+
+def _run_python_migration(conn: sqlite3.Connection, path: Path) -> None:
+    """Import a .py migration and run its migrate(conn, tracker).
+
+    Nothing here calls executescript(), so unlike the .sql branch above the
+    `with conn:` really does own a transaction: the work and the row recording
+    it land together or not at all.
+    """
+    spec = importlib.util.spec_from_file_location(
+        f"careerforge_migration_{path.stem}", path
+    )
+    if spec is None or spec.loader is None:
+        raise TrackerError(f"cannot load migration {path.name}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    migrate = getattr(module, "migrate", None)
+    if not callable(migrate):
+        raise TrackerError(f"migration {path.name} defines no migrate(conn, tracker)")
+    with conn:
+        # sqlite3 only opens a transaction of its own before DML, so a migration
+        # that does nothing but DDL would run in autocommit and leave `with
+        # conn:` nothing to roll back. Open one first and it has.
+        if not conn.in_transaction:
+            conn.execute("BEGIN")
+        migrate(conn, sys.modules[__name__])
+        conn.execute("INSERT INTO migrations(name) VALUES (?)", (path.name,))
 
 
 def rel(path: Path) -> str:
