@@ -898,9 +898,7 @@ def set_status(
     note = folder_move.note
     moved_between = folder_move.stages()
     if moved_between is not None:
-        rewritten = retarget_attachments(
-            conn, row["id"], row["slug"], *moved_between
-        )
+        rewritten = retarget_attachments(conn, row["id"], row["slug"], *moved_between)
         if rewritten:
             # Documents relocating is the part a user is surprised by, and the
             # note is the only place either caller says anything about the move.
@@ -1131,7 +1129,6 @@ def add_attachment(
         # Every row of this kind except the one being attached. Excluding it,
         # rather than deleting and inserting again, is what makes a second run
         # with the same path a no-op that keeps the row's id and added_at.
-        #
         #
         # Read before the delete, because what those rows said is the only
         # thing left of them afterwards.
