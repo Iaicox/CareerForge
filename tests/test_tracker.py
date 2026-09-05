@@ -444,6 +444,42 @@ class TrackerTestCase(unittest.TestCase):
             [f"data/pipeline/applications/{row['slug']}/cv_v2.pdf"],
         )
 
+    def test_replace_names_the_rows_it_dropped(self):
+        # A count would be the one place those paths are not written down --
+        # the rows are gone, and what they held is what tells the user whether
+        # the right one went.
+        row = self.add()
+        first = self.attach(row, "cv", "cv_v1.pdf")
+        second = self.attach(row, "cv", "cv_v2.pdf")
+
+        folder = paths.stage_dir("applications") / row["slug"]
+        (folder / "cv_v3.pdf").write_text("x", encoding="utf-8")
+        with self.conn:
+            done = tracker.add_attachment(
+                self.conn, row["slug"], "cv", str(folder / "cv_v3.pdf"), replace=True
+            )
+
+        self.assertEqual(done.replaced, [first, second])
+
+    def test_replace_leaves_another_application_alone(self):
+        # The DELETE is scoped by application as well as by kind: two open
+        # applications both have a cv, and neither is the other's.
+        mine = self.add(company="Acme")
+        theirs = self.add(company="Globex")
+        self.attach(theirs, "cv", "cv.pdf")
+        untouched = self.attachment_rows()
+
+        self.attach(mine, "cv", "cv_v1.pdf")
+        self.attach(mine, "cv", "cv_v2.pdf", replace=True)
+
+        self.assertEqual(
+            self.attachment_paths(mine),
+            [f"data/pipeline/applications/{mine['slug']}/cv_v2.pdf"],
+        )
+        self.assertEqual(
+            [r for r in self.attachment_rows() if r[1] == theirs["id"]], untouched
+        )
+
     def test_replace_leaves_the_other_kinds_alone(self):
         row = self.add()
         self.attach(row, "cover", "cover.pdf")
@@ -476,7 +512,7 @@ class TrackerTestCase(unittest.TestCase):
                 self.conn, row["slug"], "cv", stored, replace=True
             )
 
-        self.assertEqual(done.replaced, 0)
+        self.assertEqual(done.replaced, [])
         after = [
             tuple(r)
             for r in self.conn.execute(

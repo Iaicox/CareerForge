@@ -1093,10 +1093,15 @@ def retarget_attachments(
 
 
 class Attached(NamedTuple):
-    """What add_attachment() did. replaced counts the rows it dropped."""
+    """What add_attachment() did.
+
+    `replaced` is the path each dropped row held, not a count of them: after
+    this the row is gone and this is the only place it is written down. `detach`
+    refuses to guess between two rows and lists both for the same reason.
+    """
 
     path: str
-    replaced: int
+    replaced: list[str]
 
 
 def add_attachment(
@@ -1121,16 +1126,24 @@ def add_attachment(
     if not abs_path.exists():
         raise TrackerError(f"file not found: {path}")
     stored = rel(abs_path.resolve())
-    replaced = 0
+    replaced: list[str] = []
     if replace:
         # Every row of this kind except the one being attached. Excluding it,
         # rather than deleting and inserting again, is what makes a second run
         # with the same path a no-op that keeps the row's id and added_at.
-        replaced = conn.execute(
-            "DELETE FROM attachments "
-            "WHERE application_id = ? AND kind = ? AND path <> ?",
-            (row["id"], kind, stored),
-        ).rowcount
+        #
+        #
+        # Read before the delete, because what those rows said is the only
+        # thing left of them afterwards.
+        others = "WHERE application_id = ? AND kind = ? AND path <> ?"
+        doomed = (row["id"], kind, stored)
+        replaced = [
+            r["path"]
+            for r in conn.execute(
+                f"SELECT path FROM attachments {others} ORDER BY id", doomed
+            )
+        ]
+        conn.execute(f"DELETE FROM attachments {others}", doomed)
     conn.execute(
         "INSERT OR IGNORE INTO attachments(application_id, kind, path) VALUES (?,?,?)",
         (row["id"], kind, stored),
@@ -2142,17 +2155,21 @@ def main(argv: list[str] | None = None) -> int:
                 done = add_attachment(
                     conn, args.application, args.kind, args.path, args.replace
                 )
+            lines = [f"attached {args.kind}: {done.path}"]
+            if done.replaced:
+                # Named, not counted. The rows are gone; this is where they are
+                # written down, the way detach lists what it will not guess
+                # between.
+                lines.append(
+                    f"  dropped {len(done.replaced)} earlier "
+                    f"{'row' if len(done.replaced) == 1 else 'rows'} of this "
+                    "kind; the files stay:"
+                )
+                lines += [f"    {p}" for p in done.replaced]
             emit(
                 args,
                 {"kind": args.kind, "path": done.path, "replaced": done.replaced},
-                f"attached {args.kind}: {done.path}"
-                + (
-                    f"\n  dropped {done.replaced} earlier "
-                    f"{'row' if done.replaced == 1 else 'rows'} of this kind; "
-                    "the files stay"
-                    if done.replaced
-                    else ""
-                ),
+                "\n".join(lines),
             )
 
         elif args.command == "detach":
