@@ -82,7 +82,9 @@ recoverable mistake.
 The two database writes share a single transaction. Attachment paths are stored
 repo-relative with the stage directory inside them, so a status that changed
 without them would leave every document row pointing at a file that is no
-longer there — and `add_attachment` cannot take a stale row back out.
+longer there — and `add_attachment` only ever adds, so the next `attach`
+cannot displace a stale row. `detach` removes one, and `attach --replace`
+supersedes it; neither touches the file the row names.
 
 `/triage` exists because reality still drifts: it compares `folder_in_sync`
 across the pipeline and proposes fixes.

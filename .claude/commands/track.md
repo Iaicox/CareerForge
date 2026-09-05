@@ -14,7 +14,8 @@ Use the **application-tracker** skill. Interpret `$ARGUMENTS`:
   `python tools/tracker.py set-status <slug> <status>`, and add the matching
   event with `tracker.py event add`
 
-A status change moves the application folder as well. Say which folder moved
-where, so the user is never surprised by files relocating.
+A status change moves the application folder as well, and the recorded document
+paths move with it. Say which folder moved where, so the user is never surprised
+by files relocating.
 
 Run `python tools/tracker.py statuses` if you need the configured status ids.
