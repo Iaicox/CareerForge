@@ -181,6 +181,60 @@ class TrackerTestCase(unittest.TestCase):
         for stored in self.attachment_paths(row):
             self.assertTrue((paths.REPO / stored).exists(), stored)
 
+    def test_the_status_and_the_paths_land_together_or_not_at_all(self):
+        # What set_status opening no transaction of its own is for. Every other
+        # test here reads back on self.conn, which sees its own uncommitted
+        # writes and so passes whether the two halves are one transaction or
+        # two; a second connection to the same file only sees what committed.
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("the rewrite failed")
+
+        self.addCleanup(
+            setattr, tracker, "retarget_attachments", tracker.retarget_attachments
+        )
+        tracker.retarget_attachments = boom
+
+        with self.assertRaises(RuntimeError):
+            with self.conn:
+                tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+
+        other = tracker.connect()
+        try:
+            committed = other.execute(
+                "SELECT status FROM applications WHERE id = ?", (row["id"],)
+            ).fetchone()["status"]
+        finally:
+            other.close()
+        self.assertEqual(committed, "draft")
+
+        # The folder is the half the transaction does not cover: it moved
+        # before the database was touched, and /triage is where that is caught.
+        self.assertTrue((paths.stage_dir("processing") / row["slug"]).is_dir())
+
+    def test_the_note_says_the_attachment_paths_moved_too(self):
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        self.attach(row, "cover", "cover.pdf")
+
+        with self.conn:
+            _, note = tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+
+        self.assertIn("moved applications/", note)
+        self.assertIn("2 attachment paths followed it", note)
+
+    def test_the_note_stays_quiet_when_there_was_nothing_to_repoint(self):
+        row = self.add()
+        (paths.stage_dir("applications") / row["slug"]).mkdir()
+
+        with self.conn:
+            _, note = tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+
+        self.assertIn("moved applications/", note)
+        self.assertNotIn("attachment", note)
+
     def test_no_move_leaves_the_attachment_paths_alone(self):
         row = self.add()
         self.attach(row, "cv", "cv.pdf")

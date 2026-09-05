@@ -817,9 +817,17 @@ class Move(NamedTuple):
     to_stage: str | None
     note: str
 
-    @property
-    def moved(self) -> bool:
-        return self.from_stage is not None
+    def stages(self) -> tuple[str, str] | None:
+        """The pair it moved between, or None when it did not move.
+
+        A pair rather than a `moved` flag beside two optional fields: the flag
+        tells a reader the stages are set and tells a type checker nothing, so
+        the caller that needs them was handing `str | None` to a function whose
+        parameters are `str`.
+        """
+        if self.from_stage is None or self.to_stage is None:
+            return None
+        return self.from_stage, self.to_stage
 
 
 def move_folder(slug: str, target_stage: str) -> Move:
@@ -887,11 +895,20 @@ def set_status(
         "UPDATE applications SET status = ?, updated_at = ? WHERE id = ?",
         (status, now(), row["id"]),
     )
-    if folder_move.moved:
-        retarget_attachments(
-            conn, row["id"], row["slug"], folder_move.from_stage, folder_move.to_stage
+    note = folder_move.note
+    moved_between = folder_move.stages()
+    if moved_between is not None:
+        rewritten = retarget_attachments(
+            conn, row["id"], row["slug"], *moved_between
         )
-    return resolve(conn, str(row["id"])), folder_move.note
+        if rewritten:
+            # Documents relocating is the part a user is surprised by, and the
+            # note is the only place either caller says anything about the move.
+            note += (
+                f"; {rewritten} attachment "
+                f"{'path' if rewritten == 1 else 'paths'} followed it"
+            )
+    return resolve(conn, str(row["id"])), note
 
 
 # ---------------------------------------------------------------------------
