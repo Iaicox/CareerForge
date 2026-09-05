@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- **Attachments have a way out, and `attach` can replace instead of append.**
+  `tracker.py detach <application> --kind cv` removes the row and never the
+  file — the documents on disk are the ones the employer received, and the
+  wording says so in the command's help as well as its output. `--kind` is
+  enough on its own; two rows sharing one refuses and lists both rather than
+  guessing which was meant, and `--id` names one of them — scoped to the
+  application it was asked for, so an id copied out of another `show` is
+  refused. `show` prints the attachment id now, the way it already prints event
+  ids. What is already uploaded to Notion stays either way: an attachment there
+  is a property of the application's page, not a page of its own, so nothing on
+  that side empties itself, and the report names the page rather than letting
+  you assume it did. `attach --replace` is the flag for the second version of a
+  document — the same application and kind, a new path, one row out the other
+  side; without it the old path stays beside the new one.
+
 ### Changed
 
 - **Gemini has two pools of models and sets a refused one aside.**
@@ -107,6 +124,29 @@
   `data/state/`, the rest by name), then `python tools/tracker.py init`.
 
 ### Fixed
+
+- **A stage move takes the attachment paths with it.** `attachments.path` is
+  stored repo-relative with the stage directory inside it, so `set_status`
+  moving a folder from `applications/` to `rejected/` left every attachment row
+  pointing at a file that was no longer there: `show` printed the dead path
+  directly under a folder line computed live from disk, and
+  `notion_sync push --files` skipped the CV as missing rather than carrying it
+  over. Nothing could put it right by hand either, since `attach` only ever
+  added. The paths are now rewritten in the same transaction as the status
+  change, for the rows under that slug's old stage folder and only those, and
+  where the new path is already taken for that kind the pair collapses onto the
+  row that is already correct instead of raising. `--no-move` rewrites nothing.
+
+- **A database that already drifted is repaired.**
+  `006_attachment_stage_paths.py` repoints each attachment at the stage its
+  folder is actually in — the folder on disk, not the status, because the two
+  can disagree and that is what `/triage` is for — and deletes the stale row
+  where the document was attached a second time at the right path. It runs on
+  `tracker.py init` and is a no-op on a database that is already correct.
+  Migrations may now be Python, defining `migrate(conn, tracker)`, for exactly
+  the repairs SQL cannot express: this one needs the filesystem and the
+  status-to-stage map, which lives in your `config.toml` and not in the
+  database.
 
 - **A Gemini timeout no longer hangs, and `timeout_seconds` bounds the whole
   call.** The CLI was a launcher whose grandchild held the stdout pipe, so
