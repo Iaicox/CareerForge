@@ -1950,11 +1950,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="this kind now has exactly this one file; the other "
                          "rows of the kind go, their files stay")
 
+    # The only subcommand with a description as well as a help line: this is the
+    # wording standing between someone and a deleted CV, and `detach --help` is
+    # where a cautious user goes to check before running it.
     dt = with_json(sub.add_parser(
         "detach",
         help="remove an attachment row -- never the file on disk",
-        # Spelled out here too: this is the wording standing between someone
-        # and a deleted CV, and `detach --help` is where they check.
         description="Remove an attachment row from the tracker. The file it "
                     "names is never touched, and neither is the copy already "
                     "uploaded to Notion."))
