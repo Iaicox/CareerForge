@@ -334,6 +334,17 @@ def apply_migrations(conn: sqlite3.Connection, baseline: bool = False) -> list[s
     A database just built from schema.sql already has everything the migrations
     would add, so replaying them would fail on duplicate columns.
     """
+    if conn.in_transaction:
+        # This function owns the transaction each migration runs in, and
+        # sqlite3's `with conn:` does not nest: the COMMIT at the end of the
+        # first migration would land whatever the caller had open, hours before
+        # the caller meant to. Same trap set_status's comment names, and there
+        # is no reading of "run the pending migrations" that wants to be half a
+        # caller's unit of work.
+        raise TrackerError(
+            "apply_migrations() owns the transaction and must not be called "
+            "inside one: commit or roll back first"
+        )
     done = {r["name"] for r in conn.execute("SELECT name FROM migrations")}
     # glob("*") rather than iterdir(), which raises when the directory is gone;
     # the suffix filter drops __pycache__ along with anything else.
@@ -393,18 +404,30 @@ def _run_python_migration(conn: sqlite3.Connection, path: Path) -> None:
     if spec is None or spec.loader is None:
         raise TrackerError(f"cannot load migration {path.name}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    migrate = getattr(module, "migrate", None)
-    if not callable(migrate):
-        raise TrackerError(f"migration {path.name} defines no migrate(conn, tracker)")
-    with conn:
-        # sqlite3 only opens a transaction of its own before DML, so a migration
-        # that does nothing but DDL would run in autocommit and leave `with
-        # conn:` nothing to roll back. Open one first and it has.
-        if not conn.in_transaction:
-            conn.execute("BEGIN")
-        migrate(conn, sys.modules[__name__])
-        conn.execute("INSERT INTO migrations(name) VALUES (?)", (path.name,))
+    # In sys.modules before exec_module, the way `import` does it: anything that
+    # resolves a module by its own __name__ -- dataclasses, pickle,
+    # typing.get_type_hints -- looks it up there, and a migration that used one
+    # would fail on a name nothing had registered. Out again when it is over,
+    # because the name belongs to this run: the next call is a fresh module, and
+    # the tests write more than one migration to the same filename.
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+        migrate = getattr(module, "migrate", None)
+        if not callable(migrate):
+            raise TrackerError(
+                f"migration {path.name} defines no migrate(conn, tracker)"
+            )
+        with conn:
+            # sqlite3 only opens a transaction of its own before DML, so a
+            # migration that does nothing but DDL would run in autocommit and
+            # leave `with conn:` nothing to roll back. Open one first and it has.
+            if not conn.in_transaction:
+                conn.execute("BEGIN")
+            migrate(conn, sys.modules[__name__])
+            conn.execute("INSERT INTO migrations(name) VALUES (?)", (path.name,))
+    finally:
+        sys.modules.pop(spec.name, None)
 
 
 def rel(path: Path) -> str:

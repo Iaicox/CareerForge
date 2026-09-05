@@ -30,6 +30,18 @@ PROBE_MIGRATION = (
     "    conn.execute('ALTER TABLE applications ADD COLUMN probe_one TEXT')\n"
 )
 
+# Stands in for the machinery that resolves a module by its own __name__ --
+# dataclasses, pickle, typing.get_type_hints -- and finds nothing if the loader
+# never registered it.
+SELF_LOOKUP_MIGRATION = (
+    "import sys\n"
+    "REGISTERED = __name__ in sys.modules\n"
+    "def migrate(conn, tracker):\n"
+    "    if not REGISTERED:\n"
+    "        raise RuntimeError('the module was not in sys.modules while it ran')\n"
+    "    conn.execute('ALTER TABLE applications ADD COLUMN probe_one TEXT')\n"
+)
+
 
 class TrackerTestCase(unittest.TestCase):
     def setUp(self) -> None:
@@ -905,6 +917,38 @@ class TrackerTestCase(unittest.TestCase):
         with self.assertRaises(TrackerError) as ctx:
             tracker.apply_migrations(self.conn)
         self.assertIn("migrate(conn, tracker)", str(ctx.exception))
+
+    def test_a_python_migration_can_find_itself_in_sys_modules(self):
+        self.use_migrations(SELF_LOOKUP_MIGRATION, name="900_test.py")
+        self.assertEqual(tracker.apply_migrations(self.conn), ["900_test.py"])
+        self.assertIn("probe_one", self.columns())
+        # And the name does not outlive the run: it points at a file nothing
+        # will import again, and the next migration of that stem is a new module.
+        self.assertNotIn("careerforge_migration_900_test", sys.modules)
+
+    def test_migrations_refuse_to_run_inside_someone_else_transaction(self):
+        # sqlite3's `with conn:` does not nest, so the COMMIT that ends the
+        # first migration would land whatever the caller still had open.
+        row = self.add()
+        self.use_migrations(PROBE_MIGRATION, name="900_test.py")
+
+        with self.assertRaises(TrackerError) as ctx:
+            with self.conn:
+                self.conn.execute(
+                    "UPDATE applications SET notes = 'half done' WHERE id = ?",
+                    (row["id"],),
+                )
+                tracker.apply_migrations(self.conn)
+
+        self.assertIn("transaction", str(ctx.exception))
+        self.assertNotIn("probe_one", self.columns())
+        # The caller's half-finished work rolled back with the exception,
+        # instead of being committed by a migration that never meant to.
+        self.assertIsNone(
+            self.conn.execute(
+                "SELECT notes FROM applications WHERE id = ?", (row["id"],)
+            ).fetchone()["notes"]
+        )
 
     # -- the schema document -----------------------------------------------
 

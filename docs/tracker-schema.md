@@ -180,7 +180,9 @@ ends one of its own takes that guarantee away: a `.sql` file may not use
 `executescript()`, `commit()` or `rollback()` — `executescript()` commits
 whatever is open before it runs a line. Break that and a migration failing
 partway can leave its work applied with no row recording it, which wedges the
-next `init`.
+next `init`. The runner holds the same rule to itself from the other side: call
+it with a transaction already open and it refuses, because the `COMMIT` ending
+the first migration would land that transaction too.
 
 Not every migration adds a column. `004_attachments_data_dir.sql` rewrites the
 rows of `attachments`: their paths are repo-relative, and the stage directories
