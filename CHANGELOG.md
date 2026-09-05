@@ -17,7 +17,9 @@
   that side empties itself, and the report names the page rather than letting
   you assume it did. `attach --replace` is the flag for the second version of a
   document — the same application and kind, a new path, one row out the other
-  side; without it the old path stays beside the new one.
+  side; without it the old path stays beside the new one. It names the paths it
+  dropped rather than counting them, since after the row is gone that report is
+  the only place they are written down.
 
 ### Changed
 
@@ -136,6 +138,8 @@
   change, for the rows under that slug's old stage folder and only those, and
   where the new path is already taken for that kind the pair collapses onto the
   row that is already correct instead of raising. `--no-move` rewrites nothing.
+  The line `set-status` prints about the move says how many paths followed the
+  folder, so nothing about files relocating happens without being said out loud.
 
 - **A database that already drifted is repaired.**
   `006_attachment_stage_paths.py` repoints each attachment at the stage its
