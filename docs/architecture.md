@@ -79,6 +79,10 @@ status untouched. A name collision in the target directory is reported and
 nothing is changed — overwriting someone's application documents is not a
 recoverable mistake.
 
+The converse is the one gap: the folder is not part of the transaction, so a
+caller that rolls back after the move leaves the folder a stage ahead of the
+database. `/triage` compares `folder_in_sync` and is where that is caught.
+
 The two database writes share a single transaction. Attachment paths are stored
 repo-relative with the stage directory inside them, so a status that changed
 without them would leave every document row pointing at a file that is no
