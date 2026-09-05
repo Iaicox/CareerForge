@@ -95,6 +95,22 @@ Do not use `delete` to erase history. An interview that went badly happened.
 page is now orphaned — if it is, delete that page too, or the next
 `notion_sync.py import` brings the event back.
 
+An attachment comes back out with `detach`:
+
+```bash
+python tools/tracker.py detach <slug> --kind cv
+python tools/tracker.py detach <slug> --id <attachment-id>
+```
+
+It removes **the row and never the file**. The documents on disk are the ones
+the employer received. Use it for a row that no longer describes anything: a
+path pointing where the file is not, or the same document recorded twice under
+two paths. `--kind` is enough on its own; when two rows share a kind it refuses
+and lists them, and the id comes from `show <slug>` the way an event's does.
+The copy already uploaded to Notion stays either way — an attachment there is a
+property of the application's page, not a page of its own, so there is nothing
+for `notion_sync.py` to delete.
+
 ## Never
 
 - Do not write to the database with anything but `tools/tracker.py`.

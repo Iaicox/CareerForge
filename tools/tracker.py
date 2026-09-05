@@ -1057,6 +1057,95 @@ def add_attachment(conn: sqlite3.Connection, ident: str, kind: str, path: str) -
     return stored
 
 
+def remove_attachment(
+    conn: sqlite3.Connection,
+    ident: str,
+    kind: str | None = None,
+    attachment_id: int | None = None,
+) -> sqlite3.Row:
+    """Take an attachment row out. The file it names is never touched.
+
+    Only the row goes. The documents on disk are the ones the employer
+    received, and nothing here deletes them.
+
+    This is for a row that no longer describes anything: a path pointing where
+    the file is not, the same document recorded twice under two paths, a
+    `--path` typed wrong. Until now there was no way out at all -- add_attachment
+    is INSERT OR IGNORE, so attaching the right path beside a wrong one left
+    both, and a stranded row is what notion_sync reads as a missing file.
+
+    Not for hiding what was sent. Which version went out is part of the record.
+
+    Returns the row it removed, so the caller can show what is gone.
+    """
+    app = resolve(conn, ident)
+    if kind is None and attachment_id is None:
+        raise TrackerError(
+            "name what to detach: --kind, --id, or both "
+            "(nothing here removes every attachment at once)"
+        )
+
+    sql = "SELECT * FROM attachments WHERE application_id = ?"
+    params: list[Any] = [app["id"]]
+    if kind is not None:
+        sql += " AND kind = ?"
+        params.append(kind)
+    if attachment_id is not None:
+        # Still scoped to this application: an id copied out of another
+        # application's `show` is refused rather than silently obeyed.
+        sql += " AND id = ?"
+        params.append(attachment_id)
+    rows = conn.execute(sql + " ORDER BY id", params).fetchall()
+
+    if not rows:
+        wanted = []
+        if attachment_id is not None:
+            wanted.append(f"#{attachment_id}")
+        if kind is not None:
+            wanted.append(f"kind {kind!r}")
+        raise TrackerError(
+            f"no attachment {' of '.join(wanted)} on #{app['id']} {app['slug']}"
+        )
+    if len(rows) > 1:
+        # Never guess which of two rows was meant. An id is unique, so this is
+        # only reachable through --kind alone.
+        listing = "\n".join(f"    #{r['id']:<4} {r['path']}" for r in rows)
+        raise TrackerError(
+            f"{len(rows)} {kind} attachments on #{app['id']} {app['slug']} "
+            f"-- name one with --id\n{listing}"
+        )
+
+    row = rows[0]
+    conn.execute("DELETE FROM attachments WHERE id = ?", (row["id"],))
+    conn.execute(
+        "UPDATE applications SET updated_at = ? WHERE id = ?", (now(), app["id"])
+    )
+    return row
+
+
+def detached_attachment_report(conn: sqlite3.Connection, row: dict) -> str:
+    """What was removed, and the copies of it this did not touch."""
+    lines = [f"detached {row['kind']} #{row['id']}: {row['path']}"]
+    lines.append(
+        "  the file on disk is untouched"
+        if (paths.REPO / row["path"]).exists()
+        else "  there was no file at that path"
+    )
+    page = conn.execute(
+        "SELECT notion_page_id FROM applications WHERE id = ?",
+        (row["application_id"],),
+    ).fetchone()["notion_page_id"]
+    if page:
+        # There is no notion_page_id to chase here: an attachment is a property
+        # of the application's page, not a page of its own, so nothing on the
+        # Notion side empties itself and the next push will not clear it either.
+        lines.append(
+            f"  the copy on Notion page {page} stays: an attachment there is a "
+            "page property, not a page of its own -- clear the field by hand"
+        )
+    return "\n".join(lines)
+
+
 def set_note(
     conn: sqlite3.Connection, ident: str, text: str, append: bool = False
 ) -> None:
@@ -1763,6 +1852,20 @@ def build_parser() -> argparse.ArgumentParser:
     at.add_argument("--kind", default="cv", choices=["cv", "cover", "other"])
     at.add_argument("--path", required=True)
 
+    dt = with_json(sub.add_parser(
+        "detach",
+        help="remove an attachment row -- never the file on disk",
+        # Spelled out here too: this is the wording standing between someone
+        # and a deleted CV, and `detach --help` is where they check.
+        description="Remove an attachment row from the tracker. The file it "
+                    "names is never touched, and neither is the copy already "
+                    "uploaded to Notion."))
+    dt.add_argument("application")
+    dt.add_argument("--kind", choices=["cv", "cover", "other"],
+                    help="enough on its own unless two rows share the kind")
+    dt.add_argument("--id", dest="attachment_id", type=int,
+                    help="attachment id from `show <application>`")
+
     nt = sub.add_parser("note", help="set or append notes")
     nt.add_argument("application")
     nt.add_argument("--text", required=True)
@@ -1898,7 +2001,9 @@ def main(argv: list[str] | None = None) -> int:
                 if d["attachments"]:
                     print("  files:")
                     for at in d["attachments"]:
-                        print(f"    {at['kind']}: {at['path']}")
+                        # The id is here so `detach --id` has something to name
+                        # when two rows share a kind; events print theirs above.
+                        print(f"    #{at['id']:<4} {at['kind']:<6} {at['path']}")
 
         elif args.command == "set-status":
             with conn:
@@ -1953,6 +2058,15 @@ def main(argv: list[str] | None = None) -> int:
                 {"kind": args.kind, "path": stored},
                 f"attached {args.kind}: {stored}",
             )
+
+        elif args.command == "detach":
+            with conn:
+                gone = dict(
+                    remove_attachment(
+                        conn, args.application, args.kind, args.attachment_id
+                    )
+                )
+            emit(args, gone, detached_attachment_report(conn, gone))
 
         elif args.command == "note":
             with conn:

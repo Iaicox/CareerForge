@@ -225,6 +225,117 @@ class TrackerTestCase(unittest.TestCase):
             sorted(strays + [f"data/pipeline/processing/{row['slug']}/cv.pdf"]),
         )
 
+    # -- attachments come back out -----------------------------------------
+
+    def test_detaching_removes_the_row_and_leaves_the_file(self):
+        row = self.add()
+        stored = self.attach(row, "cv", "cv.pdf")
+        with self.conn:
+            gone = tracker.remove_attachment(self.conn, row["slug"], "cv")
+
+        self.assertEqual(gone["path"], stored)
+        self.assertEqual(self.attachment_paths(row), [])
+        # The document is the one the employer received. It stays on disk.
+        self.assertTrue((paths.REPO / stored).exists())
+
+    def test_two_rows_of_a_kind_refuse_rather_than_guess(self):
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO attachments(application_id, kind, path) VALUES (?,?,?)",
+                (row["id"], "cv", f"data/pipeline/rejected/{row['slug']}/cv.pdf"),
+            )
+
+        with self.assertRaises(TrackerError) as ctx:
+            tracker.remove_attachment(self.conn, row["slug"], "cv")
+
+        # Both candidates are named, so the user can pick one.
+        self.assertIn("--id", str(ctx.exception))
+        ids = [
+            r["id"]
+            for r in self.conn.execute(
+                "SELECT id FROM attachments WHERE application_id = ?", (row["id"],)
+            )
+        ]
+        self.assertEqual(len(ids), 2)
+        for at_id in ids:
+            self.assertIn(f"#{at_id}", str(ctx.exception))
+
+    def test_an_attachment_id_belonging_to_another_application_is_refused(self):
+        mine = self.add()
+        theirs = self.add(company="Other Co")
+        self.attach(mine, "cv", "cv.pdf")
+        at_id = int(
+            self.conn.execute(
+                "SELECT id FROM attachments WHERE application_id = ?", (mine["id"],)
+            ).fetchone()["id"]
+        )
+
+        with self.assertRaises(TrackerError):
+            tracker.remove_attachment(self.conn, theirs["slug"], attachment_id=at_id)
+        with self.assertRaises(TrackerError):
+            tracker.remove_attachment(self.conn, mine["slug"], attachment_id=9999)
+        self.assertEqual(len(self.attachment_paths(mine)), 1)
+
+    def test_detaching_needs_something_to_go_on(self):
+        # No selector must never mean "all of them".
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        self.attach(row, "cover", "cover.pdf")
+
+        with self.assertRaises(TrackerError):
+            tracker.remove_attachment(self.conn, row["slug"])
+        self.assertEqual(len(self.attachment_paths(row)), 2)
+
+    def test_detaching_touches_its_application(self):
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        with self.conn:
+            self.conn.execute(
+                "UPDATE applications SET updated_at = '2000-01-01 00:00:00' "
+                "WHERE id = ?", (row["id"],)
+            )
+        with self.conn:
+            tracker.remove_attachment(self.conn, row["slug"], "cv")
+
+        after = self.conn.execute(
+            "SELECT updated_at FROM applications WHERE id = ?", (row["id"],)
+        ).fetchone()["updated_at"]
+        self.assertNotEqual(after, "2000-01-01 00:00:00")
+
+    def test_the_detach_report_says_the_file_stays(self):
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        with self.conn:
+            gone = dict(tracker.remove_attachment(self.conn, row["slug"], "cv"))
+
+        report = tracker.detached_attachment_report(self.conn, gone)
+        self.assertIn("untouched", report)
+        # No Notion page, so nothing is said about one.
+        self.assertNotIn("Notion", report)
+
+    def test_the_detach_report_names_the_notion_page_that_keeps_the_file(self):
+        # An attachment is a page property, not a page, so there is no
+        # notion_page_id to chase and nothing over there empties itself.
+        row = self.add()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO attachments(application_id, kind, path) VALUES (?,?,?)",
+                (row["id"], "cv", f"data/pipeline/applications/{row['slug']}/gone.pdf"),
+            )
+            self.conn.execute(
+                "UPDATE applications SET notion_page_id = 'page-1' WHERE id = ?",
+                (row["id"],),
+            )
+        with self.conn:
+            gone = dict(tracker.remove_attachment(self.conn, row["slug"], "cv"))
+
+        report = tracker.detached_attachment_report(self.conn, gone)
+        self.assertIn("page-1", report)
+        # And it says the row was already pointing at nothing.
+        self.assertIn("no file at that path", report)
+
     # -- optimistic locking ------------------------------------------------
 
     def test_stale_write_is_refused(self):
