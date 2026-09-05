@@ -77,8 +77,10 @@ you got there.
 | `added_at` | |
 
 `UNIQUE(application_id, kind, path)`, so attaching the same file twice is not
-an error and not a duplicate row. A row comes back out with `tracker.py detach`,
-which removes the row and never the file it names.
+an error and not a duplicate row; a different path of the same kind is a second
+row, unless `tracker.py attach --replace` collapses the kind to the one being
+attached. A row comes back out with `tracker.py detach`, which removes the row
+and never the file it names.
 
 
 ### `postings`

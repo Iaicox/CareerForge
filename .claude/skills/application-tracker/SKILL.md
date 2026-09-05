@@ -59,6 +59,11 @@ python tools/tracker.py attach <slug> --kind cv    --path <stage>/<slug>/cv_<nam
 python tools/tracker.py attach <slug> --kind cover --path <stage>/<slug>/cover_letter_<name>.pdf
 ```
 
+Add `--replace` when a document is being attached for the second time — the same
+application and kind, a new path, one row out the other side. Without it the old
+path stays beside the new one, and only the row goes when it is dropped, never
+the file.
+
 ## When something happens
 
 Every stage of the funnel is a status change **and** an event:

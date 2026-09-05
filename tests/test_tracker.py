@@ -61,15 +61,16 @@ class TrackerTestCase(unittest.TestCase):
                 self.conn, self.cfg, company=company, role=role, url=url, **kw
             )
 
-    def attach(self, row, kind="cv", name="cv.pdf", stage="applications"):
+    def attach(self, row, kind="cv", name="cv.pdf", stage="applications",
+               replace=False):
         """A real file in the application's folder, recorded as an attachment."""
         folder = paths.stage_dir(stage) / row["slug"]
         folder.mkdir(parents=True, exist_ok=True)
         (folder / name).write_text("x", encoding="utf-8")
         with self.conn:
             return tracker.add_attachment(
-                self.conn, row["slug"], kind, str(folder / name)
-            )
+                self.conn, row["slug"], kind, str(folder / name), replace
+            ).path
 
     def attachment_paths(self, row):
         return sorted(
@@ -335,6 +336,68 @@ class TrackerTestCase(unittest.TestCase):
         self.assertIn("page-1", report)
         # And it says the row was already pointing at nothing.
         self.assertIn("no file at that path", report)
+
+    # -- attaching the next version of a document --------------------------
+
+    def test_replace_leaves_one_row_for_that_kind(self):
+        row = self.add()
+        self.attach(row, "cv", "cv_v1.pdf")
+        self.attach(row, "cv", "cv_v2.pdf", replace=True)
+
+        self.assertEqual(
+            self.attachment_paths(row),
+            [f"data/pipeline/applications/{row['slug']}/cv_v2.pdf"],
+        )
+
+    def test_replace_leaves_the_other_kinds_alone(self):
+        row = self.add()
+        self.attach(row, "cover", "cover.pdf")
+        self.attach(row, "cv", "cv_v1.pdf")
+        self.attach(row, "cv", "cv_v2.pdf", replace=True)
+
+        self.assertEqual(
+            self.attachment_paths(row),
+            [
+                f"data/pipeline/applications/{row['slug']}/cover.pdf",
+                f"data/pipeline/applications/{row['slug']}/cv_v2.pdf",
+            ],
+        )
+
+    def test_replacing_a_path_with_itself_keeps_the_row_it_found(self):
+        # Excluding the target from the DELETE, rather than deleting and
+        # inserting again, is what keeps a re-run from rewriting added_at.
+        row = self.add()
+        stored = self.attach(row, "cv", "cv.pdf")
+        before = [
+            tuple(r)
+            for r in self.conn.execute(
+                "SELECT id, added_at FROM attachments WHERE application_id = ?",
+                (row["id"],),
+            )
+        ]
+
+        with self.conn:
+            done = tracker.add_attachment(
+                self.conn, row["slug"], "cv", stored, replace=True
+            )
+
+        self.assertEqual(done.replaced, 0)
+        after = [
+            tuple(r)
+            for r in self.conn.execute(
+                "SELECT id, added_at FROM attachments WHERE application_id = ?",
+                (row["id"],),
+            )
+        ]
+        self.assertEqual(after, before)
+
+    def test_attach_without_replace_still_appends(self):
+        # The default is untouched: --replace is a flag, not a new behaviour.
+        row = self.add()
+        self.attach(row, "cv", "cv_v1.pdf")
+        self.attach(row, "cv", "cv_v2.pdf")
+
+        self.assertEqual(len(self.attachment_paths(row)), 2)
 
     # -- optimistic locking ------------------------------------------------
 

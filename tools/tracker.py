@@ -1040,13 +1040,45 @@ def retarget_attachments(
     return changed
 
 
-def add_attachment(conn: sqlite3.Connection, ident: str, kind: str, path: str) -> str:
+class Attached(NamedTuple):
+    """What add_attachment() did. replaced counts the rows it dropped."""
+
+    path: str
+    replaced: int
+
+
+def add_attachment(
+    conn: sqlite3.Connection,
+    ident: str,
+    kind: str,
+    path: str,
+    replace: bool = False,
+) -> Attached:
+    """Record a built document against an application.
+
+    Attaching the same path twice is not an error and not a second row. A
+    *different* path of the same kind is, though -- which is almost never what
+    the caller meant, and is how the stale rows a stage move left behind ended
+    up sitting beside the correct ones. `replace` says what is usually meant:
+    this kind now has exactly this one file. It is opt-in, so the default is
+    still to append, and it drops rows, never files.
+    """
     row = resolve(conn, ident)
     p = Path(path)
     abs_path = p if p.is_absolute() else (paths.REPO / p)
     if not abs_path.exists():
         raise TrackerError(f"file not found: {path}")
     stored = rel(abs_path.resolve())
+    replaced = 0
+    if replace:
+        # Every row of this kind except the one being attached. Excluding it,
+        # rather than deleting and inserting again, is what makes a second run
+        # with the same path a no-op that keeps the row's id and added_at.
+        replaced = conn.execute(
+            "DELETE FROM attachments "
+            "WHERE application_id = ? AND kind = ? AND path <> ?",
+            (row["id"], kind, stored),
+        ).rowcount
     conn.execute(
         "INSERT OR IGNORE INTO attachments(application_id, kind, path) VALUES (?,?,?)",
         (row["id"], kind, stored),
@@ -1054,7 +1086,7 @@ def add_attachment(conn: sqlite3.Connection, ident: str, kind: str, path: str) -
     conn.execute(
         "UPDATE applications SET updated_at = ? WHERE id = ?", (now(), row["id"])
     )
-    return stored
+    return Attached(stored, replaced)
 
 
 def remove_attachment(
@@ -1851,6 +1883,9 @@ def build_parser() -> argparse.ArgumentParser:
     at.add_argument("application")
     at.add_argument("--kind", default="cv", choices=["cv", "cover", "other"])
     at.add_argument("--path", required=True)
+    at.add_argument("--replace", action="store_true",
+                    help="this kind now has exactly this one file; the other "
+                         "rows of the kind go, their files stay")
 
     dt = with_json(sub.add_parser(
         "detach",
@@ -2052,11 +2087,20 @@ def main(argv: list[str] | None = None) -> int:
 
         elif args.command == "attach":
             with conn:
-                stored = add_attachment(conn, args.application, args.kind, args.path)
+                done = add_attachment(
+                    conn, args.application, args.kind, args.path, args.replace
+                )
             emit(
                 args,
-                {"kind": args.kind, "path": stored},
-                f"attached {args.kind}: {stored}",
+                {"kind": args.kind, "path": done.path, "replaced": done.replaced},
+                f"attached {args.kind}: {done.path}"
+                + (
+                    f"\n  dropped {done.replaced} earlier "
+                    f"{'row' if done.replaced == 1 else 'rows'} of this kind; "
+                    "the files stay"
+                    if done.replaced
+                    else ""
+                ),
             )
 
         elif args.command == "detach":
