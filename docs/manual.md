@@ -424,12 +424,40 @@ python tools/tracker.py set-status acme screening
 changes the status **and moves the folder**, in one operation. Never move a
 folder by hand.
 
+The paths the tracker holds for that application's documents move with it, in
+the same operation. A folder that relocated without them would leave every
+`files:` line in `show` pointing where the file is not.
+
 If the target name is taken, the move is refused and nothing changes.
 Overwriting an application's documents is not a recoverable mistake, so it is
 not done silently.
 
 Statuses are yours: `python tools/tracker.py statuses` lists what is configured,
 and `data/config/config.toml` is where you rename, add or translate them.
+
+### Fixing what the tracker recorded
+
+The documents an application sent are recorded as **paths, not copies**. The
+files themselves stay where they are, and nothing below moves or deletes them.
+
+```bash
+python tools/tracker.py attach acme --kind cv --path data/pipeline/applications/acme/cv_you.pdf
+python tools/tracker.py attach acme --kind cv --path <the new one> --replace
+python tools/tracker.py detach acme --kind cv
+python tools/tracker.py detach acme --id 12
+```
+
+`--replace` is for the second version of a document: the same application and
+kind, a new path, one row out the other side. Without it the old path stays
+beside the new one.
+
+`detach` removes **the row and never the file**. Use it for a row that no longer
+describes anything — a path pointing where the file is not, or the same document
+recorded twice. `--kind` is enough on its own; when two rows share a kind it
+refuses and lists both with their ids, which `show` prints as well. What was
+already uploaded to Notion stays there: an attachment is a property of the
+application's page, not a page of its own, so nothing on that side empties
+itself.
 
 ### `/board` — the kanban, and the postings table
 
@@ -727,6 +755,15 @@ destroy text extraction. Replace them with plain letters in the Markdown.
 **`cannot move applications/acme -> rejected/acme: target already exists`**
 Deliberate: nothing is overwritten. Merge or rename the two folders by hand,
 then re-run the status change.
+
+**`show` lists a document that is not on disk**
+The row outlived the file. `python tools/tracker.py detach <slug> --kind cv`
+removes the row and never touches files; if two rows share the kind it lists
+both with their ids and you pass `--id` to name one. Drift from before the
+paths followed their folder is repaired once, by the migration `tracker.py init`
+applies when you upgrade; anything that drifts afterwards — a folder moved by
+hand, say — is yours to fix with `detach`, or by re-attaching the right path with
+`--replace`.
 
 **`tracker database not found`**
 `python tools/tracker.py init`

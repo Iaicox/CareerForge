@@ -231,7 +231,9 @@ across. `--no-bodies` is much faster if you do not need them.
 ## What does not come across on import
 
 - **Attachments.** Files stay in Notion. Your local PDFs are already on disk;
-  `tracker.py attach` records them.
+  `tracker.py attach` records them, and `tracker.py detach` takes a row back
+  out — the row only, never the file, and never the copy already uploaded to
+  the page: an attachment is a page property, not a page of its own.
 - **Rollups and formulas.** `last_event_date` is computed by the local view
   instead.
 - **Page comments and anything outside the four databases.**

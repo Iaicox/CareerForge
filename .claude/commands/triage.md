@@ -26,7 +26,7 @@ an application tracked without documents, not an error.
 Also list the directories themselves, so you can spot the reverse problem:
 
 ```bash
-ls applications processing rejected
+ls data/pipeline/applications data/pipeline/processing data/pipeline/rejected
 ```
 
 Ignore anything starting with `_` — those are not applications.
@@ -64,9 +64,9 @@ For each approved row:
 python tools/tracker.py set-status <slug> <status>
 ```
 
-That changes the status and moves the folder in one step. For a row that only
-needs the folder moved, re-set the status it already has — the move happens, the
-status is unchanged.
+That changes the status, moves the folder, and repoints the document paths the
+tracker recorded, in one step. For a row that only needs the folder moved,
+re-set the status it already has — the move happens, the status is unchanged.
 
 If a move is refused because the target name is taken, stop on that row, report
 it, and carry on with the others. Never resolve a collision by renaming or
@@ -75,4 +75,6 @@ deleting anything.
 ## 4. Report
 
 How many folders moved where, which statuses changed, what is still unmatched,
-and confirm the total application count is unchanged from step 1.
+and confirm the total application count is unchanged from step 1. `set-status`
+says how many recorded document paths followed each folder; pass that on, since
+files relocating is the part a user is surprised by.

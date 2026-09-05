@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import importlib.util
 import json
 import os
 import re
@@ -38,8 +39,10 @@ import urllib.request
 
 import paths
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-# What a file in here may contain. apply_migrations() wraps it in BEGIN/COMMIT
-# together with the row that records it, so:
+# What a file in here may contain. A migration is either .sql or .py.
+#
+# A .sql file: apply_migrations() wraps it in BEGIN/COMMIT together with the
+# row that records it, so:
 #   - no transaction control of its own -- no BEGIN, COMMIT or SAVEPOINT;
 #   - no PRAGMA. SQLite ignores `PRAGMA foreign_keys` inside a transaction,
 #     silently, so the documented table-rebuild recipe cannot be written here as
@@ -49,7 +52,21 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 #   - every statement terminated with `;`. The bookkeeping INSERT is appended
 #     to the text, so a missing final semicolon glues it onto the last statement
 #     and the syntax error points at the INSERT rather than at the file.
+#
+# A .py file defines `migrate(conn, tracker)`, and nothing else in it is
+# called. It is for the repairs SQL cannot express: ones that have to look at
+# the filesystem, or reach the status-to-stage map, which lives in the user's
+# config rather than in the database. This module is handed in rather than
+# imported by the file -- run as `python tools/tracker.py` it is __main__, and
+# a self-import would load a second copy of it against a sys.path the file has
+# no business assuming. Transactions stay the runner's, same as for .sql, and
+# the same prohibition follows: no commit(), no rollback(), and no
+# executescript() -- it COMMITs whatever is open before running a line, so a
+# migration that failed after one would leave its work applied with no row
+# recording it, and the next init would replay it onto a database that already
+# has it.
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+MIGRATION_SUFFIXES = (".sql", ".py")
 SCHEMA_VERSION = "4"
 STAGES = paths.STAGES
 
@@ -317,13 +334,38 @@ def apply_migrations(conn: sqlite3.Connection, baseline: bool = False) -> list[s
     A database just built from schema.sql already has everything the migrations
     would add, so replaying them would fail on duplicate columns.
     """
+    if conn.in_transaction:
+        # This function owns the transaction each migration runs in, and
+        # sqlite3's `with conn:` does not nest: the COMMIT at the end of the
+        # first migration would land whatever the caller had open, hours before
+        # the caller meant to. Same trap set_status's comment names, and there
+        # is no reading of "run the pending migrations" that wants to be half a
+        # caller's unit of work.
+        raise TrackerError(
+            "apply_migrations() owns the transaction and must not be called "
+            "inside one: commit or roll back first"
+        )
     done = {r["name"] for r in conn.execute("SELECT name FROM migrations")}
-    pending = sorted(p for p in MIGRATIONS_DIR.glob("*.sql") if p.name not in done)
+    # glob("*") rather than iterdir(), which raises when the directory is gone;
+    # the suffix filter drops __pycache__ along with anything else.
+    pending = sorted(
+        (
+            p
+            for p in MIGRATIONS_DIR.glob("*")
+            if p.suffix in MIGRATION_SUFFIXES and p.name not in done
+        ),
+        key=lambda p: p.name,
+    )
     applied: list[str] = []
     for path in pending:
         if baseline:
             with conn:
                 conn.execute("INSERT INTO migrations(name) VALUES (?)", (path.name,))
+            continue
+
+        if path.suffix == ".py":
+            _run_python_migration(conn, path)
+            applied.append(path.name)
             continue
 
         # executescript() COMMITs any open transaction before it runs a single
@@ -347,6 +389,45 @@ def apply_migrations(conn: sqlite3.Connection, baseline: bool = False) -> list[s
             raise
         applied.append(path.name)
     return applied
+
+
+def _run_python_migration(conn: sqlite3.Connection, path: Path) -> None:
+    """Import a .py migration and run its migrate(conn, tracker).
+
+    Nothing here calls executescript(), so unlike the .sql branch above the
+    `with conn:` really does own a transaction: the work and the row recording
+    it land together or not at all.
+    """
+    spec = importlib.util.spec_from_file_location(
+        f"careerforge_migration_{path.stem}", path
+    )
+    if spec is None or spec.loader is None:
+        raise TrackerError(f"cannot load migration {path.name}")
+    module = importlib.util.module_from_spec(spec)
+    # In sys.modules before exec_module, the way `import` does it: anything that
+    # resolves a module by its own __name__ -- dataclasses, pickle,
+    # typing.get_type_hints -- looks it up there, and a migration that used one
+    # would fail on a name nothing had registered. Out again when it is over,
+    # because the name belongs to this run: the next call is a fresh module, and
+    # the tests write more than one migration to the same filename.
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+        migrate = getattr(module, "migrate", None)
+        if not callable(migrate):
+            raise TrackerError(
+                f"migration {path.name} defines no migrate(conn, tracker)"
+            )
+        with conn:
+            # sqlite3 only opens a transaction of its own before DML, so a
+            # migration that does nothing but DDL would run in autocommit and
+            # leave `with conn:` nothing to roll back. Open one first and it has.
+            if not conn.in_transaction:
+                conn.execute("BEGIN")
+            migrate(conn, sys.modules[__name__])
+            conn.execute("INSERT INTO migrations(name) VALUES (?)", (path.name,))
+    finally:
+        sys.modules.pop(spec.name, None)
 
 
 def rel(path: Path) -> str:
@@ -729,18 +810,43 @@ def folder_for(slug: str) -> tuple[Path | None, str | None]:
     return None, None
 
 
-def move_folder(slug: str, target_stage: str) -> str:
+class Move(NamedTuple):
+    """What move_folder() did. from_stage is None when nothing moved."""
+
+    from_stage: str | None
+    to_stage: str | None
+    note: str
+
+    def stages(self) -> tuple[str, str] | None:
+        """The pair it moved between, or None when it did not move.
+
+        A pair rather than a `moved` flag beside two optional fields: the flag
+        tells a reader the stages are set and tells a type checker nothing, so
+        the caller that needs them was handing `str | None` to a function whose
+        parameters are `str`.
+        """
+        if self.from_stage is None or self.to_stage is None:
+            return None
+        return self.from_stage, self.to_stage
+
+
+def move_folder(slug: str, target_stage: str) -> Move:
     """Move an application folder between stage directories.
 
     Refuses to overwrite: a name collision is reported, never resolved silently.
+
+    Returns the stages, not only a sentence about them: attachment paths carry
+    the stage directory inside them, so set_status has to know where the folder
+    came from and where it went, and reading that back out of prose is not a
+    thing to build on.
     """
     if target_stage not in STAGES:
         raise TrackerError(f"unknown stage {target_stage!r}")
     current, current_stage = folder_for(slug)
     if current is None:
-        return f"no folder for {slug} yet (nothing to move)"
+        return Move(None, None, f"no folder for {slug} yet (nothing to move)")
     if current_stage == target_stage:
-        return f"folder already in {target_stage}/"
+        return Move(None, None, f"folder already in {target_stage}/")
 
     target = paths.stage_dir(target_stage) / slug
     if target.exists():
@@ -750,7 +856,11 @@ def move_folder(slug: str, target_stage: str) -> str:
         )
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(current), str(target))
-    return f"moved {current_stage}/{slug} -> {target_stage}/{slug}"
+    return Move(
+        current_stage,
+        target_stage,
+        f"moved {current_stage}/{slug} -> {target_stage}/{slug}",
+    )
 
 
 def set_status(
@@ -772,11 +882,30 @@ def set_status(
 
     # Move the folder first: if it collides we must not have already claimed
     # the new status in the database.
-    note = move_folder(row["slug"], cfg.stage_of(status)) if move else ""
+    folder_move = (
+        move_folder(row["slug"], cfg.stage_of(status)) if move else Move(None, None, "")
+    )
+
+    # No `with conn:` here, deliberately. Both callers already wrap this call in
+    # one, and sqlite3's context manager does not nest -- opening one would
+    # commit theirs early. Staying out of it is what puts the status and the
+    # attachment paths in a single transaction: neither half lands without the
+    # other.
     conn.execute(
         "UPDATE applications SET status = ?, updated_at = ? WHERE id = ?",
         (status, now(), row["id"]),
     )
+    note = folder_move.note
+    moved_between = folder_move.stages()
+    if moved_between is not None:
+        rewritten = retarget_attachments(conn, row["id"], row["slug"], *moved_between)
+        if rewritten:
+            # Documents relocating is the part a user is surprised by, and the
+            # note is the only place either caller says anything about the move.
+            note += (
+                f"; {rewritten} attachment "
+                f"{'path' if rewritten == 1 else 'paths'} followed it"
+            )
     return resolve(conn, str(row["id"])), note
 
 
@@ -901,13 +1030,122 @@ def add_event(
     return conn.execute("SELECT * FROM events WHERE id = ?", (cur.lastrowid,)).fetchone()
 
 
-def add_attachment(conn: sqlite3.Connection, ident: str, kind: str, path: str) -> str:
+def retarget_attachments(
+    conn: sqlite3.Connection,
+    application_id: int,
+    slug: str,
+    from_stage: str,
+    to_stage: str,
+) -> int:
+    """Follow this application's attachments into the stage folder it moved to.
+
+    Paths are stored repo-relative with the stage directory inside them, so a
+    folder that moves leaves every row pointing at a file that is no longer
+    there: `show` prints the dead path, notion_sync skips it as missing, and
+    add_attachment's INSERT OR IGNORE means re-attaching the right path appends
+    a second row instead of replacing the stale one.
+
+    Returns how many rows were rewritten or dropped.
+    """
+    if from_stage == to_stage:
+        return 0
+    # Built the same way the paths in these rows were, through the module that
+    # knows the shape of the tree. Spelled out here instead, a layout change
+    # would fail closed: no error, no rewrite, and every row silently left
+    # pointing at the old stage.
+    old = rel(paths.stage_dir(from_stage) / slug) + "/"
+    new = rel(paths.stage_dir(to_stage) / slug) + "/"
+    # fetchall() first, because the loop writes to the table it is reading.
+    rows = conn.execute(
+        "SELECT id, kind, path FROM attachments WHERE application_id = ? ORDER BY id",
+        (application_id,),
+    ).fetchall()
+    changed = 0
+    for row in rows:
+        # startswith, not LIKE: a slug can hold `_`, which LIKE reads as a
+        # single-character wildcard. slugify() maps everything outside
+        # [a-z0-9] to `-`, so `%` never appears and `_` only ever comes from
+        # the one place that joins two slugs with it -- a second role at a
+        # company already taken, filed as `acme_frontend-engineer`. One
+        # wildcard is enough. Anything not under this folder is left alone.
+        if not row["path"].startswith(old):
+            continue
+        target = new + row["path"][len(old) :]
+        # UNIQUE(application_id, kind, path): when the rewritten path is already
+        # there the row cannot be updated onto it, so the pair collapses onto the
+        # one that is already correct. Re-queried per row, so two rows landing on
+        # the same target see each other.
+        twin = conn.execute(
+            "SELECT id FROM attachments "
+            "WHERE application_id = ? AND kind = ? AND path = ? AND id <> ?",
+            (application_id, row["kind"], target, row["id"]),
+        ).fetchone()
+        if twin is None:
+            conn.execute(
+                "UPDATE attachments SET path = ? WHERE id = ?", (target, row["id"])
+            )
+        else:
+            conn.execute("DELETE FROM attachments WHERE id = ?", (row["id"],))
+        changed += 1
+    return changed
+
+
+class Attached(NamedTuple):
+    """What add_attachment() did.
+
+    `replaced` is the path each dropped row held, not a count of them: after
+    this the row is gone and this is the only place it is written down. `detach`
+    refuses to guess between two rows and lists both for the same reason.
+    """
+
+    path: str
+    replaced: list[str]
+
+
+def add_attachment(
+    conn: sqlite3.Connection,
+    ident: str,
+    kind: str,
+    path: str,
+    replace: bool = False,
+) -> Attached:
+    """Record a built document against an application.
+
+    Attaching the same path twice is not an error and not a second row. A
+    *different* path of the same kind is, though -- which is almost never what
+    the caller meant, and is how the stale rows a stage move left behind ended
+    up sitting beside the correct ones. `replace` says what is usually meant:
+    this kind now has exactly this one file. It is opt-in, so the default is
+    still to append, and it drops rows, never files.
+    """
     row = resolve(conn, ident)
     p = Path(path)
     abs_path = p if p.is_absolute() else (paths.REPO / p)
     if not abs_path.exists():
         raise TrackerError(f"file not found: {path}")
     stored = rel(abs_path.resolve())
+    replaced: list[str] = []
+    if replace:
+        # Every row of this kind except the one being attached. Excluding it,
+        # rather than deleting and inserting again, is what makes a second run
+        # with the same path a no-op that keeps the row's id and added_at.
+        #
+        # Read before the delete, because what those rows said is the only
+        # thing left of them afterwards.
+        doomed = (row["id"], kind, stored)
+        replaced = [
+            r["path"]
+            for r in conn.execute(
+                "SELECT path FROM attachments "
+                "WHERE application_id = ? AND kind = ? AND path <> ? ORDER BY id",
+                doomed,
+            )
+        ]
+        conn.execute(
+            "DELETE FROM attachments "
+            "WHERE application_id = ? AND kind = ? AND path <> ?",
+            doomed,
+        )
     conn.execute(
         "INSERT OR IGNORE INTO attachments(application_id, kind, path) VALUES (?,?,?)",
         (row["id"], kind, stored),
@@ -915,7 +1153,97 @@ def add_attachment(conn: sqlite3.Connection, ident: str, kind: str, path: str) -
     conn.execute(
         "UPDATE applications SET updated_at = ? WHERE id = ?", (now(), row["id"])
     )
-    return stored
+    return Attached(stored, replaced)
+
+
+def remove_attachment(
+    conn: sqlite3.Connection,
+    ident: str,
+    kind: str | None = None,
+    attachment_id: int | None = None,
+) -> sqlite3.Row:
+    """Take an attachment row out. The file it names is never touched.
+
+    Only the row goes. The documents on disk are the ones the employer
+    received, and nothing here deletes them.
+
+    This is for a row that no longer describes anything: a path pointing where
+    the file is not, the same document recorded twice under two paths, a
+    `--path` typed wrong. Until now there was no way out at all -- add_attachment
+    is INSERT OR IGNORE, so attaching the right path beside a wrong one left
+    both, and a stranded row is what notion_sync reads as a missing file.
+
+    Not for hiding what was sent. Which version went out is part of the record.
+
+    Returns the row it removed, so the caller can show what is gone.
+    """
+    app = resolve(conn, ident)
+    if kind is None and attachment_id is None:
+        raise TrackerError(
+            "name what to detach: --kind, --id, or both "
+            "(nothing here removes every attachment at once)"
+        )
+
+    sql = "SELECT * FROM attachments WHERE application_id = ?"
+    params: list[Any] = [app["id"]]
+    if kind is not None:
+        sql += " AND kind = ?"
+        params.append(kind)
+    if attachment_id is not None:
+        # Still scoped to this application: an id copied out of another
+        # application's `show` is refused rather than silently obeyed.
+        sql += " AND id = ?"
+        params.append(attachment_id)
+    rows = conn.execute(sql + " ORDER BY id", params).fetchall()
+
+    if not rows:
+        wanted = []
+        if attachment_id is not None:
+            wanted.append(f"#{attachment_id}")
+        if kind is not None:
+            wanted.append(f"kind {kind!r}")
+        raise TrackerError(
+            f"no attachment {' of '.join(wanted)} on #{app['id']} {app['slug']}"
+        )
+    if len(rows) > 1:
+        # Never guess which of two rows was meant. An id is unique, so this is
+        # only reachable through --kind alone.
+        listing = "\n".join(f"    #{r['id']:<4} {r['path']}" for r in rows)
+        raise TrackerError(
+            f"{len(rows)} {kind} attachments on #{app['id']} {app['slug']} "
+            f"-- name one with --id\n{listing}"
+        )
+
+    row = rows[0]
+    conn.execute("DELETE FROM attachments WHERE id = ?", (row["id"],))
+    conn.execute(
+        "UPDATE applications SET updated_at = ? WHERE id = ?", (now(), app["id"])
+    )
+    return row
+
+
+def detached_attachment_report(conn: sqlite3.Connection, row: dict) -> str:
+    """What was removed, and the copies of it this did not touch."""
+    lines = [f"detached {row['kind']} #{row['id']}: {row['path']}"]
+    lines.append(
+        "  the file on disk is untouched"
+        if (paths.REPO / row["path"]).exists()
+        else "  there was no file at that path"
+    )
+    page = conn.execute(
+        "SELECT notion_page_id FROM applications WHERE id = ?",
+        (row["application_id"],),
+    ).fetchone()["notion_page_id"]
+    if page:
+        # The page is the application's. An attachment has no page of its own
+        # to chase, the way a deleted event does -- it is a property on this
+        # one -- so nothing over there empties itself and the next push will not
+        # clear it either.
+        lines.append(
+            f"  the copy on Notion page {page} stays: an attachment there is a "
+            "page property, not a page of its own -- clear the field by hand"
+        )
+    return "\n".join(lines)
 
 
 def set_note(
@@ -1623,6 +1951,24 @@ def build_parser() -> argparse.ArgumentParser:
     at.add_argument("application")
     at.add_argument("--kind", default="cv", choices=["cv", "cover", "other"])
     at.add_argument("--path", required=True)
+    at.add_argument("--replace", action="store_true",
+                    help="this kind now has exactly this one file; the other "
+                         "rows of the kind go, their files stay")
+
+    # The only subcommand with a description as well as a help line: this is the
+    # wording standing between someone and a deleted CV, and `detach --help` is
+    # where a cautious user goes to check before running it.
+    dt = with_json(sub.add_parser(
+        "detach",
+        help="remove an attachment row -- never the file on disk",
+        description="Remove an attachment row from the tracker. The file it "
+                    "names is never touched, and neither is the copy already "
+                    "uploaded to Notion."))
+    dt.add_argument("application")
+    dt.add_argument("--kind", choices=["cv", "cover", "other"],
+                    help="enough on its own unless two rows share the kind")
+    dt.add_argument("--id", dest="attachment_id", type=int,
+                    help="attachment id from `show <application>`")
 
     nt = sub.add_parser("note", help="set or append notes")
     nt.add_argument("application")
@@ -1759,7 +2105,9 @@ def main(argv: list[str] | None = None) -> int:
                 if d["attachments"]:
                     print("  files:")
                     for at in d["attachments"]:
-                        print(f"    {at['kind']}: {at['path']}")
+                        # The id is here so `detach --id` has something to name
+                        # when two rows share a kind; events print theirs above.
+                        print(f"    #{at['id']:<4} {at['kind']:<6} {at['path']}")
 
         elif args.command == "set-status":
             with conn:
@@ -1808,12 +2156,34 @@ def main(argv: list[str] | None = None) -> int:
 
         elif args.command == "attach":
             with conn:
-                stored = add_attachment(conn, args.application, args.kind, args.path)
+                done = add_attachment(
+                    conn, args.application, args.kind, args.path, args.replace
+                )
+            lines = [f"attached {args.kind}: {done.path}"]
+            if done.replaced:
+                # Named, not counted. The rows are gone; this is where they are
+                # written down, the way detach lists what it will not guess
+                # between.
+                lines.append(
+                    f"  dropped {len(done.replaced)} earlier "
+                    f"{'row' if len(done.replaced) == 1 else 'rows'} of this "
+                    "kind; the files stay:"
+                )
+                lines += [f"    {p}" for p in done.replaced]
             emit(
                 args,
-                {"kind": args.kind, "path": stored},
-                f"attached {args.kind}: {stored}",
+                {"kind": args.kind, "path": done.path, "replaced": done.replaced},
+                "\n".join(lines),
             )
+
+        elif args.command == "detach":
+            with conn:
+                gone = dict(
+                    remove_attachment(
+                        conn, args.application, args.kind, args.attachment_id
+                    )
+                )
+            emit(args, gone, detached_attachment_report(conn, gone))
 
         elif args.command == "note":
             with conn:

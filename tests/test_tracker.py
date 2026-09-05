@@ -25,6 +25,24 @@ import tracker  # noqa: E402
 from tracker import TrackerError  # noqa: E402
 
 
+PROBE_MIGRATION = (
+    "def migrate(conn, tracker):\n"
+    "    conn.execute('ALTER TABLE applications ADD COLUMN probe_one TEXT')\n"
+)
+
+# Stands in for the machinery that resolves a module by its own __name__ --
+# dataclasses, pickle, typing.get_type_hints -- and finds nothing if the loader
+# never registered it.
+SELF_LOOKUP_MIGRATION = (
+    "import sys\n"
+    "REGISTERED = __name__ in sys.modules\n"
+    "def migrate(conn, tracker):\n"
+    "    if not REGISTERED:\n"
+    "        raise RuntimeError('the module was not in sys.modules while it ran')\n"
+    "    conn.execute('ALTER TABLE applications ADD COLUMN probe_one TEXT')\n"
+)
+
+
 class TrackerTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="careerforge-test-")).resolve()
@@ -54,6 +72,34 @@ class TrackerTestCase(unittest.TestCase):
             return tracker.add_application(
                 self.conn, self.cfg, company=company, role=role, url=url, **kw
             )
+
+    def attach(self, row, kind="cv", name="cv.pdf", stage="applications",
+               replace=False):
+        """A real file in the application's folder, recorded as an attachment."""
+        folder = paths.stage_dir(stage) / row["slug"]
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_text("x", encoding="utf-8")
+        with self.conn:
+            return tracker.add_attachment(
+                self.conn, row["slug"], kind, str(folder / name), replace
+            ).path
+
+    def attachment_paths(self, row):
+        return sorted(
+            r["path"]
+            for r in self.conn.execute(
+                "SELECT path FROM attachments WHERE application_id = ?", (row["id"],)
+            )
+        )
+
+    def attachment_rows(self):
+        # Ids included: a row deleted and written again is not a no-op.
+        return sorted(
+            tuple(r)
+            for r in self.conn.execute(
+                "SELECT id, application_id, kind, path FROM attachments"
+            )
+        )
 
     # -- deduplication -----------------------------------------------------
 
@@ -112,6 +158,377 @@ class TrackerTestCase(unittest.TestCase):
         with self.conn:
             _, note = tracker.set_status(self.conn, self.cfg, row["slug"], "applied")
         self.assertIn("no folder", note)
+
+    # -- attachment paths follow the folder --------------------------------
+
+    def test_a_stage_move_takes_the_attachment_paths_with_it(self):
+        # Paths are stored with the stage directory inside them, so a folder
+        # that moves without them leaves every row pointing at nothing.
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        self.attach(row, "cover", "cover.pdf")
+
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+
+        self.assertEqual(
+            self.attachment_paths(row),
+            [
+                f"data/pipeline/processing/{row['slug']}/cover.pdf",
+                f"data/pipeline/processing/{row['slug']}/cv.pdf",
+            ],
+        )
+        for stored in self.attachment_paths(row):
+            self.assertTrue((paths.REPO / stored).exists(), stored)
+
+    def test_the_status_and_the_paths_land_together_or_not_at_all(self):
+        # What set_status opening no transaction of its own is for. Every other
+        # test here reads back on self.conn, which sees its own uncommitted
+        # writes and so passes whether the two halves are one transaction or
+        # two; a second connection to the same file only sees what committed.
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("the rewrite failed")
+
+        self.addCleanup(
+            setattr, tracker, "retarget_attachments", tracker.retarget_attachments
+        )
+        tracker.retarget_attachments = boom
+
+        with self.assertRaises(RuntimeError):
+            with self.conn:
+                tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+
+        other = tracker.connect()
+        try:
+            committed = other.execute(
+                "SELECT status FROM applications WHERE id = ?", (row["id"],)
+            ).fetchone()["status"]
+        finally:
+            other.close()
+        self.assertEqual(committed, "draft")
+
+        # The folder is the half the transaction does not cover: it moved
+        # before the database was touched, and /triage is where that is caught.
+        self.assertTrue((paths.stage_dir("processing") / row["slug"]).is_dir())
+
+    def test_the_note_says_the_attachment_paths_moved_too(self):
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        self.attach(row, "cover", "cover.pdf")
+
+        with self.conn:
+            _, note = tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+
+        self.assertIn("moved applications/", note)
+        self.assertIn("2 attachment paths followed it", note)
+
+    def test_the_note_stays_quiet_when_there_was_nothing_to_repoint(self):
+        row = self.add()
+        (paths.stage_dir("applications") / row["slug"]).mkdir()
+
+        with self.conn:
+            _, note = tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+
+        self.assertIn("moved applications/", note)
+        self.assertNotIn("attachment", note)
+
+    def test_no_move_leaves_the_attachment_paths_alone(self):
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        before = self.attachment_paths(row)
+
+        with self.conn:
+            tracker.set_status(
+                self.conn, self.cfg, row["slug"], "screening", move=False
+            )
+
+        self.assertEqual(self.attachment_paths(row), before)
+
+    def test_a_path_already_taken_collapses_to_one_row(self):
+        # add_attachment is INSERT OR IGNORE against UNIQUE(application_id,
+        # kind, path), so re-attaching the right path after a move appended a
+        # second row instead of replacing the stale one. Rewriting the stale row
+        # onto the live one has to collapse the pair, not raise IntegrityError.
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO attachments(application_id, kind, path) VALUES (?,?,?)",
+                (row["id"], "cv", f"data/pipeline/processing/{row['slug']}/cv.pdf"),
+            )
+
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+
+        self.assertEqual(
+            self.attachment_paths(row),
+            [f"data/pipeline/processing/{row['slug']}/cv.pdf"],
+        )
+
+    def test_only_rows_under_the_moved_folder_are_rewritten(self):
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        strays = [
+            "data/documents/cv_master.pdf",
+            # Another application whose slug starts with this one.
+            f"data/pipeline/applications/{row['slug']}-2/cv.pdf",
+            f"data/pipeline/rejected/{row['slug']}/cv.pdf",
+        ]
+        with self.conn:
+            for i, stray in enumerate(strays):
+                self.conn.execute(
+                    "INSERT INTO attachments(application_id, kind, path) VALUES (?,?,?)",
+                    (row["id"], f"other{i}", stray),
+                )
+
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+
+        self.assertEqual(
+            self.attachment_paths(row),
+            sorted(strays + [f"data/pipeline/processing/{row['slug']}/cv.pdf"]),
+        )
+
+    def test_an_underscore_in_a_slug_is_not_a_wildcard(self):
+        # Why the prefix is matched with startswith and not SQL LIKE. A second
+        # role at a company already taken is filed as `acme_frontend-engineer`,
+        # and LIKE would read that `_` as "any one character" -- so a row under
+        # a folder that differs only there would be rewritten as if it were
+        # this application's. The `-2` suffix the test above uses does not show
+        # this: LIKE would leave that one alone too.
+        self.add(role="Frontend Engineer")
+        row = self.add(role="Backend Engineer")
+        self.assertIn("_", row["slug"])
+        self.attach(row, "cv", "cv.pdf")
+
+        decoy = "data/pipeline/applications/{}/cv.pdf".format(
+            row["slug"].replace("_", "X")
+        )
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO attachments(application_id, kind, path) VALUES (?,?,?)",
+                (row["id"], "other", decoy),
+            )
+
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+
+        self.assertEqual(
+            self.attachment_paths(row),
+            sorted([decoy, f"data/pipeline/processing/{row['slug']}/cv.pdf"]),
+        )
+
+    # -- attachments come back out -----------------------------------------
+
+    def test_detaching_removes_the_row_and_leaves_the_file(self):
+        row = self.add()
+        stored = self.attach(row, "cv", "cv.pdf")
+        with self.conn:
+            gone = tracker.remove_attachment(self.conn, row["slug"], "cv")
+
+        self.assertEqual(gone["path"], stored)
+        self.assertEqual(self.attachment_paths(row), [])
+        # The document is the one the employer received. It stays on disk.
+        self.assertTrue((paths.REPO / stored).exists())
+
+    def test_two_rows_of_a_kind_refuse_rather_than_guess(self):
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO attachments(application_id, kind, path) VALUES (?,?,?)",
+                (row["id"], "cv", f"data/pipeline/rejected/{row['slug']}/cv.pdf"),
+            )
+
+        with self.assertRaises(TrackerError) as ctx:
+            tracker.remove_attachment(self.conn, row["slug"], "cv")
+
+        # Both candidates are named, so the user can pick one.
+        self.assertIn("--id", str(ctx.exception))
+        ids = [
+            r["id"]
+            for r in self.conn.execute(
+                "SELECT id FROM attachments WHERE application_id = ?", (row["id"],)
+            )
+        ]
+        self.assertEqual(len(ids), 2)
+        for at_id in ids:
+            self.assertIn(f"#{at_id}", str(ctx.exception))
+
+    def test_an_attachment_id_belonging_to_another_application_is_refused(self):
+        mine = self.add()
+        theirs = self.add(company="Other Co")
+        self.attach(mine, "cv", "cv.pdf")
+        at_id = int(
+            self.conn.execute(
+                "SELECT id FROM attachments WHERE application_id = ?", (mine["id"],)
+            ).fetchone()["id"]
+        )
+
+        with self.assertRaises(TrackerError):
+            tracker.remove_attachment(self.conn, theirs["slug"], attachment_id=at_id)
+        with self.assertRaises(TrackerError):
+            tracker.remove_attachment(self.conn, mine["slug"], attachment_id=9999)
+        self.assertEqual(len(self.attachment_paths(mine)), 1)
+
+    def test_detaching_needs_something_to_go_on(self):
+        # No selector must never mean "all of them".
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        self.attach(row, "cover", "cover.pdf")
+
+        with self.assertRaises(TrackerError):
+            tracker.remove_attachment(self.conn, row["slug"])
+        self.assertEqual(len(self.attachment_paths(row)), 2)
+
+    def test_detaching_touches_its_application(self):
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        with self.conn:
+            self.conn.execute(
+                "UPDATE applications SET updated_at = '2000-01-01 00:00:00' "
+                "WHERE id = ?", (row["id"],)
+            )
+        with self.conn:
+            tracker.remove_attachment(self.conn, row["slug"], "cv")
+
+        after = self.conn.execute(
+            "SELECT updated_at FROM applications WHERE id = ?", (row["id"],)
+        ).fetchone()["updated_at"]
+        self.assertNotEqual(after, "2000-01-01 00:00:00")
+
+    def test_the_detach_report_says_the_file_stays(self):
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        with self.conn:
+            gone = dict(tracker.remove_attachment(self.conn, row["slug"], "cv"))
+
+        report = tracker.detached_attachment_report(self.conn, gone)
+        self.assertIn("untouched", report)
+        # No Notion page, so nothing is said about one.
+        self.assertNotIn("Notion", report)
+
+    def test_the_detach_report_names_the_notion_page_that_keeps_the_file(self):
+        # An attachment is a page property, not a page, so there is no
+        # notion_page_id to chase and nothing over there empties itself.
+        row = self.add()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO attachments(application_id, kind, path) VALUES (?,?,?)",
+                (row["id"], "cv", f"data/pipeline/applications/{row['slug']}/gone.pdf"),
+            )
+            self.conn.execute(
+                "UPDATE applications SET notion_page_id = 'page-1' WHERE id = ?",
+                (row["id"],),
+            )
+        with self.conn:
+            gone = dict(tracker.remove_attachment(self.conn, row["slug"], "cv"))
+
+        report = tracker.detached_attachment_report(self.conn, gone)
+        self.assertIn("page-1", report)
+        # And it says the row was already pointing at nothing.
+        self.assertIn("no file at that path", report)
+
+    # -- attaching the next version of a document --------------------------
+
+    def test_replace_leaves_one_row_for_that_kind(self):
+        row = self.add()
+        self.attach(row, "cv", "cv_v1.pdf")
+        self.attach(row, "cv", "cv_v2.pdf", replace=True)
+
+        self.assertEqual(
+            self.attachment_paths(row),
+            [f"data/pipeline/applications/{row['slug']}/cv_v2.pdf"],
+        )
+
+    def test_replace_names_the_rows_it_dropped(self):
+        # A count would be the one place those paths are not written down --
+        # the rows are gone, and what they held is what tells the user whether
+        # the right one went.
+        row = self.add()
+        first = self.attach(row, "cv", "cv_v1.pdf")
+        second = self.attach(row, "cv", "cv_v2.pdf")
+
+        folder = paths.stage_dir("applications") / row["slug"]
+        (folder / "cv_v3.pdf").write_text("x", encoding="utf-8")
+        with self.conn:
+            done = tracker.add_attachment(
+                self.conn, row["slug"], "cv", str(folder / "cv_v3.pdf"), replace=True
+            )
+
+        self.assertEqual(done.replaced, [first, second])
+
+    def test_replace_leaves_another_application_alone(self):
+        # The DELETE is scoped by application as well as by kind: two open
+        # applications both have a cv, and neither is the other's.
+        mine = self.add(company="Acme")
+        theirs = self.add(company="Globex")
+        self.attach(theirs, "cv", "cv.pdf")
+        untouched = self.attachment_rows()
+
+        self.attach(mine, "cv", "cv_v1.pdf")
+        self.attach(mine, "cv", "cv_v2.pdf", replace=True)
+
+        self.assertEqual(
+            self.attachment_paths(mine),
+            [f"data/pipeline/applications/{mine['slug']}/cv_v2.pdf"],
+        )
+        self.assertEqual(
+            [r for r in self.attachment_rows() if r[1] == theirs["id"]], untouched
+        )
+
+    def test_replace_leaves_the_other_kinds_alone(self):
+        row = self.add()
+        self.attach(row, "cover", "cover.pdf")
+        self.attach(row, "cv", "cv_v1.pdf")
+        self.attach(row, "cv", "cv_v2.pdf", replace=True)
+
+        self.assertEqual(
+            self.attachment_paths(row),
+            [
+                f"data/pipeline/applications/{row['slug']}/cover.pdf",
+                f"data/pipeline/applications/{row['slug']}/cv_v2.pdf",
+            ],
+        )
+
+    def test_replacing_a_path_with_itself_keeps_the_row_it_found(self):
+        # Excluding the target from the DELETE, rather than deleting and
+        # inserting again, is what keeps a re-run from rewriting added_at.
+        row = self.add()
+        stored = self.attach(row, "cv", "cv.pdf")
+        before = [
+            tuple(r)
+            for r in self.conn.execute(
+                "SELECT id, added_at FROM attachments WHERE application_id = ?",
+                (row["id"],),
+            )
+        ]
+
+        with self.conn:
+            done = tracker.add_attachment(
+                self.conn, row["slug"], "cv", stored, replace=True
+            )
+
+        self.assertEqual(done.replaced, [])
+        after = [
+            tuple(r)
+            for r in self.conn.execute(
+                "SELECT id, added_at FROM attachments WHERE application_id = ?",
+                (row["id"],),
+            )
+        ]
+        self.assertEqual(after, before)
+
+    def test_attach_without_replace_still_appends(self):
+        # The default is untouched: --replace is a flag, not a new behaviour.
+        row = self.add()
+        self.attach(row, "cv", "cv_v1.pdf")
+        self.attach(row, "cv", "cv_v2.pdf")
+
+        self.assertEqual(len(self.attachment_paths(row)), 2)
 
     # -- optimistic locking ------------------------------------------------
 
@@ -443,7 +860,11 @@ class TrackerTestCase(unittest.TestCase):
         # everything the migrations would add. Replaying them would fail on
         # duplicate columns, so they must be recorded as a baseline instead.
         recorded = {r["name"] for r in self.conn.execute("SELECT name FROM migrations")}
-        on_disk = {p.name for p in tracker.MIGRATIONS_DIR.glob("*.sql")}
+        on_disk = {
+            p.name
+            for p in tracker.MIGRATIONS_DIR.glob("*")
+            if p.suffix in tracker.MIGRATION_SUFFIXES
+        }
         self.assertEqual(recorded, on_disk)
 
     def test_migration_004_moves_attachment_paths_under_data(self):
@@ -467,14 +888,133 @@ class TrackerTestCase(unittest.TestCase):
             "data/pipeline/rejected/acme/cover.pdf",
         ])
 
+    def replay_migration(self, name):
+        """Run one migration for real on a database that recorded it baselined."""
+        with self.conn:
+            self.conn.execute("DELETE FROM migrations WHERE name = ?", (name,))
+        return tracker.apply_migrations(self.conn)
+
+    def test_migration_006_repoints_attachments_at_the_folder_on_disk(self):
+        # Which stage a slug belongs to is not on the row: the status-to-stage
+        # map is the user's config, and the folder can drift from the status
+        # anyway. The folder on disk is the ground truth.
+        row = self.add()
+        (paths.stage_dir("rejected") / row["slug"]).mkdir(parents=True)
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO attachments(application_id, kind, path) VALUES (?,?,?)",
+                (row["id"], "cv", f"data/pipeline/applications/{row['slug']}/cv.pdf"),
+            )
+
+        self.assertEqual(
+            self.replay_migration("006_attachment_stage_paths.py"),
+            ["006_attachment_stage_paths.py"],
+        )
+        self.assertEqual(
+            self.attachment_paths(row),
+            [f"data/pipeline/rejected/{row['slug']}/cv.pdf"],
+        )
+
+    def test_migration_006_collapses_the_duplicate_rather_than_leaving_both(self):
+        # The shape the live database was in: the folder had moved to rejected/,
+        # both documents were attached again there, and the rows written under
+        # applications/ stayed behind. Two rows per kind, one live and one dead.
+        row = self.add()
+        folder = paths.stage_dir("rejected") / row["slug"]
+        folder.mkdir(parents=True)
+        for kind, name in (("cv", "cv.pdf"), ("cover", "cover.pdf")):
+            (folder / name).write_text("x", encoding="utf-8")
+            with self.conn:
+                for stage in ("applications", "rejected"):
+                    self.conn.execute(
+                        "INSERT INTO attachments(application_id, kind, path) "
+                        "VALUES (?,?,?)",
+                        (row["id"], kind, f"data/pipeline/{stage}/{row['slug']}/{name}"),
+                    )
+
+        self.replay_migration("006_attachment_stage_paths.py")
+
+        self.assertEqual(
+            self.attachment_paths(row),
+            [
+                f"data/pipeline/rejected/{row['slug']}/cover.pdf",
+                f"data/pipeline/rejected/{row['slug']}/cv.pdf",
+            ],
+        )
+
+    def test_migration_006_replayed_over_its_own_repair_changes_nothing(self):
+        # Idempotency on a database that never needed repairing proves little:
+        # the interesting replay is the one that walks over rows the first run
+        # rewrote, and over the gap where it deleted a duplicate.
+        row = self.add()
+        folder = paths.stage_dir("rejected") / row["slug"]
+        folder.mkdir(parents=True)
+        for name in ("cv.pdf", "cover.pdf"):
+            (folder / name).write_text("x", encoding="utf-8")
+        with self.conn:
+            for kind, name, stages in (
+                ("cv", "cv.pdf", ("applications",)),
+                ("cover", "cover.pdf", ("applications", "rejected")),
+            ):
+                for stage in stages:
+                    self.conn.execute(
+                        "INSERT INTO attachments(application_id, kind, path) "
+                        "VALUES (?,?,?)",
+                        (row["id"], kind, f"data/pipeline/{stage}/{row['slug']}/{name}"),
+                    )
+
+        self.replay_migration("006_attachment_stage_paths.py")
+        repaired = self.attachment_rows()
+        self.assertEqual(
+            self.attachment_paths(row),
+            [
+                f"data/pipeline/rejected/{row['slug']}/cover.pdf",
+                f"data/pipeline/rejected/{row['slug']}/cv.pdf",
+            ],
+        )
+
+        self.replay_migration("006_attachment_stage_paths.py")
+        # Ids included, so a row rewritten onto the value it already held would
+        # still show up here.
+        self.assertEqual(self.attachment_rows(), repaired)
+
+    def test_migration_006_leaves_an_application_with_no_folder_alone(self):
+        # Nothing on the row says which stage it belongs to, and with no folder
+        # on disk there is no ground truth either. Guessing from the status
+        # would be guessing: the two are allowed to disagree, which is what
+        # /triage is for.
+        row = self.add()
+        self.assertIsNone(tracker.folder_for(row["slug"])[0])
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO attachments(application_id, kind, path) VALUES (?,?,?)",
+                (row["id"], "cv", f"data/pipeline/applications/{row['slug']}/cv.pdf"),
+            )
+        before = self.attachment_rows()
+
+        self.replay_migration("006_attachment_stage_paths.py")
+        self.assertEqual(self.attachment_rows(), before)
+
+    def test_migration_006_is_a_no_op_when_the_paths_are_already_right(self):
+        row = self.add()
+        self.attach(row, "cv", "cv.pdf")
+        self.attach(row, "cover", "cover.pdf")
+        before = self.attachment_rows()
+
+        self.replay_migration("006_attachment_stage_paths.py")
+        self.assertEqual(self.attachment_rows(), before)
+        # And again, on the database it has just walked over.
+        self.replay_migration("006_attachment_stage_paths.py")
+        self.assertEqual(self.attachment_rows(), before)
+
     def columns(self, table="applications"):
         return {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
 
-    def use_migrations(self, sql, name="900_test.sql"):
+    def use_migrations(self, source, name="900_test.sql"):
         """Point the module at a throwaway migrations directory."""
         d = self.tmp / "migrations"
         d.mkdir(exist_ok=True)
-        (d / name).write_text(sql, encoding="utf-8")
+        (d / name).write_text(source, encoding="utf-8")
         self.addCleanup(setattr, tracker, "MIGRATIONS_DIR", tracker.MIGRATIONS_DIR)
         tracker.MIGRATIONS_DIR = d
         return d
@@ -519,6 +1059,68 @@ class TrackerTestCase(unittest.TestCase):
         self.assertIn("900_test.sql", recorded)
         # And it runs exactly once.
         self.assertEqual(tracker.apply_migrations(self.conn), [])
+
+    def test_a_python_migration_runs_and_records_itself(self):
+        self.use_migrations(PROBE_MIGRATION, name="900_test.py")
+        self.assertEqual(tracker.apply_migrations(self.conn), ["900_test.py"])
+        self.assertIn("probe_one", self.columns())
+        recorded = {r["name"] for r in self.conn.execute("SELECT name FROM migrations")}
+        self.assertIn("900_test.py", recorded)
+        # And it runs exactly once.
+        self.assertEqual(tracker.apply_migrations(self.conn), [])
+
+    def test_a_python_migration_that_fails_halfway_leaves_nothing_behind(self):
+        # No executescript() here, so the runner's `with conn:` really does own
+        # the transaction -- as long as one was opened, which pure DDL does not
+        # do by itself.
+        self.use_migrations(
+            PROBE_MIGRATION + "    raise RuntimeError('halfway')\n",
+            name="900_test.py",
+        )
+        with self.assertRaises(RuntimeError):
+            tracker.apply_migrations(self.conn)
+
+        self.assertNotIn("probe_one", self.columns())
+        recorded = {r["name"] for r in self.conn.execute("SELECT name FROM migrations")}
+        self.assertNotIn("900_test.py", recorded)
+
+    def test_a_python_migration_without_a_migrate_function_is_refused(self):
+        self.use_migrations("answer = 42\n", name="900_test.py")
+        with self.assertRaises(TrackerError) as ctx:
+            tracker.apply_migrations(self.conn)
+        self.assertIn("migrate(conn, tracker)", str(ctx.exception))
+
+    def test_a_python_migration_can_find_itself_in_sys_modules(self):
+        self.use_migrations(SELF_LOOKUP_MIGRATION, name="900_test.py")
+        self.assertEqual(tracker.apply_migrations(self.conn), ["900_test.py"])
+        self.assertIn("probe_one", self.columns())
+        # And the name does not outlive the run: it points at a file nothing
+        # will import again, and the next migration of that stem is a new module.
+        self.assertNotIn("careerforge_migration_900_test", sys.modules)
+
+    def test_migrations_refuse_to_run_inside_someone_else_transaction(self):
+        # sqlite3's `with conn:` does not nest, so the COMMIT that ends the
+        # first migration would land whatever the caller still had open.
+        row = self.add()
+        self.use_migrations(PROBE_MIGRATION, name="900_test.py")
+
+        with self.assertRaises(TrackerError) as ctx:
+            with self.conn:
+                self.conn.execute(
+                    "UPDATE applications SET notes = 'half done' WHERE id = ?",
+                    (row["id"],),
+                )
+                tracker.apply_migrations(self.conn)
+
+        self.assertIn("transaction", str(ctx.exception))
+        self.assertNotIn("probe_one", self.columns())
+        # The caller's half-finished work rolled back with the exception,
+        # instead of being committed by a migration that never meant to.
+        self.assertIsNone(
+            self.conn.execute(
+                "SELECT notes FROM applications WHERE id = ?", (row["id"],)
+            ).fetchone()["notes"]
+        )
 
     # -- the schema document -----------------------------------------------
 

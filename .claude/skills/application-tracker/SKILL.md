@@ -22,9 +22,9 @@ directory under `data/pipeline/`:
 | `data/pipeline/processing/` | The company replied; interviews scheduled or underway |
 | `data/pipeline/rejected/` | Closed: rejection at any stage, silence, or withdrawn |
 
-`tracker.py set-status` changes the status **and** moves the folder in one
-step. If it reports a collision, stop and tell the user — do not resolve it by
-moving files yourself.
+`tracker.py set-status` changes the status, moves the folder **and** carries the
+recorded document paths with it, in one step. If it reports a collision, stop
+and tell the user — do not resolve it by moving files yourself.
 
 Run `python tools/tracker.py statuses` to see the configured statuses; they are
 the user's, not fixed by this framework.
@@ -40,7 +40,7 @@ python tools/tracker.py add \
   --company "<Company>" --role "<Role>" --url "<url>" \
   --status draft --work-mode remote \
   --website "<company site>" --company-description "<one or two sentences>" \
-  --posting-file <stage>/<slug>/job.md
+  --posting-file data/pipeline/applications/<slug>/job.md
 ```
 
 `add` prints the slug it assigned — that is the folder name to create under
@@ -55,9 +55,14 @@ actually sent, so the tracker holds the version the employer received.
 ```bash
 python tools/tracker.py set-status <slug> applied
 python tools/tracker.py event add <slug> --type applied --date YYYY-MM-DD --outcome passed
-python tools/tracker.py attach <slug> --kind cv    --path <stage>/<slug>/cv_<name>.pdf
-python tools/tracker.py attach <slug> --kind cover --path <stage>/<slug>/cover_letter_<name>.pdf
+python tools/tracker.py attach <slug> --kind cv    --path data/pipeline/<stage>/<slug>/cv_<name>.pdf
+python tools/tracker.py attach <slug> --kind cover --path data/pipeline/<stage>/<slug>/cover_letter_<name>.pdf
 ```
+
+Add `--replace` when a document is being attached for the second time — the same
+application and kind, a new path, one row out the other side. Without it the old
+path stays beside the new one, and only the row goes when it is dropped, never
+the file.
 
 ## When something happens
 
@@ -94,6 +99,22 @@ Do not use `delete` to erase history. An interview that went badly happened.
 `delete` prints everything the row held, and says whether the event's Notion
 page is now orphaned — if it is, delete that page too, or the next
 `notion_sync.py import` brings the event back.
+
+An attachment comes back out with `detach`:
+
+```bash
+python tools/tracker.py detach <slug> --kind cv
+python tools/tracker.py detach <slug> --id <attachment-id>
+```
+
+It removes **the row and never the file**. The documents on disk are the ones
+the employer received. Use it for a row that no longer describes anything: a
+path pointing where the file is not, or the same document recorded twice under
+two paths. `--kind` is enough on its own; when two rows share a kind it refuses
+and lists them, and the id comes from `show <slug>` the way an event's does.
+The copy already uploaded to Notion stays either way — an attachment there is a
+property of the application's page, not a page of its own, so there is nothing
+for `notion_sync.py` to delete.
 
 ## Never
 
