@@ -172,7 +172,15 @@ A migration is a `.sql` file, or a `.py` file defining `migrate(conn, tracker)`
 — for the repairs SQL cannot express, the ones that have to look at the
 filesystem or reach the status-to-stage map, which lives in your `config.toml`
 and not in the database. The runner hands the tracker module in rather than
-letting the file import it, and owns the transaction either way.
+letting the file import it.
+
+The transaction is the runner's in both cases, and a migration that opens or
+ends one of its own takes that guarantee away: a `.sql` file may not use
+`BEGIN`, `COMMIT`, `SAVEPOINT` or `PRAGMA`, and a `.py` file may not call
+`executescript()`, `commit()` or `rollback()` — `executescript()` commits
+whatever is open before it runs a line. Break that and a migration failing
+partway can leave its work applied with no row recording it, which wedges the
+next `init`.
 
 Not every migration adds a column. `004_attachments_data_dir.sql` rewrites the
 rows of `attachments`: their paths are repo-relative, and the stage directories

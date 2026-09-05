@@ -59,7 +59,12 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 # config rather than in the database. This module is handed in rather than
 # imported by the file -- run as `python tools/tracker.py` it is __main__, and
 # a self-import would load a second copy of it against a sys.path the file has
-# no business assuming. Transactions stay the runner's, same as for .sql.
+# no business assuming. Transactions stay the runner's, same as for .sql, and
+# the same prohibition follows: no commit(), no rollback(), and no
+# executescript() -- it COMMITs whatever is open before running a line, so a
+# migration that failed after one would leave its work applied with no row
+# recording it, and the next init would replay it onto a database that already
+# has it.
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 MIGRATION_SUFFIXES = (".sql", ".py")
 SCHEMA_VERSION = "4"

@@ -22,9 +22,9 @@ directory under `data/pipeline/`:
 | `data/pipeline/processing/` | The company replied; interviews scheduled or underway |
 | `data/pipeline/rejected/` | Closed: rejection at any stage, silence, or withdrawn |
 
-`tracker.py set-status` changes the status **and** moves the folder in one
-step. If it reports a collision, stop and tell the user — do not resolve it by
-moving files yourself.
+`tracker.py set-status` changes the status, moves the folder **and** carries the
+recorded document paths with it, in one step. If it reports a collision, stop
+and tell the user — do not resolve it by moving files yourself.
 
 Run `python tools/tracker.py statuses` to see the configured statuses; they are
 the user's, not fixed by this framework.
@@ -40,7 +40,7 @@ python tools/tracker.py add \
   --company "<Company>" --role "<Role>" --url "<url>" \
   --status draft --work-mode remote \
   --website "<company site>" --company-description "<one or two sentences>" \
-  --posting-file <stage>/<slug>/job.md
+  --posting-file data/pipeline/applications/<slug>/job.md
 ```
 
 `add` prints the slug it assigned — that is the folder name to create under
@@ -55,8 +55,8 @@ actually sent, so the tracker holds the version the employer received.
 ```bash
 python tools/tracker.py set-status <slug> applied
 python tools/tracker.py event add <slug> --type applied --date YYYY-MM-DD --outcome passed
-python tools/tracker.py attach <slug> --kind cv    --path <stage>/<slug>/cv_<name>.pdf
-python tools/tracker.py attach <slug> --kind cover --path <stage>/<slug>/cover_letter_<name>.pdf
+python tools/tracker.py attach <slug> --kind cv    --path data/pipeline/<stage>/<slug>/cv_<name>.pdf
+python tools/tracker.py attach <slug> --kind cover --path data/pipeline/<stage>/<slug>/cover_letter_<name>.pdf
 ```
 
 Add `--replace` when a document is being attached for the second time — the same

@@ -759,9 +759,11 @@ then re-run the status change.
 **`show` lists a document that is not on disk**
 The row outlived the file. `python tools/tracker.py detach <slug> --kind cv`
 removes the row and never touches files; if two rows share the kind it lists
-both with their ids and you pass `--id` to name one. A database that drifted
-this way before the paths followed their folder is repaired by
-`python tools/tracker.py init`.
+both with their ids and you pass `--id` to name one. Drift from before the
+paths followed their folder is repaired once, by the migration `tracker.py init`
+applies when you upgrade; anything that drifts afterwards — a folder moved by
+hand, say — is yours to fix with `detach`, or by re-attaching the right path with
+`--replace`.
 
 **`tracker database not found`**
 `python tools/tracker.py init`

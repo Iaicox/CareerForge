@@ -144,9 +144,8 @@
   where the document was attached a second time at the right path. It runs on
   `tracker.py init` and is a no-op on a database that is already correct.
   Migrations may now be Python, defining `migrate(conn, tracker)`, for exactly
-  the repairs SQL cannot express: this one needs the filesystem and the
-  status-to-stage map, which lives in your `config.toml` and not in the
-  database.
+  the repairs SQL cannot express: this one has to read the folder each slug
+  actually sits in, which is on the filesystem and not in any table.
 
 - **A Gemini timeout no longer hangs, and `timeout_seconds` bounds the whole
   call.** The CLI was a launcher whose grandchild held the stdout pipe, so

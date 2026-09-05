@@ -112,6 +112,7 @@ quota, works on a plane.
 python tools/tracker.py add --company Acme --role "Senior Frontend Developer" \
                             --url https://acme.example/jobs/1
 python tools/tracker.py set-status acme screening   # also moves the folder
+python tools/tracker.py detach acme --kind cv       # drop a document row, never the file
 python tools/tracker.py list --stale                # gone quiet past your cutoff
 python tools/tracker.py report --board              # kanban in the terminal
 python tools/board.py                               # kanban in the browser
