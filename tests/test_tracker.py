@@ -942,6 +942,59 @@ class TrackerTestCase(unittest.TestCase):
             ],
         )
 
+    def test_migration_006_replayed_over_its_own_repair_changes_nothing(self):
+        # Idempotency on a database that never needed repairing proves little:
+        # the interesting replay is the one that walks over rows the first run
+        # rewrote, and over the gap where it deleted a duplicate.
+        row = self.add()
+        folder = paths.stage_dir("rejected") / row["slug"]
+        folder.mkdir(parents=True)
+        for name in ("cv.pdf", "cover.pdf"):
+            (folder / name).write_text("x", encoding="utf-8")
+        with self.conn:
+            for kind, name, stages in (
+                ("cv", "cv.pdf", ("applications",)),
+                ("cover", "cover.pdf", ("applications", "rejected")),
+            ):
+                for stage in stages:
+                    self.conn.execute(
+                        "INSERT INTO attachments(application_id, kind, path) "
+                        "VALUES (?,?,?)",
+                        (row["id"], kind, f"data/pipeline/{stage}/{row['slug']}/{name}"),
+                    )
+
+        self.replay_migration("006_attachment_stage_paths.py")
+        repaired = self.attachment_rows()
+        self.assertEqual(
+            self.attachment_paths(row),
+            [
+                f"data/pipeline/rejected/{row['slug']}/cover.pdf",
+                f"data/pipeline/rejected/{row['slug']}/cv.pdf",
+            ],
+        )
+
+        self.replay_migration("006_attachment_stage_paths.py")
+        # Ids included, so a row rewritten onto the value it already held would
+        # still show up here.
+        self.assertEqual(self.attachment_rows(), repaired)
+
+    def test_migration_006_leaves_an_application_with_no_folder_alone(self):
+        # Nothing on the row says which stage it belongs to, and with no folder
+        # on disk there is no ground truth either. Guessing from the status
+        # would be guessing: the two are allowed to disagree, which is what
+        # /triage is for.
+        row = self.add()
+        self.assertIsNone(tracker.folder_for(row["slug"])[0])
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO attachments(application_id, kind, path) VALUES (?,?,?)",
+                (row["id"], "cv", f"data/pipeline/applications/{row['slug']}/cv.pdf"),
+            )
+        before = self.attachment_rows()
+
+        self.replay_migration("006_attachment_stage_paths.py")
+        self.assertEqual(self.attachment_rows(), before)
+
     def test_migration_006_is_a_no_op_when_the_paths_are_already_right(self):
         row = self.add()
         self.attach(row, "cv", "cv.pdf")

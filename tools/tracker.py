@@ -1233,9 +1233,10 @@ def detached_attachment_report(conn: sqlite3.Connection, row: dict) -> str:
         (row["application_id"],),
     ).fetchone()["notion_page_id"]
     if page:
-        # There is no notion_page_id to chase here: an attachment is a property
-        # of the application's page, not a page of its own, so nothing on the
-        # Notion side empties itself and the next push will not clear it either.
+        # The page is the application's. An attachment has no page of its own
+        # to chase, the way a deleted event does -- it is a property on this
+        # one -- so nothing over there empties itself and the next push will not
+        # clear it either.
         lines.append(
             f"  the copy on Notion page {page} stays: an attachment there is a "
             "page property, not a page of its own -- clear the field by hand"
