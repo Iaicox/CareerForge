@@ -1132,15 +1132,20 @@ def add_attachment(
         #
         # Read before the delete, because what those rows said is the only
         # thing left of them afterwards.
-        others = "WHERE application_id = ? AND kind = ? AND path <> ?"
         doomed = (row["id"], kind, stored)
         replaced = [
             r["path"]
             for r in conn.execute(
-                f"SELECT path FROM attachments {others} ORDER BY id", doomed
+                "SELECT path FROM attachments "
+                "WHERE application_id = ? AND kind = ? AND path <> ? ORDER BY id",
+                doomed,
             )
         ]
-        conn.execute(f"DELETE FROM attachments {others}", doomed)
+        conn.execute(
+            "DELETE FROM attachments "
+            "WHERE application_id = ? AND kind = ? AND path <> ?",
+            doomed,
+        )
     conn.execute(
         "INSERT OR IGNORE INTO attachments(application_id, kind, path) VALUES (?,?,?)",
         (row["id"], kind, stored),
