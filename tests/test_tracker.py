@@ -238,6 +238,35 @@ class TrackerTestCase(unittest.TestCase):
             sorted(strays + [f"data/pipeline/processing/{row['slug']}/cv.pdf"]),
         )
 
+    def test_an_underscore_in_a_slug_is_not_a_wildcard(self):
+        # Why the prefix is matched with startswith and not SQL LIKE. A second
+        # role at a company already taken is filed as `acme_frontend-engineer`,
+        # and LIKE would read that `_` as "any one character" -- so a row under
+        # a folder that differs only there would be rewritten as if it were
+        # this application's. The `-2` suffix the test above uses does not show
+        # this: LIKE would leave that one alone too.
+        self.add(role="Frontend Engineer")
+        row = self.add(role="Backend Engineer")
+        self.assertIn("_", row["slug"])
+        self.attach(row, "cv", "cv.pdf")
+
+        decoy = "data/pipeline/applications/{}/cv.pdf".format(
+            row["slug"].replace("_", "X")
+        )
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO attachments(application_id, kind, path) VALUES (?,?,?)",
+                (row["id"], "other", decoy),
+            )
+
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, row["slug"], "screening")
+
+        self.assertEqual(
+            self.attachment_paths(row),
+            sorted([decoy, f"data/pipeline/processing/{row['slug']}/cv.pdf"]),
+        )
+
     # -- attachments come back out -----------------------------------------
 
     def test_detaching_removes_the_row_and_leaves_the_file(self):

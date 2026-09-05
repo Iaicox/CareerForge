@@ -1034,8 +1034,12 @@ def retarget_attachments(
     """
     if from_stage == to_stage:
         return 0
-    old = f"data/pipeline/{from_stage}/{slug}/"
-    new = f"data/pipeline/{to_stage}/{slug}/"
+    # Built the same way the paths in these rows were, through the module that
+    # knows the shape of the tree. Spelled out here instead, a layout change
+    # would fail closed: no error, no rewrite, and every row silently left
+    # pointing at the old stage.
+    old = rel(paths.stage_dir(from_stage) / slug) + "/"
+    new = rel(paths.stage_dir(to_stage) / slug) + "/"
     # fetchall() first, because the loop writes to the table it is reading.
     rows = conn.execute(
         "SELECT id, kind, path FROM attachments WHERE application_id = ? ORDER BY id",
@@ -1043,9 +1047,12 @@ def retarget_attachments(
     ).fetchall()
     changed = 0
     for row in rows:
-        # startswith, not LIKE: a slug may hold `_` or `%` -- `_platform-cv` and
-        # `revolut_senior-web-developer` are both real -- and LIKE would read
-        # them as wildcards. Anything not under this folder is left alone.
+        # startswith, not LIKE: a slug can hold `_`, which LIKE reads as a
+        # single-character wildcard. slugify() maps everything outside
+        # [a-z0-9] to `-`, so `%` never appears and `_` only ever comes from
+        # the one place that joins two slugs with it -- a second role at a
+        # company already taken, filed as `acme_frontend-engineer`. One
+        # wildcard is enough. Anything not under this folder is left alone.
         if not row["path"].startswith(old):
             continue
         target = new + row["path"][len(old) :]
