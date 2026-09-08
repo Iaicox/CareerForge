@@ -81,6 +81,8 @@
     margin-top: 6px; display: flex; gap: 8px; align-items: center;
     font-size: 11.5px; color: var(--muted);
   }
+  .card .pay { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .card .pay.est { font-style: italic; }
   .badge {
     font-size: 10.5px; padding: 1px 6px; border-radius: 999px;
     border: 1px solid currentColor;
@@ -265,10 +267,17 @@ function renderCard(card) {
   const when = fmtDate((card.last_event_date || card.created_at || "").slice(0, 10));
   const warn = card.folder_in_sync === false
     ? `<span class="badge warn">folder in ${esc(card.folder_stage)}/</span>` : "";
+  // The card gets the figure and the marker; the sentence explaining which of
+  // the two it is only fits in the panel.
+  const pay = card.salary
+    ? `<span class="pay${card.salary.kind === "benchmark" ? " est" : ""}"` +
+      ` title="${esc(card.salary.detail || "")}">` +
+      `${card.salary.kind === "benchmark" ? "&asymp;&nbsp;" : ""}${esc(card.salary.text)}</span>`
+    : "";
   el.innerHTML =
     `<div class="co">${esc(card.company_name)}</div>` +
     `<div class="role">${esc(card.role)}</div>` +
-    `<div class="foot"><span>${esc(when)}</span>${warn}</div>`;
+    `<div class="foot"><span>${esc(when)}</span>${warn}${pay}</div>`;
   el.addEventListener("dragstart", (e) => {
     e.dataTransfer.setData("text/plain", String(card.id));
     e.dataTransfer.effectAllowed = "move";
@@ -318,6 +327,10 @@ function openPanel(id, focus) {
         : esc(card.url) || "&mdash;"}</dd>
       <dt>Folder</dt><dd>${esc(card.folder || "not created yet")}</dd>
       <dt>Work mode</dt><dd>${esc(card.work_mode_label || "—")}</dd>
+      <dt>Salary</dt><dd>${card.salary
+        ? `${esc(card.salary.text)}<div style="color:var(--muted);font-size:12px">${
+            esc(card.salary.detail || "")}</div>`
+        : "&mdash;"}</dd>
       <dt>Contact</dt><dd>${esc(card.hr_name || "—")}${
         card.hr_email ? ` &lt;${esc(card.hr_email)}&gt;` : ""}</dd>
     </dl>

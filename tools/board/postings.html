@@ -88,6 +88,8 @@
   th:hover { color: var(--ink); }
   th .arrow { opacity: .55; font-size: 9px; margin-left: 3px; }
   th[aria-sort] { color: var(--ink); }
+  td.salary { white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
+  td.salary .est { color: var(--muted); font-style: italic; }
   tbody tr:hover { background: var(--bg); }
   tbody tr.terminal td { color: var(--muted); }
   td.co { font-weight: 620; white-space: nowrap; }
@@ -169,6 +171,7 @@ function safeHref(url) {
 const SORT_KEYS = {
   company:    (r) => r.company,
   title:      (r) => r.title || r.url,
+  salary:     (r) => r.salary?.sort ?? null,
   status:     (r) => r.status_label,
   score:      (r) => r.score,
   verdict:    (r) => r.verdict,
@@ -222,6 +225,17 @@ function applySort(rows) {
 function fmtDate(value) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? "").trim());
   return m ? `${m[3]}.${m[2]}.${m[1]}` : String(value ?? "");
+}
+
+// Which of the two figures this is has to be readable at a glance: the default
+// reading of a number in a job table is "this is what they said", so the
+// benchmark is marked and the posting's own words are not.
+function salaryCell(cell) {
+  if (!cell) return `<td class="salary"></td>`;
+  const body = cell.kind === "benchmark"
+    ? `<span class="est">&asymp;&nbsp;${esc(cell.text)}</span>`
+    : esc(cell.text);
+  return `<td class="salary" title="${esc(cell.detail || "")}">${body}</td>`;
 }
 
 // The header is sticky at top:0 and the th sticks under it. Measured rather
@@ -301,7 +315,8 @@ function statusSelect(row) {
 
 function render() {
   const rows = visibleRows();
-  metaEl.textContent = `${rows.length} of ${state.total} posting${state.total === 1 ? "" : "s"}`;
+  metaEl.textContent = `${rows.length} of ${state.total} posting${state.total === 1 ? "" : "s"}`
+    + (state.salary_meta ? `  ·  ≈ market benchmark, ${state.salary_meta.unit}` : "");
   if (!rows.length) {
     tableEl.innerHTML = `<p class="empty">Nothing matches.</p>`;
     return;
@@ -317,6 +332,7 @@ function render() {
     return `<tr class="${r.terminal ? "terminal" : ""}" data-id="${r.id}">
       <td class="co">${esc(r.company || "—")}</td>
       <td class="title">${title}${expired}</td>
+      ${salaryCell(r.salary)}
       <td class="status">${statusSelect(r)}</td>
       <td class="num">${r.score ?? ""}</td>
       <td>${verdict}</td>
@@ -328,7 +344,7 @@ function render() {
     </tr>`;
   }).join("");
   const head = [
-    ["company", "Company"], ["title", "Title"],
+    ["company", "Company"], ["title", "Title"], ["salary", "Salary"],
     ["status", "Status"], ["score", "Score"], ["verdict", "Verdict"],
     ["deadline", "Deadline"], ["source", "Source"], ["first_seen", "First seen"],
     ["note", "Note"],
