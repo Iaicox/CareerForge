@@ -160,6 +160,14 @@ function safeHref(url) {
   return /^https?:\/\//i.test(String(url || "")) ? url : null;
 }
 
+// The table reads DD.MM.YYYY; the database stores ISO. Anything that is not a
+// plain ISO date passes through untouched -- deadline is nullable, and
+// created_at carries a time.
+function fmtDate(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? "").trim());
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : String(value ?? "");
+}
+
 // The header is sticky at top:0 and the th sticks under it. Measured rather
 // than hardcoded because the header wraps at narrow widths.
 //
@@ -256,9 +264,9 @@ function render() {
       <td class="status">${statusSelect(r)}</td>
       <td class="num">${r.score ?? ""}</td>
       <td>${verdict}</td>
-      <td class="num">${esc(r.deadline || "")}</td>
+      <td class="num">${esc(fmtDate(r.deadline))}</td>
       <td>${esc(r.source || "")}</td>
-      <td class="num">${esc(r.first_seen || "")}</td>
+      <td class="num">${esc(fmtDate(r.first_seen))}</td>
       <td class="note" data-id="${r.id}" title="click to edit">${esc(r.note || "")}</td>
       <td class="app">${app}</td>
     </tr>`;

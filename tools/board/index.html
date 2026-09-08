@@ -171,6 +171,13 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
 // These pages serve unauthenticated POST endpoints on their own origin, and
 // the URLs come from scraped boards and pasted text. Anything that is not
 // http(s) is rendered as text.
+// The board reads DD.MM.YYYY; the database stores ISO. Anything that is not a
+// plain ISO date passes through untouched.
+function fmtDate(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? "").trim());
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : String(value ?? "");
+}
+
 function safeHref(url) {
   return /^https?:\/\//i.test(String(url || "")) ? url : null;
 }
@@ -255,7 +262,7 @@ function renderCard(card) {
   el.className = "card";
   el.draggable = true;
   el.dataset.id = card.id;
-  const when = (card.last_event_date || card.created_at || "").slice(0, 10);
+  const when = fmtDate((card.last_event_date || card.created_at || "").slice(0, 10));
   const warn = card.folder_in_sync === false
     ? `<span class="badge warn">folder in ${esc(card.folder_stage)}/</span>` : "";
   el.innerHTML =
