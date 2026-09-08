@@ -107,6 +107,46 @@ class BoardServerTest(unittest.TestCase):
                               "defined but never called")
                 self.assertNotIn(raw, html)
 
+    def test_both_pages_carry_the_salary_column(self):
+        # The payload and the pages are edited in different files, so assert on
+        # the served source that each page still reads the key the other sends.
+        for route, marker in (("/postings", "salaryCell("), ("/", "card.salary")):
+            with self.subTest(route=route):
+                status, html = self.request(route)
+                self.assertEqual(status, 200)
+                self.assertIn(marker, html)
+
+    def test_the_table_header_can_be_sorted_and_does_not_cover_the_first_row(self):
+        # .wrap must carry no overflow: any value other than visible makes it a
+        # scroll container, and the sticky th then resolves its top against
+        # .wrap instead of the viewport and parks itself over the rows.
+        status, html = self.request("/postings")
+        self.assertEqual(status, 200)
+        wrap = [ln for ln in html.splitlines() if ln.strip().startswith(".wrap {")]
+        self.assertEqual(len(wrap), 1)
+        self.assertNotIn("overflow", wrap[0])
+        self.assertIn("function toggleSort", html)
+        self.assertIn("th[data-key]", html)
+
+    def test_both_pages_render_dates_as_day_month_year(self):
+        for route in ("/postings", "/"):
+            with self.subTest(route=route):
+                status, html = self.request(route)
+                self.assertEqual(status, 200)
+                self.assertIn("function fmtDate", html)
+                self.assertIn("fmtDate(", html.split("function fmtDate", 1)[1],
+                              "defined but never called")
+
+    def test_a_workspace_with_no_salary_data_still_serves_both_pages(self):
+        # salary_data.json is gitignored user data; this fixture has none, and
+        # neither does CI. Both payloads must come back whole regardless.
+        for route in ("/api/postings", "/api/board"):
+            with self.subTest(route=route):
+                status, body = self.request(route)
+                self.assertEqual(status, 200)
+                data = json.loads(body)
+                self.assertIsNone(data["salary_meta"])
+
     def test_the_table_carries_rows_and_status_options(self):
         status, body = self.request("/api/postings")
         self.assertEqual(status, 200)
