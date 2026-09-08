@@ -41,7 +41,7 @@ def show_args(**kw) -> SimpleNamespace:
 
 def mark_args(**kw) -> SimpleNamespace:
     base = dict(url=None, id=None, status="skipped", note=None, company=None,
-                title=None, location=None, source=None)
+                title=None, location=None, source=None, salary=None)
     base.update(kw)
     return SimpleNamespace(**base)
 

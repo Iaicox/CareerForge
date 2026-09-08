@@ -1,0 +1,31 @@
+-- The pay a posting states, kept beside the posting that states it.
+--
+-- gemini.extract_posting() has returned the posting's salary line verbatim
+-- since it was written, and nothing ever stored it: the board could show a
+-- market benchmark for the company and never the figure the posting itself
+-- printed.
+--
+-- A string and not a number, on purpose. "45.000-60.000 EUR/year, 14
+-- payments" is what the posting says; every parse of that into a number is a
+-- currency, a period and a basis this repository picked rather than read.
+-- extract_posting's own prompt says an unstated salary is null, not an
+-- estimate, and salary_lookup.add_record() never converts units. This column
+-- keeps the same promise.
+--
+-- On both tables, because the two already carry url, location, deadline and
+-- source twice, for the reason applications.location's comment gives: an
+-- application is what the user did, a posting is what was seen, and each has
+-- to read on its own. add_application() takes the figure and link_posting()
+-- carries it to the posting row it creates.
+--
+-- Every row written before today stays NULL, and that is the whole of the
+-- backfill. Nothing recorded this figure, so there is nothing to recover it
+-- from. Those rows show the benchmark from data/profile/salary_data.json,
+-- which is exactly what they showed before this column existed.
+--
+-- Only for databases created before these columns existed. A database created
+-- from the current schema.sql already has them, and the runner records this
+-- migration as applied without executing it.
+
+ALTER TABLE applications ADD COLUMN salary_text TEXT;
+ALTER TABLE postings     ADD COLUMN salary_text TEXT;

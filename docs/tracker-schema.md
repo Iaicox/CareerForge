@@ -39,6 +39,7 @@ One row per application: one CV sent for one role.
 | `office_address` | Hybrid and on-site only |
 | `deadline` | ISO date, or null. `ASAP`, `rolling` and free text store as null rather than making the column unsortable |
 | `source` | Which board or channel it came from |
+| `salary_text` | The pay as the posting states it, verbatim, currency and period and all. Never parsed into a number: the parse would pick a currency, a period and a basis that the posting did not state. Rows written before the column existed are null and fall back to the benchmark in `data/profile/salary_data.json` |
 | `fit_score` | 0–100, from `/rank` or `/apply` |
 | `fit_strengths`, `fit_gaps` | JSON arrays; read back as lists |
 | `hr_name`, `hr_email`, `other_contacts` | |
@@ -99,6 +100,7 @@ an application came from `applied` on its own.
 | `title`, `company` | As the posting writes them |
 | `location`, `source`, `summary` | From the scrape; `source` is `apply` for a posting first seen in `/apply` |
 | `deadline` | ISO date or null, like `applications.deadline` |
+| `salary_text` | The pay as the posting states it, verbatim, currency and period and all. Never parsed into a number: the parse would pick a currency, a period and a basis that the posting did not state. Rows written before the column existed are null and fall back to the benchmark in `data/profile/salary_data.json` |
 | `first_seen` | Date |
 | `status` | An id from `[[posting_statuses]]`: `new`, `ranked`, `maybe`, `applied`, `skipped`, `expired` by default |
 | `note` | Why it was skipped, or the caveat behind `maybe` |
@@ -194,7 +196,10 @@ once more: `set_status` used to move an application's folder between stage
 directories without taking its attachment paths along, so the migration
 repoints each row at the stage its folder is actually in — and where the
 document was attached a second time at the right path, collapses the pair onto
-the row that is already correct.
+the row that is already correct. `007_salary.sql` adds `salary_text` to both
+`applications` and `postings`, and adds nothing to the rows already there —
+nothing recorded the figure before, so there is nothing to recover it from. Those
+rows keep showing the market benchmark, which is what they showed anyway.
 
 ## Backups
 

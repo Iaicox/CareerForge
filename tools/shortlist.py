@@ -172,9 +172,11 @@ def cmd_mark(args, conn, cfg) -> int:
         stub = {
             "title": args.title, "company": args.company,
             "location": args.location, "source": args.source or "apply",
+            "salary_text": args.salary,
         }
     with conn:
-        row = tracker.mark_posting(conn, cfg, ident, args.status, note=args.note, stub=stub)
+        row = tracker.mark_posting(conn, cfg, ident, args.status, note=args.note,
+                                   stub=stub, salary_text=args.salary)
     print(f"{row['status']:<10} {describe(row)}")
     return 0
 
@@ -285,6 +287,7 @@ def main() -> int:
     k.add_argument("--title")
     k.add_argument("--location")
     k.add_argument("--source")
+    k.add_argument("--salary", help="the pay as the posting states it, verbatim")
 
     i = sub.add_parser("import-json", help="one-time import of the old seen_jobs.json")
     i.add_argument("path")

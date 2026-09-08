@@ -723,6 +723,7 @@ def add_application(
     location_verdict: str | None = None,
     deadline: str | None = None,
     source: str | None = None,
+    salary_text: str | None = None,
     fit_score: int | None = None,
     fit_strengths=None,
     fit_gaps=None,
@@ -765,10 +766,10 @@ def add_application(
     cur = conn.execute(
         """INSERT INTO applications
            (company_id, role, slug, url, status, work_mode, office_address,
-            location, location_verdict, deadline, source,
+            location, location_verdict, deadline, source, salary_text,
             fit_score, fit_strengths, fit_gaps,
             hr_name, hr_email, posting_text, cover_letter_text, notes)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             company_id,
             role,
@@ -781,6 +782,7 @@ def add_application(
             location_verdict,
             parse_deadline(deadline),
             source,
+            (salary_text or "").strip() or None,
             fit_score,
             as_json_list(fit_strengths),
             as_json_list(fit_gaps),
@@ -1357,10 +1359,10 @@ def insert_posting(conn: sqlite3.Connection, cfg: Config, p: dict) -> int:
     cur = conn.execute(
         """INSERT INTO postings
            (url, url_key, title, company, location, source, summary, deadline,
-            first_seen, status, note, score, verdict, strengths, gaps,
+            salary_text, first_seen, status, note, score, verdict, strengths, gaps,
             location_verdict, language_verdict, reason, scored_at,
             application_id, notion_page_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             (p.get("url") or "").strip() or None,
             key,
@@ -1370,6 +1372,10 @@ def insert_posting(conn: sqlite3.Connection, cfg: Config, p: dict) -> int:
             p.get("source"),
             p.get("summary"),
             parse_deadline(p.get("deadline")),
+            # `salary` is what gemini.extract_posting() and the scraper's JSON
+            # call it; the column says _text because it is not a number. An
+            # empty string is not a stated salary.
+            (p.get("salary_text") or p.get("salary") or "").strip() or None,
             p.get("first_seen") or today(),
             status,
             p.get("note"),
@@ -1409,6 +1415,7 @@ def mark_posting(
     note: str | None = None,
     application_id: int | None = None,
     stub: dict | None = None,
+    salary_text: str | None = None,
     expected_updated_at: str | None = None,
 ) -> sqlite3.Row:
     """Record a verdict on a posting: skipped with a reason, applied, maybe.
@@ -1434,6 +1441,7 @@ def mark_posting(
             pid = insert_posting(
                 conn, cfg,
                 {**stub, "url": str(ident), "status": status, "note": note,
+                 "salary_text": salary_text or stub.get("salary_text"),
                  "application_id": application_id},
             )
             return resolve_posting(conn, pid)
@@ -1451,6 +1459,9 @@ def mark_posting(
     if application_id is not None:
         sets.append("application_id = ?")
         params.append(application_id)
+    if salary_text is not None:
+        sets.append("salary_text = ?")
+        params.append(salary_text.strip() or None)
     params.append(row["id"])
     conn.execute(f"UPDATE postings SET {', '.join(sets)} WHERE id = ?", params)
     return resolve_posting(conn, int(row["id"]))
@@ -1629,17 +1640,27 @@ def link_posting(
                 "location": app["location"],
                 "source": app["source"] or "apply",
                 "deadline": app["deadline"],
+                "salary_text": app["salary_text"],
                 "first_seen": first_seen or today(),
                 "status": "applied",
                 "application_id": app["id"],
             },
         )
+    sets: list[str] = []
+    params: list = []
     if row["status"] != "applied" or row["application_id"] != app["id"]:
-        conn.execute(
-            "UPDATE postings SET status = 'applied', application_id = ?, updated_at = ? "
-            "WHERE id = ?",
-            (app["id"], now(), row["id"]),
-        )
+        sets += ["status = 'applied'", "application_id = ?"]
+        params.append(app["id"])
+    # Fill in, never overwrite: what the scrape recorded is what that page said,
+    # and this is the same posting read a second time.
+    if not row["salary_text"] and app["salary_text"]:
+        sets.append("salary_text = ?")
+        params.append(app["salary_text"])
+    if sets:
+        sets.append("updated_at = ?")
+        params.append(now())
+        params.append(row["id"])
+        conn.execute(f"UPDATE postings SET {', '.join(sets)} WHERE id = ?", params)
     return int(row["id"])
 
 
@@ -1889,6 +1910,9 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["pass", "fail", "flag"])
     a.add_argument("--deadline", help="ISO date; free text like 'ASAP' is stored as none")
     a.add_argument("--source", help="which board or channel this came from")
+    a.add_argument("--salary", dest="salary_text",
+                   help="the pay as the posting states it, verbatim -- "
+                        "'45.000-60.000 EUR/year, 14 payments'. Not converted, not estimated")
     a.add_argument("--fit-score", dest="fit_score", type=int)
     a.add_argument("--fit-strengths", dest="fit_strengths", nargs="*")
     a.add_argument("--fit-gaps", dest="fit_gaps", nargs="*")
@@ -2031,6 +2055,7 @@ def main(argv: list[str] | None = None) -> int:
                     location_verdict=args.location_verdict,
                     deadline=args.deadline,
                     source=args.source,
+                    salary_text=args.salary_text,
                     fit_score=args.fit_score,
                     fit_strengths=args.fit_strengths,
                     fit_gaps=args.fit_gaps,
