@@ -127,6 +127,37 @@ class BoardServerTest(unittest.TestCase):
         self.assertNotIn("overflow", wrap[0])
         self.assertIn("function toggleSort", html)
         self.assertIn("th[data-key]", html)
+        # Measured after the header has its text, not only on load: #meta sits
+        # inside <header> and wraps it onto a second line at narrow widths.
+        head, _, tail = html.partition("function render()")
+        self.assertIn("syncStickyOffset();", tail.split("\nfunction ", 1)[0])
+
+    def test_the_ranked_columns_sort_by_rank_and_not_by_their_label(self):
+        # Statuses are the user's own, in the user's language, and several
+        # locales prefix them with an emoji: ordering the rendered label sorts
+        # the funnel by codepoint. Verdict has a ranking of its own on the
+        # server. Both orders have to travel with the payload.
+        status, body = self.request("/api/postings")
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertEqual(data["verdict_order"][0], "strong")
+        self.assertEqual(data["verdict_order"][-1], "poor")
+
+        status, html = self.request("/postings")
+        self.assertEqual(status, 200)
+        self.assertIn("rankOf(statusRank, r.status)", html)
+        self.assertIn("rankOf(verdictRank, r.verdict)", html)
+        self.assertNotIn("(r) => r.status_label", html)
+
+    def test_a_benchmark_is_marked_as_one_everywhere_it_is_printed(self):
+        # A market figure printed bare reads as what the employer offered.
+        # The card marks it; so must the panel behind the card.
+        status, html = self.request("/")
+        self.assertEqual(status, 200)
+        panel = html.split("<dt>Salary</dt>", 1)[1].split("<dt>Contact</dt>", 1)[0]
+        self.assertIn('card.salary.kind === "benchmark"', panel)
+        self.assertIn("&asymp;", panel)
+        self.assertIn("state.salary_meta", html, "no legend for the marking")
 
     def test_both_pages_render_dates_as_day_month_year(self):
         for route in ("/postings", "/"):

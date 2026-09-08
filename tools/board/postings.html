@@ -84,11 +84,19 @@
        font-weight: 650; white-space: nowrap; position: sticky; top: var(--head-h, 49px);
        background: var(--panel); z-index: 4;
        /* border-collapse drops the cell's own border while it is stuck. */
-       box-shadow: inset 0 -1px 0 var(--line); cursor: pointer; user-select: none; }
-  th:hover { color: var(--ink); }
+       box-shadow: inset 0 -1px 0 var(--line); user-select: none; }
+  /* The trailing th is a spacer with no data-key and nothing to sort by, so
+     only the real column headers offer the cursor that promises a sort. */
+  th[data-key] { cursor: pointer; }
+  th[data-key]:hover { color: var(--ink); }
   th .arrow { opacity: .55; font-size: 9px; margin-left: 3px; }
   th[aria-sort] { color: var(--ink); }
-  td.salary { white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
+  /* No nowrap, unlike the other numeric columns. A stated figure is a verbatim
+     sentence -- "45.000-60.000 EUR/year, 14 payments" -- and holding that on
+     one line pushes the table past the viewport. The page is the horizontal
+     scroll container (see .wrap above), and the sticky header does not follow
+     it sideways, so a wide table uncovers the rows it is meant to hide. */
+  td.salary { text-align: right; font-variant-numeric: tabular-nums; max-width: 190px; }
   td.salary .est { color: var(--muted); font-style: italic; }
   tbody tr:hover { background: var(--bg); }
   tbody tr.terminal td { color: var(--muted); }
@@ -165,6 +173,34 @@ function safeHref(url) {
   return /^https?:\/\//i.test(String(url || "")) ? url : null;
 }
 
+// Status and verdict are ranked, not alphabetical, and only the server knows
+// the ranking. The statuses are the user's own, in the user's language, and
+// several locales prefix them with an emoji -- sorting the rendered label
+// would order the funnel by codepoint, putting "skipped" above "new" and
+// calling it ascending. Rebuilt whenever the payload changes, because a
+// status the user adds to config.toml arrives in the payload, not here.
+let statusRank = new Map();
+let verdictRank = new Map();
+let collateLocale;
+
+// Intl throws RangeError on a tag it cannot parse, and `locale` is free text
+// out of config.toml. Unhandled it would come out of applySort, through
+// render, and leave the table dead on load with a sort remembered. Tested
+// once per payload; a tag that is not one simply sorts in the browser's.
+function safeLocale(tag) {
+  if (!tag) return undefined;
+  try { "a".localeCompare("b", tag); return tag; } catch (e) { return undefined; }
+}
+
+function setState(next) {
+  state = next;
+  statusRank = new Map((state.statuses || []).map((s, i) => [s.id, i]));
+  verdictRank = new Map((state.verdict_order || []).map((v, i) => [v, i]));
+  collateLocale = safeLocale(state.locale);
+}
+
+const rankOf = (map, value) => (map.has(value) ? map.get(value) : null);
+
 // Which column orders the table. `key: null` is the server's own order --
 // score first, then verdict, then company -- and cycling a header returns to
 // it, so the ranking view is never lost behind a sort.
@@ -172,9 +208,9 @@ const SORT_KEYS = {
   company:    (r) => r.company,
   title:      (r) => r.title || r.url,
   salary:     (r) => r.salary?.sort ?? null,
-  status:     (r) => r.status_label,
+  status:     (r) => rankOf(statusRank, r.status),
   score:      (r) => r.score,
-  verdict:    (r) => r.verdict,
+  verdict:    (r) => rankOf(verdictRank, r.verdict),
   deadline:   (r) => r.deadline,
   source:     (r) => r.source,
   first_seen: (r) => r.first_seen,
@@ -185,7 +221,11 @@ let sort = { key: null, dir: 1 };
 function rememberedSort() {
   try {
     const raw = JSON.parse(localStorage.getItem("postings.sort") || "null");
-    if (raw && (raw.key === null || SORT_KEYS[raw.key])) return raw;
+    // `dir` is checked as well as `key`: anything else multiplies the
+    // comparator's result by NaN, and a comparator returning NaN leaves the
+    // order undefined rather than merely wrong.
+    if (raw && (raw.key === null || SORT_KEYS[raw.key])
+            && (raw.dir === 1 || raw.dir === -1)) return raw;
   } catch (e) { /* private mode, or a stale shape */ }
   return { key: null, dir: 1 };
 }
@@ -213,7 +253,7 @@ function applySort(rows) {
     if (empty(y)) return -1;
     const cmp = (typeof x === "number" && typeof y === "number")
       ? x - y
-      : String(x).localeCompare(String(y), state?.locale || undefined,
+      : String(x).localeCompare(String(y), collateLocale,
                                 { numeric: true, sensitivity: "base" });
     return cmp * sort.dir;
   });
@@ -278,7 +318,7 @@ function rememberFilter(value) {
 
 async function load() {
   try {
-    state = await api("/api/postings");
+    setState(await api("/api/postings"));
     if (!fStatus.options.length) {
       fStatus.innerHTML = [
         `<option value="open">open (not applied, skipped or expired)</option>`,
@@ -344,15 +384,25 @@ function render() {
     </tr>`;
   }).join("");
   const head = [
-    ["company", "Company"], ["title", "Title"], ["salary", "Salary"],
-    ["status", "Status"], ["score", "Score"], ["verdict", "Verdict"],
+    ["company", "Company"], ["title", "Title"],
+    // Says what it orders by, because that is not what the column shows. A
+    // figure a posting states is its own sentence, in its own currency and
+    // period, and no regex turns that into a number without picking one of
+    // them for you -- so the benchmark orders every row, and a company the
+    // dataset does not cover has nothing to be ordered on and sinks.
+    ["salary", "Salary", "Sort by the market benchmark for the company — "
+      + "the one figure every row can be compared on. A salary a posting "
+      + "states is left in its own words, and is not parsed into a number."],
+    ["status", "Status", "Sort by Status, in funnel order"],
+    ["score", "Score"],
+    ["verdict", "Verdict", "Sort by Verdict, strong to poor"],
     ["deadline", "Deadline"], ["source", "Source"], ["first_seen", "First seen"],
     ["note", "Note"],
-  ].map(([key, label]) => {
+  ].map(([key, label, hint]) => {
     const on = sort.key === key;
     const aria = on ? ` aria-sort="${sort.dir === 1 ? "ascending" : "descending"}"` : "";
     const arrow = on ? `<span class="arrow">${sort.dir === 1 ? "▲" : "▼"}</span>` : "";
-    return `<th data-key="${key}"${aria} title="Sort by ${label}">${label}${arrow}</th>`;
+    return `<th data-key="${key}"${aria} title="${esc(hint || `Sort by ${label}`)}">${label}${arrow}</th>`;
   }).join("");
 
   tableEl.innerHTML = `<table>
@@ -368,6 +418,13 @@ function render() {
   tableEl.querySelectorAll("td.note").forEach((td) => {
     td.addEventListener("click", () => editNote(td, Number(td.dataset.id)));
   });
+
+  // After the header has its text, not before. #meta is inside <header>, it is
+  // filled above, and the salary legend is long enough to wrap the header onto
+  // a second line at narrow widths -- measuring the empty one leaves the
+  // column headers parked too high, under an opaque header, covering the first
+  // rows. That is the bug the measurement exists to prevent.
+  syncStickyOffset();
 }
 
 function rowById(id) {
@@ -379,7 +436,7 @@ async function setStatus(id, status) {
   if (!row || row.status === status) return;
   try {
     const res = await api("/api/posting/status", { id, status, updated_at: row.updated_at });
-    state = res.table;
+    setState(res.table);
     render();
     toast(`${row.company || "Posting"}: ${res.posting.status_label}`, true);
   } catch (err) {
@@ -404,7 +461,7 @@ function editNote(td, id) {
     if (!save || text === (row.note || "")) { render(); return; }
     try {
       const res = await api("/api/posting/note", { id, text });
-      state = res.table;
+      setState(res.table);
       render();
       toast("Note saved", true);
     } catch (err) { toast(err.message); load(); }
