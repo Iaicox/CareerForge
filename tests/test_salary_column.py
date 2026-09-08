@@ -170,6 +170,24 @@ class FigureShapeTest(SalaryFixture):
         ).fetchone()
         self.assertIsNone(row["salary_text"])
 
+    def test_a_large_figure_keeps_its_digits(self):
+        # %g goes scientific past six significant digits, and an annual gross
+        # in HUF or KRW is seven or eight. "1.44e+07" is not verbatim.
+        self.posting(url="https://jobs.example/n4", salary=14400000)
+        row = self.conn.execute(
+            "SELECT salary_text FROM postings WHERE url = ?", ("https://jobs.example/n4",)
+        ).fetchone()
+        self.assertEqual(row["salary_text"], "14400000")
+
+    def test_zero_is_not_a_stated_salary(self):
+        # Boards write 0 for "not disclosed". Showing "0" as what an employer
+        # offered is worse than showing the market benchmark.
+        self.posting(url="https://jobs.example/n5", salary=0)
+        row = self.conn.execute(
+            "SELECT salary_text FROM postings WHERE url = ?", ("https://jobs.example/n5",)
+        ).fetchone()
+        self.assertIsNone(row["salary_text"])
+
     def test_a_batch_survives_one_posting_with_an_odd_figure(self):
         tracker.upsert_postings(self.conn, self.cfg, [
             {"url": "https://jobs.example/b1", "title": "A", "company": "Acme",
@@ -261,6 +279,18 @@ class SetSalaryTest(SalaryFixture):
             "SELECT salary_text FROM applications WHERE id = ?", (app["id"],)).fetchone()
         self.assertIsNone(row["salary_text"])
 
+    def test_clearing_reaches_the_posting_as_well(self):
+        # A figure withdrawn as wrong that survives on the postings table is
+        # the same wrong number, still labelled as what the employer stated,
+        # on the page the kanban no longer shows it on.
+        app = self.application(salary_text="90k, misread")
+        with self.conn:
+            tracker.set_salary(self.conn, str(app["id"]), "")
+        row = self.conn.execute(
+            "SELECT salary_text FROM postings WHERE application_id = ?", (app["id"],)
+        ).fetchone()
+        self.assertIsNone(row["salary_text"])
+
     def test_the_command_line_reaches_it(self):
         # The dispatch is the half a unit test on set_salary does not cover,
         # and it is the half a person actually types.
@@ -286,6 +316,20 @@ class BenchmarkTest(SalaryFixture):
         data = tracker.postings_table_data(self.conn, self.cfg)
         self.assertIsNone(data["salary_meta"])
         self.assertTrue(all(r["salary"] is None for r in data["rows"]))
+
+    def test_a_dataset_with_no_metadata_still_gets_a_legend(self):
+        # A hand-assembled file need not carry a metadata block, and cell()
+        # does not need one. Without a legend the "≈" on those figures is a
+        # symbol nobody was told the meaning of.
+        self.write_dataset({"companies": [
+            {"company": "Cloudflare Portugal", "city": "Lisboa",
+             "categories": {"senior_frontend_eur_gross_annual": {"count": 4, "index": 62000}}},
+        ]})
+        self.posting(url="https://jobs.example/m1")
+        data = tracker.postings_table_data(self.conn, self.cfg)
+        self.assertEqual(data["rows"][0]["salary"]["kind"], "benchmark")
+        self.assertIsNotNone(data["salary_meta"])
+        self.assertTrue(data["salary_meta"]["unit"])
 
     def test_a_posting_without_a_figure_falls_back_to_the_benchmark(self):
         self.write_dataset()
@@ -446,16 +490,32 @@ class KanbanTest(SalaryFixture):
 
 
 class MigrationTest(unittest.TestCase):
-    def test_the_schema_version_is_the_newest_migration(self):
-        # It was typed by hand as "4" while 005, 006 and 007 landed after it.
-        # Nothing reads the value, so nothing caught the drift; this does.
-        import re
-        newest = max(
-            int(re.match(r"(\d+)_", p.name).group(1))
-            for p in tracker.MIGRATIONS_DIR.glob("*")
-            if p.suffix in tracker.MIGRATION_SUFFIXES and re.match(r"(\d+)_", p.name)
-        )
-        self.assertEqual(tracker.SCHEMA_VERSION, str(newest))
+    def version_of(self, *names) -> str:
+        """schema_version() over a directory holding exactly these filenames."""
+        tmp = Path(tempfile.mkdtemp(prefix="careerforge-migrations-")).resolve()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        for name in names:
+            (tmp / name).write_text("", encoding="utf-8")
+        return tracker.schema_version(tmp)
+
+    def test_the_version_is_the_highest_migration_as_a_number(self):
+        # "010" sorts below "009" as text, and a version that goes backwards
+        # after the tenth migration is the same silent drift as the typed "4".
+        self.assertEqual(self.version_of("002_a.sql", "009_b.sql", "010_c.py"), "10")
+
+    def test_a_file_that_is_not_a_migration_does_not_count(self):
+        self.assertEqual(
+            self.version_of("002_a.sql", "999_notes.txt", "readme.md"), "2")
+
+    def test_nothing_to_read_is_the_shape_before_the_first_migration(self):
+        # A renamed or missing directory must not raise out of import; the
+        # migrations themselves are tracked by filename, not by this number.
+        self.assertEqual(self.version_of(), "1")
+        self.assertEqual(tracker.schema_version(Path("no-such-directory")), "1")
+
+    def test_the_database_records_the_version_the_module_derived(self):
+        self.assertEqual(tracker.SCHEMA_VERSION, tracker.schema_version())
+        self.assertGreaterEqual(int(tracker.SCHEMA_VERSION), 7)
 
     def test_migration_007_adds_the_salary_columns_to_an_old_database(self):
         import sqlite3

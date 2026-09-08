@@ -69,20 +69,25 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 MIGRATION_SUFFIXES = (".sql", ".py")
 
 
-def schema_version() -> str:
+def schema_version(directory: Path | None = None) -> str:
     """The migration this schema is level with.
 
     Derived, not typed. It was a hand-maintained "4" and stopped being true at
-    005: five migrations landed after it and none bumped it, because nothing
+    005: three migrations landed after it and none bumped it, because nothing
     reads the value and nothing fails when it is wrong. A number whose only
     job is to be correct, and which nothing checks, is a number that drifts --
     so it is read off the directory that actually defines the schema's age.
 
-    A database built fresh from schema.sql has everything the migrations would
-    add, which is why init writes this rather than counting what it ran.
+    Compared as numbers, not as filenames: a run of migrations past 009 sorts
+    "010" below "009" as text, and the version would go backwards.
+
+    "1" when there is nothing to read, which is the shape the schema had
+    before the first migration -- they start at 002. A database built fresh
+    from schema.sql has everything the migrations would add, which is why init
+    writes this rather than counting what it ran.
     """
     numbers = []
-    for path in MIGRATIONS_DIR.glob("*"):
+    for path in (directory or MIGRATIONS_DIR).glob("*"):
         if path.suffix not in MIGRATION_SUFFIXES:
             continue
         match = re.match(r"(\d+)_", path.name)
@@ -730,14 +735,28 @@ def salary_str(value) -> str | None:
 
     Anything else -- a dict, an object -- yields None rather than a guess at
     how to word it. Empty beats plausible: a row with no figure falls back to
-    the market benchmark, which says where it came from.
+    the market benchmark, which says where it came from. Zero goes the same
+    way. Boards fill `salaryMin` with 0 to mean "not disclosed", and "0" shown
+    as what an employer offered is worse than showing the benchmark.
+
+    Never `%g`, which turns anything past six significant digits into
+    scientific notation: an annual gross in HUF or KRW is seven or eight, and
+    the column promises the figure verbatim, not `1.44e+07`.
     """
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, str):
         return value.strip() or None
-    if isinstance(value, (int, float)):
-        return f"{value:g}"
+    if isinstance(value, int):
+        return str(value) if value else None
+    if isinstance(value, float):
+        # NaN and the infinities are not figures; is_integer() raises on them
+        # in older builds and str() would write "nan" into the column.
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        if not value:
+            return None
+        return str(int(value)) if value.is_integer() else repr(value)
     if isinstance(value, (list, tuple)):
         parts = [s for s in (salary_str(v) for v in value) if s]
         return ", ".join(parts) or None
@@ -1316,9 +1335,12 @@ def set_salary(conn: sqlite3.Connection, ident: str, text: str | None) -> sqlite
     command is editing the database by hand -- which this workspace forbids
     for good reason. An empty string clears a figure recorded in error.
 
-    The posting row is filled in too when it has nothing, so both board pages
-    agree. It is never overwritten: what the scrape recorded is what that
-    page said.
+    The posting row follows, so both board pages agree. A figure fills in only
+    where the posting has none -- what the scrape recorded is what that page
+    said -- but clearing carries all the way through: a figure withdrawn as
+    wrong that stays on the postings table is the same wrong number, still
+    labelled as what the employer stated, on the page the kanban no longer
+    shows it on.
     """
     row = resolve(conn, ident)
     value = salary_str(text)
@@ -1331,6 +1353,12 @@ def set_salary(conn: sqlite3.Connection, ident: str, text: str | None) -> sqlite
             "UPDATE postings SET salary_text = ?, updated_at = ? "
             "WHERE application_id = ? AND (salary_text IS NULL OR salary_text = '')",
             (value, now(), row["id"]),
+        )
+    else:
+        conn.execute(
+            "UPDATE postings SET salary_text = NULL, updated_at = ? "
+            "WHERE application_id = ? AND salary_text IS NOT NULL",
+            (now(), row["id"]),
         )
     return resolve(conn, str(row["id"]))
 
@@ -1695,6 +1723,9 @@ def list_postings(
     return rows
 
 
+_BENCHMARK_WARNED = False
+
+
 def _benchmarks():
     """The salary dataset, or None. Imported here, not at module scope.
 
@@ -1709,8 +1740,15 @@ def _benchmarks():
         # A missing or malformed dataset is already "no benchmark" inside
         # load_data_quietly. Reaching here means something else broke, and a
         # column that silently stops showing figures reads exactly like a file
-        # the user never created -- so say it once, and still serve the page.
-        print(f"salary benchmarks unavailable: {exc}", file=sys.stderr)
+        # the user never created -- so say it, and still serve the page.
+        #
+        # Once per process. Both board payloads call this, and both are rebuilt
+        # on every status change, every note edit and every window focus: the
+        # same line on every click is noise the real message hides in.
+        global _BENCHMARK_WARNED
+        if not _BENCHMARK_WARNED:
+            _BENCHMARK_WARNED = True
+            print(f"salary benchmarks unavailable: {exc}", file=sys.stderr)
         return None
 
 
