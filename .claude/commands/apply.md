@@ -63,8 +63,12 @@ twice:
 
 ```
 python tools/shortlist.py mark --url "<url>" --status skipped --note "<one line: the deciding gap>" \
-  --company "<Company>" --title "<Role>"
+  --company "<Company>" --title "<Role>" --salary "<the pay as the posting states it, verbatim>"
 ```
+
+Drop `--salary` when the posting named no figure. It is worth passing even on a
+posting being declined: the row stays in the shortlist, and the next time this
+company comes up the table shows what they last advertised.
 
 Use `--status maybe` for a posting the user wants to keep in view with a caveat
 rather than drop.
@@ -96,7 +100,7 @@ Create the folder `data/pipeline/applications/<slug>/`, where `<slug>` is what
 ## Fit evaluation
 <the assessment from step 1>
 ## Notes
-<salary range, stack, red flags, source, contacts>
+<salary as the posting states it, stack, red flags, source, contacts>
 ```
 
 **CV** — copy `data/profile/cv_master.md` to the filename from `config.toml`
@@ -216,10 +220,17 @@ Follow the `application-tracker` skill.
 python tools/tracker.py add \
   --company "<Company>" --role "<Role>" --url "<url>" \
   --status draft --work-mode <remote|hybrid|onsite> \
+  --salary "<the pay as the posting states it, verbatim>" \
   --website "<site>" --company-description "<1-2 sentences>" \
   --posting-file data/pipeline/applications/<slug>/job.md \
   --cover-file data/pipeline/applications/<slug>/<cover filename>.md
 ```
+
+`--salary` is the figure from the posting itself — the same words that went
+into the job.md notes in step 2, copied over, not rounded and not converted.
+Leave the flag off when the posting named none; the board then shows the market
+benchmark instead, and a benchmark written in as a stated figure would be
+exactly the invented number the honesty rules forbid.
 
 If the slug it assigns differs from the folder you created, rename the folder
 to match. The posting itself is marked `applied` in the `postings` table by

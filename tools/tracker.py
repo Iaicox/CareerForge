@@ -696,6 +696,30 @@ def as_json_list(value) -> str | None:
     return json.dumps(items, ensure_ascii=False) if items else None
 
 
+def salary_str(value) -> str | None:
+    """A stated salary as text, whatever shape the caller had it in.
+
+    `shortlist.py add --file` takes JSON an agent wrote from a board, and a
+    board states pay as a number or a pair of them as readily as a sentence.
+    A batch of forty postings must not be lost to a traceback over the shape
+    of one field, so a number is rendered and a list is joined.
+
+    Anything else -- a dict, an object -- yields None rather than a guess at
+    how to word it. Empty beats plausible: a row with no figure falls back to
+    the market benchmark, which says where it came from.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, (int, float)):
+        return f"{value:g}"
+    if isinstance(value, (list, tuple)):
+        parts = [s for s in (salary_str(v) for v in value) if s]
+        return ", ".join(parts) or None
+    return None
+
+
 def unique_slug(conn: sqlite3.Connection, base: str) -> str:
     slug = base
     n = 2
@@ -782,7 +806,7 @@ def add_application(
             location_verdict,
             parse_deadline(deadline),
             source,
-            (salary_text or "").strip() or None,
+            salary_str(salary_text),
             fit_score,
             as_json_list(fit_strengths),
             as_json_list(fit_gaps),
@@ -1260,6 +1284,33 @@ def set_note(
     )
 
 
+def set_salary(conn: sqlite3.Connection, ident: str, text: str | None) -> sqlite3.Row:
+    """Record the pay an application's posting states, after the fact.
+
+    `add --salary` is where this normally arrives, but a posting read again
+    later often names a figure the first pass missed, and the alternative to a
+    command is editing the database by hand -- which this workspace forbids
+    for good reason. An empty string clears a figure recorded in error.
+
+    The posting row is filled in too when it has nothing, so both board pages
+    agree. It is never overwritten: what the scrape recorded is what that
+    page said.
+    """
+    row = resolve(conn, ident)
+    value = salary_str(text)
+    conn.execute(
+        "UPDATE applications SET salary_text = ?, updated_at = ? WHERE id = ?",
+        (value, now(), row["id"]),
+    )
+    if value:
+        conn.execute(
+            "UPDATE postings SET salary_text = ?, updated_at = ? "
+            "WHERE application_id = ? AND (salary_text IS NULL OR salary_text = '')",
+            (value, now(), row["id"]),
+        )
+    return resolve(conn, str(row["id"]))
+
+
 # ---------------------------------------------------------------------------
 # Postings: every job posting ever seen
 # ---------------------------------------------------------------------------
@@ -1375,7 +1426,7 @@ def insert_posting(conn: sqlite3.Connection, cfg: Config, p: dict) -> int:
             # `salary` is what gemini.extract_posting() and the scraper's JSON
             # call it; the column says _text because it is not a number. An
             # empty string is not a stated salary.
-            (p.get("salary_text") or p.get("salary") or "").strip() or None,
+            salary_str(p.get("salary_text")) or salary_str(p.get("salary")),
             p.get("first_seen") or today(),
             status,
             p.get("note"),
@@ -1395,12 +1446,30 @@ def insert_posting(conn: sqlite3.Connection, cfg: Config, p: dict) -> int:
 
 
 def upsert_postings(conn: sqlite3.Connection, cfg: Config, postings: Iterable[dict]) -> tuple[int, int]:
-    """Record what a scrape found. Returns (added, already known)."""
+    """Record what a scrape found. Returns (added, already known).
+
+    A known posting keeps everything it already has: the first read of a
+    listing is the one that dated it, and a later scrape re-reading the same
+    page must not rewrite the row underneath a verdict someone gave it.
+
+    The one exception is a salary the row does not have. Rows scraped before
+    the board had the column carry none at all, and a listing often names pay
+    on the posting page while the search result that first found it did not.
+    Filling an empty field in adds what was missing; it never overwrites what
+    a previous read recorded.
+    """
     added = known = 0
     for p in postings:
         key = posting_key(p.get("url"), p.get("company"), p.get("title"))
-        if posting_by_key(conn, key):
+        row = posting_by_key(conn, key)
+        if row:
             known += 1
+            salary = salary_str(p.get("salary_text")) or salary_str(p.get("salary"))
+            if salary and not row["salary_text"]:
+                conn.execute(
+                    "UPDATE postings SET salary_text = ?, updated_at = ? WHERE id = ?",
+                    (salary, now(), row["id"]),
+                )
             continue
         insert_posting(conn, cfg, p)
         added += 1
@@ -1459,9 +1528,13 @@ def mark_posting(
     if application_id is not None:
         sets.append("application_id = ?")
         params.append(application_id)
+    # Unlike link_posting and upsert_postings, which fill in and never
+    # overwrite, this one is a person passing --salary at the command line
+    # about a specific posting. That is a correction, so it wins -- including
+    # `--salary ""`, the only way to take back a figure recorded in error.
     if salary_text is not None:
         sets.append("salary_text = ?")
-        params.append(salary_text.strip() or None)
+        params.append(salary_str(salary_text))
     params.append(row["id"])
     conn.execute(f"UPDATE postings SET {', '.join(sets)} WHERE id = ?", params)
     return resolve_posting(conn, int(row["id"]))
@@ -1608,7 +1681,12 @@ def _benchmarks():
     try:
         import salary_lookup
         return salary_lookup.load_benchmarks()
-    except Exception:
+    except Exception as exc:
+        # A missing or malformed dataset is already "no benchmark" inside
+        # load_data_quietly. Reaching here means something else broke, and a
+        # column that silently stops showing figures reads exactly like a file
+        # the user never created -- so say it once, and still serve the page.
+        print(f"salary benchmarks unavailable: {exc}", file=sys.stderr)
         return None
 
 
@@ -1655,6 +1733,11 @@ def postings_table_data(conn: sqlite3.Connection, cfg: Config) -> dict:
     return {
         "locale": cfg.locale,
         "salary_meta": bench.meta() if bench else None,
+        # Both of these are ranked, not alphabetical, and the browser cannot
+        # work that out from the labels: the statuses are the user's own, in
+        # the user's language, and several locales prefix them with an emoji.
+        # Sorting a column by its text would order the funnel by codepoint.
+        "verdict_order": list(VERDICT_ORDER),
         "statuses": [
             {
                 "id": s["id"],
@@ -2059,6 +2142,14 @@ def build_parser() -> argparse.ArgumentParser:
     nt.add_argument("--text", required=True)
     nt.add_argument("--append", action="store_true")
 
+    sal = with_json(sub.add_parser(
+        "set-salary", help="record the pay the posting states, after the fact"))
+    sal.add_argument("application")
+    sal.add_argument("--salary", dest="salary_text", required=True,
+                     help="the pay as the posting states it, verbatim -- "
+                          "'45.000-60.000 EUR/year, 14 payments'. Not converted, "
+                          "not estimated; empty clears it")
+
     r = sub.add_parser("report", help="print a summary")
     r.add_argument("--board", action="store_true", help="markdown kanban, not a table")
 
@@ -2274,6 +2365,13 @@ def main(argv: list[str] | None = None) -> int:
             with conn:
                 set_note(conn, args.application, args.text, args.append)
             print("note saved")
+
+        elif args.command == "set-salary":
+            with conn:
+                row = set_salary(conn, args.application, args.salary_text)
+            d = enrich(dict(row), cfg)
+            emit(args, d, f"#{d['id']} {d['company_name']}: "
+                          f"salary {d['salary_text'] or 'cleared'}")
 
         elif args.command == "report":
             if args.board:

@@ -77,11 +77,18 @@ python tools/shortlist.py add --file <postings.json>
 ```
 
 Each posting: `title`, `company`, `url`, `location`, `source`, `deadline`,
-`summary`. The last four are not optional in practice — `/rank` scores on
+`summary`, `salary`. The last five are not optional in practice — `/rank` scores on
 `location` and `summary`, and `shortlist.py sweep` can only expire a posting
 that has a `deadline`. Free-text deadlines (`ASAP`, `rolling`) are stored as
 none rather than as unsortable text; put the wording in the summary if it
 matters.
+
+`salary` is the pay **as the listing states it**, copied word for word —
+`"45.000-60.000 EUR/year, 14 payments"`, `"from £70k"`. Not normalised, not
+converted, not a guess: a listing that names no figure has no `salary`, and the
+board falls back to the market benchmark for that company. This is the only
+step that records what a company itself said about pay, so a listing that
+states one and is entered without it loses that figure for good.
 
 A posting you filtered out yourself — wrong country, a required language, a
 closed listing — goes in with `"status": "skipped"` and a one-line `"note"`

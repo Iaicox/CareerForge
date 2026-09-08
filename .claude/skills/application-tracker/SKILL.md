@@ -39,9 +39,16 @@ python tools/tracker.py find --url "<posting url>" --company "<Company>" --role 
 python tools/tracker.py add \
   --company "<Company>" --role "<Role>" --url "<url>" \
   --status draft --work-mode remote \
+  --salary "<the pay as the posting states it, verbatim>" \
   --website "<company site>" --company-description "<one or two sentences>" \
   --posting-file data/pipeline/applications/<slug>/job.md
 ```
+
+`--salary` is the posting's own wording, copied — `"45.000-60.000 EUR/year, 14
+payments"`. Off entirely when the posting named no figure: the board falls back
+to the market benchmark there, and only a stated figure belongs in this field.
+`add` is the one chance to record it, so a posting that named pay and was added
+without it keeps showing a benchmark forever.
 
 `add` prints the slug it assigned — that is the folder name to create under
 `data/pipeline/applications/`. It refuses duplicates on its own; `--force` exists for the

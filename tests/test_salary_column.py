@@ -140,6 +140,128 @@ class StoredFigureTest(SalaryFixture):
         self.assertEqual(row["salary_text"], "from the posting")
 
 
+class FigureShapeTest(SalaryFixture):
+    """`shortlist.py add --file` takes JSON an agent wrote from a board.
+
+    A board states pay as a number or a pair of them as readily as a sentence,
+    and a batch of forty postings must not be lost to the shape of one field.
+    """
+
+    def test_a_figure_given_as_a_number_is_recorded_rather_than_refused(self):
+        self.posting(url="https://jobs.example/n1", salary=60000)
+        row = self.conn.execute(
+            "SELECT salary_text FROM postings WHERE url = ?", ("https://jobs.example/n1",)
+        ).fetchone()
+        self.assertEqual(row["salary_text"], "60000")
+
+    def test_a_figure_given_as_a_pair_is_joined(self):
+        self.posting(url="https://jobs.example/n2", salary=["45000", "60000 EUR"])
+        row = self.conn.execute(
+            "SELECT salary_text FROM postings WHERE url = ?", ("https://jobs.example/n2",)
+        ).fetchone()
+        self.assertEqual(row["salary_text"], "45000, 60000 EUR")
+
+    def test_a_shape_with_no_obvious_wording_is_left_empty(self):
+        # Empty beats plausible: the row falls back to the benchmark, which
+        # says where its number came from. Inventing a currency here would not.
+        self.posting(url="https://jobs.example/n3", salary={"min": 45000, "max": 60000})
+        row = self.conn.execute(
+            "SELECT salary_text FROM postings WHERE url = ?", ("https://jobs.example/n3",)
+        ).fetchone()
+        self.assertIsNone(row["salary_text"])
+
+    def test_a_batch_survives_one_posting_with_an_odd_figure(self):
+        tracker.upsert_postings(self.conn, self.cfg, [
+            {"url": "https://jobs.example/b1", "title": "A", "company": "Acme",
+             "salary": {"nope": 1}},
+            {"url": "https://jobs.example/b2", "title": "B", "company": "Acme",
+             "salary": "70k EUR/year"},
+        ])
+        self.conn.commit()
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM postings").fetchone()[0], 2)
+
+
+class RescrapeTest(SalaryFixture):
+    def test_a_second_scrape_fills_in_a_figure_the_first_one_missed(self):
+        # Rows scraped before the column existed carry nothing, and a search
+        # result often hides pay the posting page states.
+        self.posting(url="https://jobs.example/r1")
+        self.posting(url="https://jobs.example/r1", salary="70k EUR/year")
+        row = self.conn.execute(
+            "SELECT salary_text FROM postings WHERE url = ?", ("https://jobs.example/r1",)
+        ).fetchone()
+        self.assertEqual(row["salary_text"], "70k EUR/year")
+
+    def test_a_second_scrape_does_not_overwrite_the_figure_already_there(self):
+        self.posting(url="https://jobs.example/r2", salary="from the first read")
+        self.posting(url="https://jobs.example/r2", salary="from the second")
+        row = self.conn.execute(
+            "SELECT salary_text FROM postings WHERE url = ?", ("https://jobs.example/r2",)
+        ).fetchone()
+        self.assertEqual(row["salary_text"], "from the first read")
+
+    def test_a_known_posting_is_still_counted_as_known(self):
+        self.posting(url="https://jobs.example/r3")
+        with self.conn:
+            added, known = tracker.upsert_postings(self.conn, self.cfg, [
+                {"url": "https://jobs.example/r3", "title": "Frontend Engineer",
+                 "company": "Cloudflare Portugal", "salary": "70k"},
+            ])
+        self.assertEqual((added, known), (0, 1))
+
+
+class SetSalaryTest(SalaryFixture):
+    """`add --salary` is where a figure normally arrives; it is not the only way.
+
+    A posting read again later often names pay the first pass missed, and the
+    alternative to a command is hand-editing a database this workspace forbids
+    touching.
+    """
+
+    def application(self, **kw):
+        row = tracker.add_application(
+            self.conn, self.cfg, company="Cloudflare Portugal",
+            role="Frontend Engineer", url="https://jobs.example/s1", **kw)
+        self.conn.commit()
+        return row
+
+    def test_a_figure_missed_at_add_time_can_still_be_recorded(self):
+        app = self.application()
+        with self.conn:
+            tracker.set_salary(self.conn, str(app["id"]), "70k EUR/year")
+        row = self.conn.execute(
+            "SELECT salary_text FROM applications WHERE id = ?", (app["id"],)).fetchone()
+        self.assertEqual(row["salary_text"], "70k EUR/year")
+
+    def test_the_linked_posting_is_filled_in_too(self):
+        app = self.application()
+        with self.conn:
+            tracker.set_salary(self.conn, str(app["id"]), "70k EUR/year")
+        row = self.conn.execute(
+            "SELECT salary_text FROM postings WHERE application_id = ?", (app["id"],)
+        ).fetchone()
+        self.assertEqual(row["salary_text"], "70k EUR/year")
+
+    def test_a_posting_that_already_states_one_keeps_its_own(self):
+        self.posting(url="https://jobs.example/s1", salary="from the posting")
+        app = self.application()
+        with self.conn:
+            tracker.set_salary(self.conn, str(app["id"]), "typed by hand")
+        row = self.conn.execute(
+            "SELECT salary_text FROM postings WHERE url = ?", ("https://jobs.example/s1",)
+        ).fetchone()
+        self.assertEqual(row["salary_text"], "from the posting")
+
+    def test_an_empty_string_takes_back_a_figure_recorded_in_error(self):
+        app = self.application(salary_text="90k, misread")
+        with self.conn:
+            tracker.set_salary(self.conn, str(app["id"]), "")
+        row = self.conn.execute(
+            "SELECT salary_text FROM applications WHERE id = ?", (app["id"],)).fetchone()
+        self.assertIsNone(row["salary_text"])
+
+
 class BenchmarkTest(SalaryFixture):
     def test_a_missing_dataset_is_not_an_error(self):
         # salary_data.json is gitignored user data. Most workspaces, and CI,
