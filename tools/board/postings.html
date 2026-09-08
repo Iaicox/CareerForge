@@ -63,12 +63,28 @@
   #filters input[type=search] { min-width: 220px; }
   #filters input[type=number] { width: 70px; }
 
-  .wrap { padding: 12px 18px 40px; overflow-x: auto; }
+  /* No overflow here. When one axis is not `visible` CSS computes the other
+     to `auto`, which makes .wrap a scroll container on both axes -- and a
+     sticky th then resolves its `top` against .wrap instead of the viewport.
+     .wrap never scrolls vertically, so the header parked itself below the
+     table's top edge and covered the first rows. There is no ancestor between
+     th and the viewport that can carry overflow, so a wide table scrolls the
+     page sideways instead. */
+  .wrap { padding: 12px 18px 40px; }
   table { border-collapse: collapse; width: 100%; background: var(--panel);
           border: 1px solid var(--line); border-radius: var(--radius); }
   th, td { text-align: left; vertical-align: top; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  /* --head-h is measured from the real header on load and on resize, because
+     the header wraps at narrow widths and a hardcoded offset is wrong there.
+     It is floored, so it never exceeds the real height and the row can only
+     ever tuck under the header, never sit below it -- the header is opaque
+     and a layer above (z-index 5 to this 4), so an overlap is invisible where
+     a shortfall is not. */
   th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
-       font-weight: 650; white-space: nowrap; position: sticky; top: 49px; background: var(--panel); }
+       font-weight: 650; white-space: nowrap; position: sticky; top: var(--head-h, 49px);
+       background: var(--panel); z-index: 4;
+       /* border-collapse drops the cell's own border while it is stuck. */
+       box-shadow: inset 0 -1px 0 var(--line); }
   tbody tr:hover { background: var(--bg); }
   tbody tr.terminal td { color: var(--muted); }
   td.co { font-weight: 620; white-space: nowrap; }
@@ -142,6 +158,17 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
 // http(s) is rendered as text.
 function safeHref(url) {
   return /^https?:\/\//i.test(String(url || "")) ? url : null;
+}
+
+// The header is sticky at top:0 and the th sticks under it. Measured rather
+// than hardcoded because the header wraps at narrow widths.
+//
+// Floor, never round. The height is fractional on a scaled display -- 60.7px
+// with a 0.8px border at dpr 2.5 -- and rounding that up to 61 put the row
+// 0.3px below the header, a slot the table flickered through on every scroll.
+function syncStickyOffset() {
+  const h = document.querySelector("header").getBoundingClientRect().height;
+  document.documentElement.style.setProperty("--head-h", `${Math.floor(h)}px`);
 }
 
 function toast(message, ok = false) {
@@ -301,6 +328,8 @@ fStatus.addEventListener("change", () => { rememberFilter(fStatus.value); render
 fScore.addEventListener("input", render);
 fSearch.addEventListener("input", render);
 document.getElementById("refresh").addEventListener("click", load);
+syncStickyOffset();
+window.addEventListener("resize", syncStickyOffset);
 // The agent may change the table while this tab sits in the background.
 window.addEventListener("focus", load);
 load();
