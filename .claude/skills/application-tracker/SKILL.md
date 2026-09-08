@@ -47,8 +47,17 @@ python tools/tracker.py add \
 `--salary` is the posting's own wording, copied — `"45.000-60.000 EUR/year, 14
 payments"`. Off entirely when the posting named no figure: the board falls back
 to the market benchmark there, and only a stated figure belongs in this field.
-`add` is the one chance to record it, so a posting that named pay and was added
-without it keeps showing a benchmark forever.
+
+`add` is where it normally arrives, not the only way in. A posting read again
+later often names a figure the first pass missed:
+
+```bash
+python tools/tracker.py set-salary <slug> --salary "60.000 EUR/year"
+python tools/tracker.py set-salary <slug> --salary ""     # withdraw a wrong one
+```
+
+It carries to the posting row as well, so both board pages agree. Never edit
+the database by hand to fix one.
 
 `add` prints the slug it assigned — that is the folder name to create under
 `data/pipeline/applications/`. It refuses duplicates on its own; `--force` exists for the

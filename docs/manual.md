@@ -461,6 +461,18 @@ python tools/tracker.py detach acme --id 12
 kind, a new path, one row out the other side. Without it the old path stays
 beside the new one.
 
+The pay is recorded by `/apply` from the posting, and corrected here when the
+posting named a figure the first read missed, or named one you took down wrong:
+
+```bash
+python tools/tracker.py set-salary acme --salary "60.000 EUR/year"
+python tools/tracker.py set-salary acme --salary ""     # withdraw a wrong one
+```
+
+Verbatim, in the posting's own currency and period. It carries to the postings
+table as well, so both board pages agree. Leave it empty rather than estimating
+— an empty column falls back to the market benchmark, which says it is one.
+
 `detach` removes **the row and never the file**. Use it for a row that no longer
 describes anything — a path pointing where the file is not, or the same document
 recorded twice. `--kind` is enough on its own; when two rows share a kind it
