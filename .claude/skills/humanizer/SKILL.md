@@ -514,7 +514,7 @@ Rewrite the full content with these universal rules:
 - Closing: pick one sign-off. Not a stack of three.
 
 **Cover letter / application answer rewrite rules:**
-- Keep the structure `references/cover-letter-format.md` prescribes, and the language the posting is written in. This is a rewrite of the prose, not of the document.
+- Keep the structure `.claude/skills/job-application-assistant/references/cover-letter-format.md` prescribes, and the language the posting is written in. This is a rewrite of the prose, not of the document.
 - Preserve every pandoc construct untouched: `{custom-style="..."}` divs and spans, raw openxml tab snippets. If a rewrite would cross one, leave that line alone and say so.
 - The opening has to be about this employer and this role. A first sentence that would survive a find-and-replace of the company name is the single strongest AI marker here, and it is the one a recruiter sees first.
 - Cut the stock closers. "I look forward to hearing from you", "I am excited about the opportunity", "I believe I would be a great fit", "I am passionate about" — replace with a concrete, specific close or drop the sentence entirely.

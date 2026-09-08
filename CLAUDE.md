@@ -23,7 +23,7 @@ read; `state/` is what the tools write.
 | `data/profile/` | The user's data. Written by `/setup` and `/expand`. |
 | `data/documents/` | Career materials the user dropped in for `/setup` and `/expand` to read. Never moved or renamed. |
 | `data/pipeline/applications/`, `processing/`, `rejected/` | Per-application folders, moved by status. |
-| `data/state/` | The tracker database (applications, and every posting seen), Notion ids, logs, scratch. **Never edit by hand** — use `tools/tracker.py` and `tools/shortlist.py`. |
+| `data/state/` | The tracker database (applications, and every posting seen), Notion ids, logs, scratch. **Never edit by hand** — use `tools/tracker.py` and `tools/shortlist.py`. The one exception is `humanizer-patterns.md`: it is prose, not state, and the `humanizer` skill appends to it. |
 | `data/config/config.example.toml`, `data/profile.example/`, `.env.sample` | The framework's templates, kept beside the files they are templates for. Committed — never put real data in them. |
 | everything else | The framework. Do not modify it during normal work. |
 
