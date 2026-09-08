@@ -137,6 +137,15 @@ without migrating anything.
 the configured stage mapping, and checked against the filesystem on read
 (`folder_in_sync`). Storing it would create a second source of truth to drift.
 
+**Market salary benchmarks.** They live in `data/profile/salary_data.json`. What
+a posting says about pay is a fact about that posting and is stored on it
+(`salary_text`); what a market pays is a reference dataset you assemble, from a
+spreadsheet through `tools/convert_salary_excel.py` or by hand, and most of it
+describes companies no application will ever be sent to -- exactly the rows
+`companies` cannot hold, since one is created by applying.
+`tools/salary_lookup.py` matches those names fuzzily either way, so moving the
+file in would buy no join.
+
 ## Browsing it yourself
 
 It is a plain SQLite file, so:
