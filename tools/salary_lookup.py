@@ -464,9 +464,16 @@ class Benchmarks:
         self._memo = {}
 
     def meta(self):
-        """The legend the board prints once, or None when the file says nothing."""
-        if not self.metadata:
-            return None
+        """The legend the board prints once.
+
+        Returned whether or not the file carries a `metadata` block, because
+        cell() does not need one: a hand-assembled dataset with companies and
+        no metadata still fills the column with figures, and the legend is
+        what tells a reader that the "≈" on them means a market benchmark
+        rather than an offer. Without it the marking is a symbol nobody was
+        told the meaning of. The label falls back to "Index", which is what
+        the cells beside it are already labelled with.
+        """
         return {
             "unit": self.index_label,
             "baseline": self.baseline,

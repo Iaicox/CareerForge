@@ -84,7 +84,8 @@
   /* A verbatim figure is a sentence -- "45.000-60.000 EUR/year, 14 payments" --
      and left to wrap it doubles the height of every card that has one. It is
      the least important thing on the card, so it is the thing that truncates;
-     the full text stays in the title attribute and in the panel. */
+     the full text is in the hover title and in the panel, both of which print
+     it whole. */
   .card .pay {
     margin-left: auto; font-variant-numeric: tabular-nums;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%;
@@ -283,10 +284,12 @@ function renderCard(card) {
   const warn = card.folder_in_sync === false
     ? `<span class="badge warn">folder in ${esc(card.folder_stage)}/</span>` : "";
   // The card gets the figure and the marker; the sentence explaining which of
-  // the two it is only fits in the panel.
+  // the two it is only fits in the panel. The title carries the figure as well
+  // as that sentence, because the card truncates a long one and the hover is
+  // where the rest of it has to be.
   const pay = card.salary
     ? `<span class="pay${card.salary.kind === "benchmark" ? " est" : ""}"` +
-      ` title="${esc(card.salary.detail || "")}">` +
+      ` title="${esc([card.salary.text, card.salary.detail].filter(Boolean).join(" — "))}">` +
       `${card.salary.kind === "benchmark" ? "&asymp;&nbsp;" : ""}${esc(card.salary.text)}</span>`
     : "";
   el.innerHTML =

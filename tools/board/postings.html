@@ -95,8 +95,10 @@
      sentence -- "45.000-60.000 EUR/year, 14 payments" -- and holding that on
      one line pushes the table past the viewport. The page is the horizontal
      scroll container (see .wrap above), and the sticky header does not follow
-     it sideways, so a wide table uncovers the rows it is meant to hide. */
-  td.salary { text-align: right; font-variant-numeric: tabular-nums; max-width: 190px; }
+     it sideways, so a wide table uncovers the rows it is meant to hide.
+     Wrapping is the whole of the limit: max-width on a cell is a hint the
+     auto table layout is free to ignore, so there is no point stating one. */
+  td.salary { text-align: right; font-variant-numeric: tabular-nums; }
   td.salary .est { color: var(--muted); font-style: italic; }
   tbody tr:hover { background: var(--bg); }
   tbody tr.terminal td { color: var(--muted); }
@@ -354,6 +356,9 @@ function statusSelect(row) {
 }
 
 function render() {
+  // The filter inputs are wired before the first load resolves, so a keystroke
+  // during it would reach here with nothing to render.
+  if (!state) return;
   const rows = visibleRows();
   metaEl.textContent = `${rows.length} of ${state.total} posting${state.total === 1 ? "" : "s"}`
     + (state.salary_meta ? `  ·  ≈ market benchmark, ${state.salary_meta.unit}` : "");
