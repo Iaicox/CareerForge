@@ -63,8 +63,12 @@ twice:
 
 ```
 python tools/shortlist.py mark --url "<url>" --status skipped --note "<one line: the deciding gap>" \
-  --company "<Company>" --title "<Role>"
+  --company "<Company>" --title "<Role>" --salary "<the pay as the posting states it, verbatim>"
 ```
+
+Drop `--salary` when the posting named no figure. It is worth passing even on a
+posting being declined: the row stays in the shortlist, and the next time this
+company comes up the table shows what they last advertised.
 
 Use `--status maybe` for a posting the user wants to keep in view with a caveat
 rather than drop.
@@ -96,7 +100,7 @@ Create the folder `data/pipeline/applications/<slug>/`, where `<slug>` is what
 ## Fit evaluation
 <the assessment from step 1>
 ## Notes
-<salary range, stack, red flags, source, contacts>
+<salary as the posting states it, stack, red flags, source, contacts>
 ```
 
 **CV** — copy `data/profile/cv_master.md` to the filename from `config.toml`
@@ -109,6 +113,12 @@ every placeholder, follow `references/cover-letter-format.md` and
 `references/writing-style.md`. Match the posting's language unless
 `cover_letter_language` in the config says otherwise. Address a named person if
 the posting gives one.
+
+**Then run the `humanizer` skill on the cover letter**, before the reviewer sees
+it — a letter that reads as machine-written is rejected before anyone weighs
+what it says. Apply the rewrite, keeping the pandoc markup and the page limit
+intact. **Not on the CV**: the skill refuses one, and its rewrite rules would
+break the master's structure.
 
 ---
 
@@ -183,6 +193,10 @@ restate them here.
 5. Any company claim the reviewer marked `unverified` must be independently
    confirmed with WebFetch/WebSearch before it goes into a document. If it
    cannot be confirmed, cut it.
+6. Re-run the `humanizer` scan on the revised cover letter. The reviewer's
+   suggestions arrive as prose and reintroduce AI texture more often than the
+   first draft had. Reject any humanizer suggestion that would add a claim the
+   profile does not support: the honesty rules outrank the voice rules.
 
 ---
 
@@ -206,10 +220,17 @@ Follow the `application-tracker` skill.
 python tools/tracker.py add \
   --company "<Company>" --role "<Role>" --url "<url>" \
   --status draft --work-mode <remote|hybrid|onsite> \
+  --salary "<the pay as the posting states it, verbatim>" \
   --website "<site>" --company-description "<1-2 sentences>" \
   --posting-file data/pipeline/applications/<slug>/job.md \
   --cover-file data/pipeline/applications/<slug>/<cover filename>.md
 ```
+
+`--salary` is the figure from the posting itself — the same words that went
+into the job.md notes in step 2, copied over, not rounded and not converted.
+Leave the flag off when the posting named none; the board then shows the market
+benchmark instead, and a benchmark written in as a stated figure would be
+exactly the invented number the honesty rules forbid.
 
 If the slug it assigns differs from the folder you created, rename the folder
 to match. The posting itself is marked `applied` in the `postings` table by
@@ -224,7 +245,9 @@ received — the user often hand-edits the `.docx` afterwards.
 ## Step 7: present
 
 **Verification checklist** — run the one in `CLAUDE.md` and report pass/fail per
-line.
+line. Include the `humanizer` scores for the cover letter (AI-Likeness,
+Authenticity, Clarity, Appropriate Tone) and anything it flagged that was left
+in on purpose.
 
 **Key tailoring decisions** — three to five: what was emphasised and why, which
 company angles were used, the most useful reviewer suggestion, which gaps were

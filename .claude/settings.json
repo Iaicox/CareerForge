@@ -3,6 +3,7 @@
   "permissions": {
     "allow": [
       "Skill(application-tracker)",
+      "Skill(humanizer)",
       "Skill(job-application-assistant)",
       "Skill(job-scraper)",
       "Bash(git diff:*)",

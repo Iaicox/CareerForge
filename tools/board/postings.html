@@ -63,12 +63,43 @@
   #filters input[type=search] { min-width: 220px; }
   #filters input[type=number] { width: 70px; }
 
-  .wrap { padding: 12px 18px 40px; overflow-x: auto; }
+  /* No overflow here. When one axis is not `visible` CSS computes the other
+     to `auto`, which makes .wrap a scroll container on both axes -- and a
+     sticky th then resolves its `top` against .wrap instead of the viewport.
+     .wrap never scrolls vertically, so the header parked itself below the
+     table's top edge and covered the first rows. There is no ancestor between
+     th and the viewport that can carry overflow, so a wide table scrolls the
+     page sideways instead. */
+  .wrap { padding: 12px 18px 40px; }
   table { border-collapse: collapse; width: 100%; background: var(--panel);
           border: 1px solid var(--line); border-radius: var(--radius); }
   th, td { text-align: left; vertical-align: top; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  /* --head-h is measured from the real header on load and on resize, because
+     the header wraps at narrow widths and a hardcoded offset is wrong there.
+     It is floored, so it never exceeds the real height and the row can only
+     ever tuck under the header, never sit below it -- the header is opaque
+     and a layer above (z-index 5 to this 4), so an overlap is invisible where
+     a shortfall is not. */
   th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
-       font-weight: 650; white-space: nowrap; position: sticky; top: 49px; background: var(--panel); }
+       font-weight: 650; white-space: nowrap; position: sticky; top: var(--head-h, 49px);
+       background: var(--panel); z-index: 4;
+       /* border-collapse drops the cell's own border while it is stuck. */
+       box-shadow: inset 0 -1px 0 var(--line); user-select: none; }
+  /* The trailing th is a spacer with no data-key and nothing to sort by, so
+     only the real column headers offer the cursor that promises a sort. */
+  th[data-key] { cursor: pointer; }
+  th[data-key]:hover { color: var(--ink); }
+  th .arrow { opacity: .55; font-size: 9px; margin-left: 3px; }
+  th[aria-sort] { color: var(--ink); }
+  /* No nowrap, unlike the other numeric columns. A stated figure is a verbatim
+     sentence -- "45.000-60.000 EUR/year, 14 payments" -- and holding that on
+     one line pushes the table past the viewport. The page is the horizontal
+     scroll container (see .wrap above), and the sticky header does not follow
+     it sideways, so a wide table uncovers the rows it is meant to hide.
+     Wrapping is the whole of the limit: max-width on a cell is a hint the
+     auto table layout is free to ignore, so there is no point stating one. */
+  td.salary { text-align: right; font-variant-numeric: tabular-nums; }
+  td.salary .est { color: var(--muted); font-style: italic; }
   tbody tr:hover { background: var(--bg); }
   tbody tr.terminal td { color: var(--muted); }
   td.co { font-weight: 620; white-space: nowrap; }
@@ -144,6 +175,122 @@ function safeHref(url) {
   return /^https?:\/\//i.test(String(url || "")) ? url : null;
 }
 
+// Status and verdict are ranked, not alphabetical, and only the server knows
+// the ranking. The statuses are the user's own, in the user's language, and
+// several locales prefix them with an emoji -- sorting the rendered label
+// would order the funnel by codepoint, putting "skipped" above "new" and
+// calling it ascending. Rebuilt whenever the payload changes, because a
+// status the user adds to config.toml arrives in the payload, not here.
+let statusRank = new Map();
+let verdictRank = new Map();
+let collateLocale;
+
+// Intl throws RangeError on a tag it cannot parse, and `locale` is free text
+// out of config.toml. Unhandled it would come out of applySort, through
+// render, and leave the table dead on load with a sort remembered. Tested
+// once per payload; a tag that is not one simply sorts in the browser's.
+function safeLocale(tag) {
+  if (!tag) return undefined;
+  try { "a".localeCompare("b", tag); return tag; } catch (e) { return undefined; }
+}
+
+function setState(next) {
+  state = next;
+  statusRank = new Map((state.statuses || []).map((s, i) => [s.id, i]));
+  verdictRank = new Map((state.verdict_order || []).map((v, i) => [v, i]));
+  collateLocale = safeLocale(state.locale);
+}
+
+const rankOf = (map, value) => (map.has(value) ? map.get(value) : null);
+
+// Which column orders the table. `key: null` is the server's own order --
+// score first, then verdict, then company -- and cycling a header returns to
+// it, so the ranking view is never lost behind a sort.
+const SORT_KEYS = {
+  company:    (r) => r.company,
+  title:      (r) => r.title || r.url,
+  salary:     (r) => r.salary?.sort ?? null,
+  status:     (r) => rankOf(statusRank, r.status),
+  score:      (r) => r.score,
+  verdict:    (r) => rankOf(verdictRank, r.verdict),
+  deadline:   (r) => r.deadline,
+  source:     (r) => r.source,
+  first_seen: (r) => r.first_seen,
+  note:       (r) => r.note,
+};
+let sort = { key: null, dir: 1 };
+
+function rememberedSort() {
+  try {
+    const raw = JSON.parse(localStorage.getItem("postings.sort") || "null");
+    // `dir` is checked as well as `key`: anything else multiplies the
+    // comparator's result by NaN, and a comparator returning NaN leaves the
+    // order undefined rather than merely wrong.
+    if (raw && (raw.key === null || SORT_KEYS[raw.key])
+            && (raw.dir === 1 || raw.dir === -1)) return raw;
+  } catch (e) { /* private mode, or a stale shape */ }
+  return { key: null, dir: 1 };
+}
+
+function toggleSort(key) {
+  if (sort.key !== key) sort = { key, dir: 1 };
+  else if (sort.dir === 1) sort = { key, dir: -1 };
+  else sort = { key: null, dir: 1 };   // back to the server's order
+  try { localStorage.setItem("postings.sort", JSON.stringify(sort)); } catch (e) { /* ignore */ }
+  render();
+}
+
+// Sorts the row objects, never the rendered text: the cells show DD.MM.YYYY,
+// and ordering those as strings would put every 01.xx first.
+function applySort(rows) {
+  const get = SORT_KEYS[sort.key];
+  if (!get) return rows;
+  const empty = (v) => v === null || v === undefined || v === "";
+  return rows.slice().sort((a, b) => {
+    const x = get(a), y = get(b);
+    // Nothing known sinks to the bottom in both directions. A blank is not
+    // "smallest"; it is absent, and it is never what you sorted to find.
+    if (empty(x) && empty(y)) return 0;
+    if (empty(x)) return 1;
+    if (empty(y)) return -1;
+    const cmp = (typeof x === "number" && typeof y === "number")
+      ? x - y
+      : String(x).localeCompare(String(y), collateLocale,
+                                { numeric: true, sensitivity: "base" });
+    return cmp * sort.dir;
+  });
+}
+
+// The table reads DD.MM.YYYY; the database stores ISO. Anything that is not a
+// plain ISO date passes through untouched -- deadline is nullable, and
+// created_at carries a time.
+function fmtDate(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? "").trim());
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : String(value ?? "");
+}
+
+// Which of the two figures this is has to be readable at a glance: the default
+// reading of a number in a job table is "this is what they said", so the
+// benchmark is marked and the posting's own words are not.
+function salaryCell(cell) {
+  if (!cell) return `<td class="salary"></td>`;
+  const body = cell.kind === "benchmark"
+    ? `<span class="est">&asymp;&nbsp;${esc(cell.text)}</span>`
+    : esc(cell.text);
+  return `<td class="salary" title="${esc(cell.detail || "")}">${body}</td>`;
+}
+
+// The header is sticky at top:0 and the th sticks under it. Measured rather
+// than hardcoded because the header wraps at narrow widths.
+//
+// Floor, never round. The height is fractional on a scaled display -- 60.7px
+// with a 0.8px border at dpr 2.5 -- and rounding that up to 61 put the row
+// 0.3px below the header, a slot the table flickered through on every scroll.
+function syncStickyOffset() {
+  const h = document.querySelector("header").getBoundingClientRect().height;
+  document.documentElement.style.setProperty("--head-h", `${Math.floor(h)}px`);
+}
+
 function toast(message, ok = false) {
   toastEl.textContent = message;
   toastEl.classList.toggle("ok", ok);
@@ -173,7 +320,7 @@ function rememberFilter(value) {
 
 async function load() {
   try {
-    state = await api("/api/postings");
+    setState(await api("/api/postings"));
     if (!fStatus.options.length) {
       fStatus.innerHTML = [
         `<option value="open">open (not applied, skipped or expired)</option>`,
@@ -192,13 +339,13 @@ function visibleRows() {
   const filter = fStatus.value;
   const min = fScore.value === "" ? null : Number(fScore.value);
   const q = fSearch.value.trim().toLowerCase();
-  return state.rows.filter((r) => {
+  return applySort(state.rows.filter((r) => {
     if (filter === "open" && r.terminal) return false;
     if (filter !== "open" && filter !== "all" && r.status !== filter) return false;
     if (min !== null && (r.score ?? 0) < min) return false;
     if (q && !(`${r.company ?? ""} ${r.title ?? ""}`.toLowerCase().includes(q))) return false;
     return true;
-  });
+  }));
 }
 
 function statusSelect(row) {
@@ -209,10 +356,15 @@ function statusSelect(row) {
 }
 
 function render() {
+  // The filter inputs are wired before the first load resolves, so a keystroke
+  // during it would reach here with nothing to render.
+  if (!state) return;
   const rows = visibleRows();
-  metaEl.textContent = `${rows.length} of ${state.total} posting${state.total === 1 ? "" : "s"}`;
+  metaEl.textContent = `${rows.length} of ${state.total} posting${state.total === 1 ? "" : "s"}`
+    + (state.salary_meta ? `  ·  ≈ market benchmark, ${state.salary_meta.unit}` : "");
   if (!rows.length) {
     tableEl.innerHTML = `<p class="empty">Nothing matches.</p>`;
+    syncStickyOffset();
     return;
   }
   const body = rows.map((r) => {
@@ -226,29 +378,59 @@ function render() {
     return `<tr class="${r.terminal ? "terminal" : ""}" data-id="${r.id}">
       <td class="co">${esc(r.company || "—")}</td>
       <td class="title">${title}${expired}</td>
+      ${salaryCell(r.salary)}
       <td class="status">${statusSelect(r)}</td>
       <td class="num">${r.score ?? ""}</td>
       <td>${verdict}</td>
-      <td class="num">${esc(r.deadline || "")}</td>
+      <td class="num">${esc(fmtDate(r.deadline))}</td>
       <td>${esc(r.source || "")}</td>
-      <td class="num">${esc(r.first_seen || "")}</td>
+      <td class="num">${esc(fmtDate(r.first_seen))}</td>
       <td class="note" data-id="${r.id}" title="click to edit">${esc(r.note || "")}</td>
       <td class="app">${app}</td>
     </tr>`;
   }).join("");
+  const head = [
+    ["company", "Company"], ["title", "Title"],
+    // Says what it orders by, because that is not what the column shows. A
+    // figure a posting states is its own sentence, in its own currency and
+    // period, and no regex turns that into a number without picking one of
+    // them for you -- so the benchmark orders every row, and a company the
+    // dataset does not cover has nothing to be ordered on and sinks.
+    ["salary", "Salary", "Sort by the market benchmark for the company — "
+      + "the one figure every row can be compared on. A salary a posting "
+      + "states is left in its own words, and is not parsed into a number."],
+    ["status", "Status", "Sort by Status, in funnel order"],
+    ["score", "Score"],
+    ["verdict", "Verdict", "Sort by Verdict, strong to poor"],
+    ["deadline", "Deadline"], ["source", "Source"], ["first_seen", "First seen"],
+    ["note", "Note"],
+  ].map(([key, label, hint]) => {
+    const on = sort.key === key;
+    const aria = on ? ` aria-sort="${sort.dir === 1 ? "ascending" : "descending"}"` : "";
+    const arrow = on ? `<span class="arrow">${sort.dir === 1 ? "▲" : "▼"}</span>` : "";
+    return `<th data-key="${key}"${aria} title="${esc(hint || `Sort by ${label}`)}">${label}${arrow}</th>`;
+  }).join("");
+
   tableEl.innerHTML = `<table>
-    <thead><tr>
-      <th>Company</th><th>Title</th><th>Status</th><th>Score</th><th>Verdict</th>
-      <th>Deadline</th><th>Source</th><th>First seen</th><th>Note</th><th></th>
-    </tr></thead>
+    <thead><tr>${head}<th></th></tr></thead>
     <tbody>${body}</tbody></table>`;
 
+  tableEl.querySelectorAll("th[data-key]").forEach((th) => {
+    th.addEventListener("click", () => toggleSort(th.dataset.key));
+  });
   tableEl.querySelectorAll("td.status select").forEach((sel) => {
     sel.addEventListener("change", () => setStatus(Number(sel.dataset.id), sel.value));
   });
   tableEl.querySelectorAll("td.note").forEach((td) => {
     td.addEventListener("click", () => editNote(td, Number(td.dataset.id)));
   });
+
+  // After the header has its text, not before. #meta is inside <header>, it is
+  // filled above, and the salary legend is long enough to wrap the header onto
+  // a second line at narrow widths -- measuring the empty one leaves the
+  // column headers parked too high, under an opaque header, covering the first
+  // rows. That is the bug the measurement exists to prevent.
+  syncStickyOffset();
 }
 
 function rowById(id) {
@@ -260,7 +442,7 @@ async function setStatus(id, status) {
   if (!row || row.status === status) return;
   try {
     const res = await api("/api/posting/status", { id, status, updated_at: row.updated_at });
-    state = res.table;
+    setState(res.table);
     render();
     toast(`${row.company || "Posting"}: ${res.posting.status_label}`, true);
   } catch (err) {
@@ -285,7 +467,7 @@ function editNote(td, id) {
     if (!save || text === (row.note || "")) { render(); return; }
     try {
       const res = await api("/api/posting/note", { id, text });
-      state = res.table;
+      setState(res.table);
       render();
       toast("Note saved", true);
     } catch (err) { toast(err.message); load(); }
@@ -301,6 +483,9 @@ fStatus.addEventListener("change", () => { rememberFilter(fStatus.value); render
 fScore.addEventListener("input", render);
 fSearch.addEventListener("input", render);
 document.getElementById("refresh").addEventListener("click", load);
+sort = rememberedSort();
+syncStickyOffset();
+window.addEventListener("resize", syncStickyOffset);
 // The agent may change the table while this tab sits in the background.
 window.addEventListener("focus", load);
 load();

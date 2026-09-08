@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS applications (
     -- than corrupting the column with unsortable values.
     deadline           TEXT,
     source             TEXT,      -- which board or channel it came from
+    -- The pay as the posting states it, verbatim. A string, never a parsed
+    -- number: see migration 007.
+    salary_text        TEXT,
     -- The /apply evaluation, kept instead of scrolling away with the session.
     fit_score          INTEGER,
     fit_strengths      TEXT,      -- JSON array
@@ -101,6 +104,7 @@ CREATE TABLE IF NOT EXISTS postings (
     source           TEXT,                -- board or channel; "apply" when first seen in /apply
     summary          TEXT,
     deadline         TEXT,                -- ISO date or NULL, via parse_deadline
+    salary_text      TEXT,                -- as the posting states it, verbatim
     first_seen       TEXT NOT NULL,
     status           TEXT NOT NULL,       -- id from [[posting_statuses]]
     note             TEXT,                -- why it was skipped, or anything else worth keeping

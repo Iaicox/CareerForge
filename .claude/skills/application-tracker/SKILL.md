@@ -39,9 +39,25 @@ python tools/tracker.py find --url "<posting url>" --company "<Company>" --role 
 python tools/tracker.py add \
   --company "<Company>" --role "<Role>" --url "<url>" \
   --status draft --work-mode remote \
+  --salary "<the pay as the posting states it, verbatim>" \
   --website "<company site>" --company-description "<one or two sentences>" \
   --posting-file data/pipeline/applications/<slug>/job.md
 ```
+
+`--salary` is the posting's own wording, copied — `"45.000-60.000 EUR/year, 14
+payments"`. Off entirely when the posting named no figure: the board falls back
+to the market benchmark there, and only a stated figure belongs in this field.
+
+`add` is where it normally arrives, not the only way in. A posting read again
+later often names a figure the first pass missed:
+
+```bash
+python tools/tracker.py set-salary <slug> --salary "60.000 EUR/year"
+python tools/tracker.py set-salary <slug> --salary ""     # withdraw a wrong one
+```
+
+It carries to the posting row as well, so both board pages agree. Never edit
+the database by hand to fix one.
 
 `add` prints the slug it assigned — that is the folder name to create under
 `data/pipeline/applications/`. It refuses duplicates on its own; `--force` exists for the

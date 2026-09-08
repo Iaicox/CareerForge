@@ -32,7 +32,8 @@ document must be traceable to it.
   whether a cover letter is wanted.
 - **Every posting evaluated and not pursued is recorded with its reason**, so
   it never comes back through `/scrape` and is never evaluated twice:
-  `python tools/shortlist.py mark --url <url> --status skipped --note "<the deciding gap>" --company "<Company>" --title "<Role>"`
+  `python tools/shortlist.py mark --url <url> --status skipped --note "<the deciding gap>" --company "<Company>" --title "<Role>" --salary "<the pay the posting states, verbatim>"`
+  (`--salary` off entirely when the posting named none)
   (`--status maybe` for one kept in view with a caveat). A batch evaluation
   marks each posting; the skipped-roles table shown to the user is the
   presentation, the table is the record.
@@ -49,6 +50,10 @@ document must be traceable to it.
 - Copy `data/profile/cover_letter_master.md`; replace every placeholder.
 - Follow `references/writing-style.md` and `references/cover-letter-format.md`.
 - Match the posting's language unless `data/config/config.toml` overrides it.
+- Run the `humanizer` skill on the finished letter and apply its rewrite, keeping
+  the pandoc markup and the page limit intact. Reject any suggestion that would
+  add a claim the profile does not support. **Never run it on the CV** — it
+  refuses one, and its rewrite rules break the master's structure.
 
 ### 4. Build
 

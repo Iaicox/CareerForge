@@ -343,6 +343,15 @@ and `/apply` never evaluates it twice.
 - `cv_<you>.md` — from your master, tailored
 - `cover_letter_<you>.md` — if you asked for one, in the posting's language
 
+The letter then goes through the `humanizer` skill before the reviewer sees it.
+It scans for the texture that reads as machine-written, scores the draft and
+rewrites it; a letter that reads as generated is rejected before anyone weighs
+what it says. The CV never goes through it — the skill refuses one, because its
+rewrite rules break the master's bullet structure and its pandoc markup. And
+the honesty rules outrank it: a rewrite changes how something is said, never
+what is claimed, so a suggestion that would add a fact, a number or a company
+claim is dropped and the flatter sentence stays.
+
 **3 — Research and review.** Company research is fetched (cached for 30 days,
 so the second application to a company is free) — including what the company
 pays for this role, if anything is published. A figure for the posting's own
@@ -369,7 +378,8 @@ looks perfect and parses as nothing.
 Findings are warnings, not errors — you may knowingly ship a design a parser
 dislikes.
 
-**6 — Record.** Added to the tracker with status `draft`. Attachments stay empty
+**6 — Record.** Added to the tracker with status `draft`, together with the
+salary the posting stated, if it stated one. Attachments stay empty
 until you confirm it was actually sent, so the tracker holds the version the
 employer received rather than a draft you later edited.
 
@@ -451,6 +461,18 @@ python tools/tracker.py detach acme --id 12
 kind, a new path, one row out the other side. Without it the old path stays
 beside the new one.
 
+The pay is recorded by `/apply` from the posting, and corrected here when the
+posting named a figure the first read missed, or named one you took down wrong:
+
+```bash
+python tools/tracker.py set-salary acme --salary "60.000 EUR/year"
+python tools/tracker.py set-salary acme --salary ""     # withdraw a wrong one
+```
+
+Verbatim, in the posting's own currency and period. It carries to the postings
+table as well, so both board pages agree. Leave it empty rather than estimating
+— an empty column falls back to the market benchmark, which says it is one.
+
 `detach` removes **the row and never the file**. Use it for a row that no longer
 describes anything — a path pointing where the file is not, or the same document
 recorded twice. `--kind` is enough on its own; when two rows share a kind it
@@ -470,10 +492,27 @@ Opens `http://127.0.0.1:8765` — columns by status, drag a card to change it.
 Dragging moves the folder too.
 
 `/board postings` opens the second page on the same server: every posting ever
-seen, as a table. Company, title, the status as a select you change in place,
-score and verdict from `/rank`, deadline, source, a note that edits in place,
-and the application it became. Filters for status (open postings by default),
-minimum score, and a search box.
+seen, as a table. Company, title, salary, the status as a select you change in
+place, score and verdict from `/rank`, deadline, source, first seen, a note that
+edits in place, and the application it became. Filters for status (open postings
+by default), minimum score, and a search box. Dates read DD.MM.YYYY on both
+pages.
+
+Click a column header to sort by it; click again to reverse, a third time to
+return to the ranking the server sends. The choice is remembered per browser.
+Rows with nothing in the column sink to the bottom either way — a blank is not
+the smallest value, it is an absent one, and it is never what you sorted to
+find. Status and verdict sort in their own order, not alphabetically.
+
+**The salary column shows two different things, and marks which.** A figure the
+posting itself stated is printed in its own words. When the posting named none,
+the column falls back to the market benchmark for that company from
+`data/profile/salary_data.json` and marks it `≈`, greyed and italic; the legend
+in the header says so, and hovering the cell says where the number came from.
+The kanban cards and the application panel mark it the same way. Sorting the
+column orders every row by the benchmark, including rows showing a stated
+figure: a stated salary is a sentence with a currency and a period in it, and
+turning that into one comparable number means guessing at both.
 
 Loopback only, and it refuses requests whose `Host` header is not loopback,
 because it writes to disk.
@@ -808,6 +847,7 @@ belongs in `data/profile/` or `data/config/config.toml`.
 | Tone and phrasing rules | `.claude/skills/job-application-assistant/references/writing-style.md` |
 | CV structure and markup | `.claude/skills/job-application-assistant/references/cv-format.md` |
 | What the reviewer looks for | `.claude/agents/application-reviewer.md` |
+| What counts as AI texture in prose | `.claude/skills/humanizer/SKILL.md` |
 | Document design | `templates/reference_cv.docx` in Word, or `tools/make_reference.ps1` |
 
 ### The one rule when extending

@@ -84,8 +84,14 @@ def cmd_show(args, conn, cfg) -> int:
         )
     print()
     for i, e in enumerate(rows, 1):
-        if e.get("gaps") or e.get("strengths") or e.get("note"):
+        # The pay goes here rather than in the table above: it is a verbatim
+        # sentence with a currency and a period in it, and a fixed-width column
+        # would truncate it into a different number. The board shows it as a
+        # column because it can afford the width; this cannot.
+        if e.get("gaps") or e.get("strengths") or e.get("note") or e.get("salary_text"):
             print(f"{i}. {e.get('company')} - {e.get('title')}  (#{e['id']})")
+            if e.get("salary_text"):
+                print(f"     pay: {e['salary_text']}")
             for s in (e.get("strengths") or [])[:3]:
                 print(f"     + {s}")
             for g in (e.get("gaps") or [])[:3]:
@@ -172,9 +178,11 @@ def cmd_mark(args, conn, cfg) -> int:
         stub = {
             "title": args.title, "company": args.company,
             "location": args.location, "source": args.source or "apply",
+            "salary_text": args.salary,
         }
     with conn:
-        row = tracker.mark_posting(conn, cfg, ident, args.status, note=args.note, stub=stub)
+        row = tracker.mark_posting(conn, cfg, ident, args.status, note=args.note,
+                                   stub=stub, salary_text=args.salary)
     print(f"{row['status']:<10} {describe(row)}")
     return 0
 
@@ -285,6 +293,7 @@ def main() -> int:
     k.add_argument("--title")
     k.add_argument("--location")
     k.add_argument("--source")
+    k.add_argument("--salary", help="the pay as the posting states it, verbatim")
 
     i = sub.add_parser("import-json", help="one-time import of the old seen_jobs.json")
     i.add_argument("path")
