@@ -1598,11 +1598,63 @@ def list_postings(
     return rows
 
 
+def _benchmarks():
+    """The salary dataset, or None. Imported here, not at module scope.
+
+    salary_lookup is optional tooling over a gitignored file that most
+    workspaces do not have. A missing or broken one must not take down
+    `tracker.py init` or the CLI, so nothing above this line depends on it.
+    """
+    try:
+        import salary_lookup
+        return salary_lookup.load_benchmarks()
+    except Exception:
+        return None
+
+
+def salary_cell(company, stated=None, *, location=None, benchmarks=None) -> dict | None:
+    """What the board shows in the salary column, and which of the two it is.
+
+    The posting's own figure when it stated one, the market benchmark for the
+    company when it did not, and None when neither is known -- a row with
+    nothing carries nothing, rather than an empty shape both pages have to
+    test for.
+
+    `text` is rendered here and not in the browser, because the unit is the
+    dataset's own metadata.index_label -- the user's string, in the user's
+    language. Neither page should be guessing at a currency.
+
+    `sort` is the benchmark figure even on a row whose `text` is the posting's
+    own words. That is the honest way to order the column without parsing free
+    text: "45.000-60.000 EUR/year, 14 payments" has a currency, a period and a
+    basis in it, and every regex that turns it into one number picks some of
+    them for you. So the number orders the row, the tooltip says where it came
+    from, and nothing on screen is a figure the posting did not state.
+    """
+    bench = benchmarks.cell(company, location) if benchmarks is not None else None
+    stated = (stated or "").strip()
+    if stated:
+        detail = "As the posting states it."
+        if bench:
+            detail += f" Market: {bench['text']} ({bench['detail']})"
+        return {"text": stated, "kind": "posting", "detail": detail,
+                "sort": bench["sort"] if bench else None}
+    if bench:
+        return {"text": bench["text"], "kind": "benchmark",
+                "detail": bench["detail"], "sort": bench["sort"]}
+    return None
+
+
 def postings_table_data(conn: sqlite3.Connection, cfg: Config) -> dict:
     """Rows plus the status options, for the browser table. Used by tools/board.py."""
     rows = list_postings(conn, cfg, all=True)
+    bench = _benchmarks()
+    for r in rows:
+        r["salary"] = salary_cell(r.get("company"), r.get("salary_text"),
+                                  location=r.get("location"), benchmarks=bench)
     return {
         "locale": cfg.locale,
+        "salary_meta": bench.meta() if bench else None,
         "statuses": [
             {
                 "id": s["id"],
@@ -1790,6 +1842,13 @@ def application_detail(conn: sqlite3.Connection, cfg: Config, ident: str) -> dic
 def board_data(conn: sqlite3.Connection, cfg: Config) -> dict:
     """Columns + cards, in funnel order. Used by tools/board.py."""
     rows = list_applications(conn, cfg)
+    # Annotate before the split: the dicts are the same objects, so one loop
+    # covers the columns and the orphans both. Doing it after would miss the
+    # orphans column, which is the one meant to be worked through by hand.
+    bench = _benchmarks()
+    for r in rows:
+        r["salary"] = salary_cell(r.get("company_name"), r.get("salary_text"),
+                                  location=r.get("location"), benchmarks=bench)
     known = {s["id"] for s in cfg.statuses}
     by_status: dict[str, list[dict]] = {s["id"]: [] for s in cfg.statuses}
     orphans: list[dict] = []
@@ -1800,6 +1859,7 @@ def board_data(conn: sqlite3.Connection, cfg: Config) -> dict:
             orphans.append(r)
     return {
         "locale": cfg.locale,
+        "salary_meta": bench.meta() if bench else None,
         "stale_after_days": cfg.stale_after_days(),
         "columns": [
             {
