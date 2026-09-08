@@ -148,6 +148,8 @@ check every line below. Report the results as a pass/fail list.
 - [ ] No spelling or grammar errors
 - [ ] The cover letter is addressed to a named person, or to a correct generic
       salutation in the posting's language
+- [ ] The cover letter passed the `humanizer` scan, AI-Likeness 3 or lower.
+      The CV is exempt — the skill refuses one
 
 ## Honesty rules
 
@@ -161,3 +163,22 @@ These are not style preferences. They are what makes the output usable.
 - **Never invent a number.** A metric that is not in the profile does not exist.
 - **Empty beats plausible.** A field with no data stays empty, in documents and
   in the tracker alike.
+
+## Prose that reaches a human
+
+Anything a person on the other side will read goes through the `humanizer` skill
+before it is sent: cover letters, answers to an employer's extra application
+questions, LinkedIn messages and connection notes, replies to recruiter email,
+follow-ups on a silent application. It scans for AI texture, scores the draft and
+rewrites it. This holds whether the text came out of `/apply` or was drafted on
+the spot in conversation.
+
+Two limits. **The CV never goes through it** — the skill refuses one, because its
+rewrite rules break the master's bullet structure and its pandoc markup.
+And the honesty rules above outrank it: a rewrite changes how something is said,
+never what is claimed. A humanizer suggestion that would add a fact, a number or
+a company claim gets rejected, and the flat sentence stays.
+
+Patterns it learns are appended to `data/state/humanizer-patterns.md`, which is
+yours and gitignored. The skill file itself is framework and is never edited by
+a review.

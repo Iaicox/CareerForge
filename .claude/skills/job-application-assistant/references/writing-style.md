@@ -1,5 +1,11 @@
 # Writing Style Guide
 
+The `humanizer` skill enforces rules 1-4 below, and a great deal more: it holds
+the current lists of AI vocabulary, phrasing and structural tells, scores a draft
+on four dimensions, and rewrites it. Run it on every cover letter and on every
+message that goes to a person. Never on a CV — it refuses one, and this file
+plus `cv-format.md` own that document.
+
 ## Critical Rules
 
 1. **NO em-dashes (--).**  Use commas, periods, or restructure the sentence instead.
@@ -73,7 +79,8 @@ The cover letter is **not a CV repetition**. It should be forward-looking:
 
 ### Closing
 - Brief, confident, forward-looking
-- "I look forward to hearing from you" or "I would welcome the opportunity to discuss..."
+- Say something specific: what you would want to talk about first, or what you would look at in the first weeks. A close that could end any letter ends this one badly
+- Avoid the stock formulas. "I look forward to hearing from you", "I would welcome the opportunity to discuss", "I am excited about the opportunity" are the lines the `humanizer` flags first, because every letter has them. Use one only when the posting's language has a convention that expects it
 - No begging or over-enthusiasm
 
 ## Bullet Point Style

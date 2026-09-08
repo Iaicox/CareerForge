@@ -110,6 +110,12 @@ every placeholder, follow `references/cover-letter-format.md` and
 `cover_letter_language` in the config says otherwise. Address a named person if
 the posting gives one.
 
+**Then run the `humanizer` skill on the cover letter**, before the reviewer sees
+it — a letter that reads as machine-written is rejected before anyone weighs
+what it says. Apply the rewrite, keeping the pandoc markup and the page limit
+intact. **Not on the CV**: the skill refuses one, and its rewrite rules would
+break the master's structure.
+
 ---
 
 ## Step 3: research, then review
@@ -183,6 +189,10 @@ restate them here.
 5. Any company claim the reviewer marked `unverified` must be independently
    confirmed with WebFetch/WebSearch before it goes into a document. If it
    cannot be confirmed, cut it.
+6. Re-run the `humanizer` scan on the revised cover letter. The reviewer's
+   suggestions arrive as prose and reintroduce AI texture more often than the
+   first draft had. Reject any humanizer suggestion that would add a claim the
+   profile does not support: the honesty rules outrank the voice rules.
 
 ---
 
@@ -224,7 +234,9 @@ received — the user often hand-edits the `.docx` afterwards.
 ## Step 7: present
 
 **Verification checklist** — run the one in `CLAUDE.md` and report pass/fail per
-line.
+line. Include the `humanizer` scores for the cover letter (AI-Likeness,
+Authenticity, Clarity, Appropriate Tone) and anything it flagged that was left
+in on purpose.
 
 **Key tailoring decisions** — three to five: what was emphasised and why, which
 company angles were used, the most useful reviewer suggestion, which gaps were

@@ -49,6 +49,10 @@ document must be traceable to it.
 - Copy `data/profile/cover_letter_master.md`; replace every placeholder.
 - Follow `references/writing-style.md` and `references/cover-letter-format.md`.
 - Match the posting's language unless `data/config/config.toml` overrides it.
+- Run the `humanizer` skill on the finished letter and apply its rewrite, keeping
+  the pandoc markup and the page limit intact. Reject any suggestion that would
+  add a claim the profile does not support. **Never run it on the CV** — it
+  refuses one, and its rewrite rules break the master's structure.
 
 ### 4. Build
 
