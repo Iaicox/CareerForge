@@ -84,8 +84,14 @@ def cmd_show(args, conn, cfg) -> int:
         )
     print()
     for i, e in enumerate(rows, 1):
-        if e.get("gaps") or e.get("strengths") or e.get("note"):
+        # The pay goes here rather than in the table above: it is a verbatim
+        # sentence with a currency and a period in it, and a fixed-width column
+        # would truncate it into a different number. The board shows it as a
+        # column because it can afford the width; this cannot.
+        if e.get("gaps") or e.get("strengths") or e.get("note") or e.get("salary_text"):
             print(f"{i}. {e.get('company')} - {e.get('title')}  (#{e['id']})")
+            if e.get("salary_text"):
+                print(f"     pay: {e['salary_text']}")
             for s in (e.get("strengths") or [])[:3]:
                 print(f"     + {s}")
             for g in (e.get("gaps") or [])[:3]:

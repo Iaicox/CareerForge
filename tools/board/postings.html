@@ -359,6 +359,7 @@ function render() {
     + (state.salary_meta ? `  ·  ≈ market benchmark, ${state.salary_meta.unit}` : "");
   if (!rows.length) {
     tableEl.innerHTML = `<p class="empty">Nothing matches.</p>`;
+    syncStickyOffset();
     return;
   }
   const body = rows.map((r) => {
