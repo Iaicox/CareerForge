@@ -264,8 +264,13 @@ def match_score(query, entry_name):
     return 0
 
 
-def search_company(data, query, city=None):
-    """Search for a company by name. Returns matching entries sorted by relevance."""
+def search_company(data, query, city=None, min_score=30):
+    """Search for a company by name. Returns matching entries sorted by relevance.
+
+    `min_score` is 30 for the CLI, where a human reads the list and throws out
+    what does not belong. An unattended caller wants a stricter bar -- see
+    Benchmarks.MIN_SCORE.
+    """
     companies = data.get("companies", [])
     scored = []
 
@@ -282,7 +287,6 @@ def search_company(data, query, city=None):
 
     scored.sort(key=lambda x: (-x[0], x[1]["company"]))
 
-    min_score = 30
     return [entry for score, entry in scored if score >= min_score]
 
 
@@ -410,6 +414,182 @@ def format_entry(entry, metadata):
 
     banner = "=" * max(len(line) for line in body)
     return "\n".join(["", banner, *body[:heading_ends], banner, *body[heading_ends:]])
+
+
+def load_data_quietly():
+    """The dataset, or None when there is none to read.
+
+    load_data() is the CLI's front door: it prints setup instructions and
+    exits. A long-running reader -- the board, answering a request -- needs
+    the same file without either. The file is the user's own, gitignored and
+    frequently absent; a missing, unreadable or malformed one is "no
+    benchmark", never an exception out of a request handler.
+    """
+    try:
+        path = data_file()
+        if not path.exists():
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+class Benchmarks:
+    """The dataset, ready to be asked about many companies in a row.
+
+    search_company() walks every entry and re-normalises every name on each
+    call. The postings table asks about a couple of hundred rows drawn from a
+    few dozen companies, most of them repeats, so the walk is memoised per
+    company and the parse is held by load_benchmarks() above it.
+    """
+
+    #: Nobody reads this match before it reaches the screen, so it has to be
+    #: one nobody would have thrown out. The CLI's 30 admits the partial-overlap
+    #: band, where a score is coverage of the query's words: "Smart Working
+    #: Solutions" scores 43 against "Volkswagen Digital Solutions" on the word
+    #: "Solutions" alone, and "United Tech" scores 50 against "BNP Paribas CIB
+    #: Tech Hub" on "Tech". Printing Volkswagen's pay beside another company's
+    #: name is worse than printing nothing. 70 is the floor for an exact match,
+    #: one name containing the other, or every word of the query accounted for.
+    MIN_SCORE = 70
+
+    def __init__(self, data):
+        self.metadata = dict(data.get("metadata") or {})
+        self.unit = baseline_unit(data)
+        self.baseline = self.metadata.get("index_baseline")
+        self.index_label = self.metadata.get("index_label") or "Index"
+        self._data = data
+        self._memo = {}
+
+    def meta(self):
+        """The legend the board prints once, or None when the file says nothing."""
+        if not self.metadata:
+            return None
+        return {
+            "unit": self.index_label,
+            "baseline": self.baseline,
+            "baseline_text": fmt_number(self.baseline) if self.baseline else "",
+            "baseline_description": self.metadata.get("baseline_description") or "",
+            "source": self.metadata.get("source") or "",
+        }
+
+    def best_category(self, entry):
+        """Which of a company's categories the cell shows.
+
+        A category with no `index` is skipped: the dataset is withholding that
+        one, and format_entry prints those as N/A. A category whose name does
+        not end in the file's baseline unit is skipped too, because a USD
+        figure and a EUR figure in one cell is two units pretending to be one
+        -- the rule compares_to_baseline() already applies to the percentage.
+
+        Of what is left, the most sources wins (`count` is the file's own
+        confidence signal), then the lower figure, then the name. The lower
+        figure on a tie because this number goes into a salary conversation,
+        and the conservative one survives being checked. The chosen category
+        is named in the cell's detail, so a pick you disagree with is visible
+        rather than silent.
+        """
+        best = None
+        for name, cat in (entry.get("categories") or {}).items():
+            if not isinstance(cat, dict) or cat.get("index") is None:
+                continue
+            if not compares_to_baseline(name, self.unit):
+                continue
+            try:
+                value = float(cat["index"])
+            except (TypeError, ValueError):
+                continue
+            try:
+                count = int(cat.get("count") or 0)
+            except (TypeError, ValueError):
+                count = 0
+            key = (-count, value, name)
+            if best is None or key < best[0]:
+                best = (key, name, cat, value)
+        return None if best is None else (best[1], best[2], best[3])
+
+    def for_company(self, company, city=None):
+        """The best entry for this company, or None.
+
+        `city` prefers, it does not filter. search_company()'s own city filter
+        is a one-directional substring: a posting that says "Lisbon, Portugal"
+        against a dataset that says "Lisboa" matches nothing at all and the
+        company drops out entirely. So the search runs unfiltered and the
+        preference is applied to what comes back.
+        """
+        name = (company or "").strip()
+        if not name:
+            return None
+        key = (name.lower(), (city or "").strip().lower())
+        if key in self._memo:
+            return self._memo[key]
+        matches = search_company(self._data, name, min_score=self.MIN_SCORE)
+        entry = matches[0] if matches else None
+        if entry is not None and city:
+            want = fold(str(city).lower())
+            for m in matches:
+                have = fold((m.get("city") or "").lower())
+                if have and (have in want or want in have):
+                    entry = m
+                    break
+        self._memo[key] = entry
+        return entry
+
+    def cell(self, company, city=None):
+        """What the board shows for a company with no stated figure, or None."""
+        entry = self.for_company(company, city)
+        if entry is None:
+            return None
+        picked = self.best_category(entry)
+        if picked is None:
+            return None
+        label, cat, value = picked
+        detail = entry["company"]
+        if entry.get("city"):
+            detail += f" ({entry['city']})"
+        detail += f" - {fmt_label(label)}"
+        count = cat.get("count")
+        if count:
+            detail += f", {count} source{'' if count == 1 else 's'}"
+        diff = fmt_difference(value, self.baseline)
+        if diff:
+            detail += f", {diff} vs baseline"
+        return {
+            "text": f"{fmt_number(value)} {self.index_label}".strip(),
+            "detail": detail,
+            "sort": value,
+        }
+
+
+_CACHE = None
+
+
+def load_benchmarks(refresh=False):
+    """The dataset, parsed once and reused until the file changes.
+
+    Keyed on path, mtime and size rather than loaded once for the life of the
+    process: /apply writes new figures with `salary_lookup.py add` while the
+    board sits open in a tab, and Refresh has to show them. The path is in the
+    key because paths.configure() moves the whole layout under the tests.
+    """
+    global _CACHE
+    try:
+        path = data_file()
+        st = path.stat()
+    except OSError:
+        _CACHE = None
+        return None
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    if not refresh and _CACHE is not None and _CACHE[0] == key:
+        return _CACHE[1]
+    data = load_data_quietly()
+    if data is None:
+        _CACHE = None
+        return None
+    _CACHE = (key, Benchmarks(data))
+    return _CACHE[1]
 
 
 def find_record(data, company, city):
