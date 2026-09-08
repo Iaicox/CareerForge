@@ -261,6 +261,22 @@ class SetSalaryTest(SalaryFixture):
             "SELECT salary_text FROM applications WHERE id = ?", (app["id"],)).fetchone()
         self.assertIsNone(row["salary_text"])
 
+    def test_the_command_line_reaches_it(self):
+        # The dispatch is the half a unit test on set_salary does not cover,
+        # and it is the half a person actually types.
+        import contextlib
+        import io
+        app = self.application()
+        self.conn.close()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            tracker.main(["set-salary", app["slug"], "--salary", "70k EUR/year"])
+        self.conn = tracker.connect()
+        row = self.conn.execute(
+            "SELECT salary_text FROM applications WHERE id = ?", (app["id"],)).fetchone()
+        self.assertEqual(row["salary_text"], "70k EUR/year")
+        self.assertIn("70k EUR/year", out.getvalue())
+
 
 class BenchmarkTest(SalaryFixture):
     def test_a_missing_dataset_is_not_an_error(self):
@@ -430,6 +446,17 @@ class KanbanTest(SalaryFixture):
 
 
 class MigrationTest(unittest.TestCase):
+    def test_the_schema_version_is_the_newest_migration(self):
+        # It was typed by hand as "4" while 005, 006 and 007 landed after it.
+        # Nothing reads the value, so nothing caught the drift; this does.
+        import re
+        newest = max(
+            int(re.match(r"(\d+)_", p.name).group(1))
+            for p in tracker.MIGRATIONS_DIR.glob("*")
+            if p.suffix in tracker.MIGRATION_SUFFIXES and re.match(r"(\d+)_", p.name)
+        )
+        self.assertEqual(tracker.SCHEMA_VERSION, str(newest))
+
     def test_migration_007_adds_the_salary_columns_to_an_old_database(self):
         import sqlite3
         tmp = Path(tempfile.mkdtemp(prefix="careerforge-mig007-")).resolve()

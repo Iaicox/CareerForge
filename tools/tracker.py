@@ -67,7 +67,31 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 # has it.
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 MIGRATION_SUFFIXES = (".sql", ".py")
-SCHEMA_VERSION = "4"
+
+
+def schema_version() -> str:
+    """The migration this schema is level with.
+
+    Derived, not typed. It was a hand-maintained "4" and stopped being true at
+    005: five migrations landed after it and none bumped it, because nothing
+    reads the value and nothing fails when it is wrong. A number whose only
+    job is to be correct, and which nothing checks, is a number that drifts --
+    so it is read off the directory that actually defines the schema's age.
+
+    A database built fresh from schema.sql has everything the migrations would
+    add, which is why init writes this rather than counting what it ran.
+    """
+    numbers = []
+    for path in MIGRATIONS_DIR.glob("*"):
+        if path.suffix not in MIGRATION_SUFFIXES:
+            continue
+        match = re.match(r"(\d+)_", path.name)
+        if match:
+            numbers.append(int(match.group(1)))
+    return str(max(numbers)) if numbers else "1"
+
+
+SCHEMA_VERSION = schema_version()
 STAGES = paths.STAGES
 
 # Where a posting stands, from the moment it is seen. config.toml may carry a

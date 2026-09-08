@@ -166,7 +166,10 @@ keep the tracker and the filesystem agreeing with each other.
 
 ## Migrations
 
-`meta.schema_version` records the version. `tracker.py init` is idempotent:
+`meta.schema_version` records the version, read off the highest-numbered file
+in `tools/migrations/` rather than kept by hand — it was a typed constant, and
+it stopped being true one migration after it was written. `tracker.py init` is
+idempotent:
 every statement in `schema.sql` is `IF NOT EXISTS`, so re-running it on an
 existing database adds anything new without touching your rows. Changes that
 cannot be expressed that way — adding a column to an existing table — go in
