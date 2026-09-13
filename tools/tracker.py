@@ -29,7 +29,7 @@ import sys
 import tempfile
 import tomllib
 import unicodedata
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, NamedTuple
 from urllib.parse import parse_qsl, urlencode, urlsplit
@@ -268,6 +268,12 @@ class Config:
 
     def stale_after_days(self) -> int:
         return int(self.data.get("tracker", {}).get("stale_after_days", 30))
+
+    def follow_up_after_days(self) -> int:
+        # Added after the config template was already in people's hands, so an
+        # existing config.toml has no such key. The default has to stand on its
+        # own rather than make the calendar wait for an edit.
+        return int(self.data.get("tracker", {}).get("follow_up_after_days", 7))
 
     def validate(self, item_id: str | None, kind: str) -> str | None:
         """Reject unknown ids early rather than storing junk."""
@@ -1085,7 +1091,11 @@ def add_event(
     row = resolve(conn, ident)
     cfg.validate(type_, "event_types")
     cfg.validate(outcome, "outcomes")
-    when = (when or datetime.now(timezone.utc).date().isoformat()).strip()
+    # The local day, not the UTC one: events are wall-clock, and an entry made
+    # in the evening west of Greenwich would otherwise be filed tomorrow --
+    # which the calendar then reads as something scheduled ahead and stops
+    # proposing a follow-up for.
+    when = (when or date.today().isoformat()).strip()
     is_dt = 1 if ("T" in when or " " in when) else 0
     cur = conn.execute(
         """INSERT INTO events
@@ -1878,6 +1888,23 @@ def backfill_postings(conn: sqlite3.Connection, cfg: Config) -> int:
 # ---------------------------------------------------------------------------
 
 
+def last_activity(row: dict) -> str:
+    """The day something last happened to this application: latest event, else
+    the day it was added. Date part only -- an event may carry a time."""
+    return (row["last_event_date"] or row["created_at"])[:10]
+
+
+def is_silent(row: dict, cfg: Config, when: date) -> bool:
+    """Open, and nothing has happened for stale_after_days.
+
+    Open means cfg.is_terminal() says so: False, not None. A status that is not
+    in the config is an orphan, and guessing about a row we cannot even read is
+    worse than leaving it out -- /triage lists those separately.
+    """
+    cutoff = (when - timedelta(days=cfg.stale_after_days())).isoformat()
+    return cfg.is_terminal(row["status"]) is False and last_activity(row) < cutoff
+
+
 def list_applications(
     conn: sqlite3.Connection,
     cfg: Config,
@@ -1914,25 +1941,13 @@ def list_applications(
     rows = [enrich(dict(r), cfg) for r in conn.execute(sql, params).fetchall()]
 
     if stale:
-        today = datetime.now(timezone.utc).date()
-        cutoff = (today - timedelta(days=cfg.stale_after_days())).isoformat()
         # Anything still open. Restricting this to the `applications` stage hid
         # every status under `processing` -- screening, assignment, interview,
         # final, offer -- so an interview process that went quiet could not
         # reach /triage's "Silent" section, which reads only from here. That is
         # the silence worth chasing, and the one case the sweep structurally
         # could not see.
-        #
-        # Open means cfg.is_terminal() says so: False, not None. A status that
-        # is not in the config is an orphan, and the only thing /triage offers
-        # a silent row is to close it -- which would be guessing about a row we
-        # could not even read. /triage lists those separately instead.
-        rows = [
-            r
-            for r in rows
-            if cfg.is_terminal(r["status"]) is False
-            and (r["last_event_date"] or r["created_at"])[:10] < cutoff
-        ]
+        rows = [r for r in rows if is_silent(r, cfg, date.today())]
     if expired:
         # Only worth surfacing while the application is still open; a deadline
         # that passed after a rejection is not news.
@@ -1984,6 +1999,11 @@ def application_detail(conn: sqlite3.Connection, cfg: Config, ident: str) -> dic
     return row
 
 
+def _option_list(cfg: Config, kind: str) -> list[dict]:
+    """A vocabulary as the pages want it: id plus the label for this locale."""
+    return [{"id": i["id"], "label": cfg.label(kind, i["id"])} for i in cfg.items(kind)]
+
+
 def board_data(conn: sqlite3.Connection, cfg: Config) -> dict:
     """Columns + cards, in funnel order. Used by tools/board.py."""
     rows = list_applications(conn, cfg)
@@ -2017,15 +2037,190 @@ def board_data(conn: sqlite3.Connection, cfg: Config) -> dict:
             for s in cfg.statuses
         ],
         "orphans": orphans,
-        "event_types": [
-            {"id": e["id"], "label": cfg.label("event_types", e["id"])}
-            for e in cfg.event_types
-        ],
-        "outcomes": [
-            {"id": o["id"], "label": cfg.label("outcomes", o["id"])}
-            for o in cfg.outcomes
-        ],
+        "event_types": _option_list(cfg, "event_types"),
+        "outcomes": _option_list(cfg, "outcomes"),
         "total": len(rows),
+    }
+
+
+def planned_follow_ups(rows: Iterable[dict], cfg: Config, when: date) -> list[dict]:
+    """When to write again, for every application still waiting for an answer.
+
+    Nothing is stored: a follow-up is a date arithmetic over the events that are
+    already there, so logging one moves the next one on its own and there is no
+    second record to keep in sync.
+
+    Four rules, in order:
+
+    * the application is open -- cfg.is_terminal() False, not None, so orphan
+      statuses are left alone exactly as they are for staleness;
+    * something has happened. An application with no events is a draft nobody
+      has sent, and it is not waiting for a reply;
+    * nothing is scheduled ahead. applications_view.last_event_date is MAX over
+      all events including future ones, so a date past today means an interview
+      is already booked -- that is the answer, and chasing it would be asking
+      about a reply we have. This reads the date rather than the `pending`
+      outcome, because the outcome is a convention and the date is a fact;
+    * otherwise the follow-up falls follow_up_after_days after that last event.
+    """
+    interval = timedelta(days=cfg.follow_up_after_days())
+    today_iso = when.isoformat()
+    out: list[dict] = []
+    for row in rows:
+        if cfg.is_terminal(row["status"]) is not False:
+            continue
+        if not row["last_event_date"]:
+            continue
+        base = last_activity(row)
+        if base > today_iso:
+            continue
+        due = (date.fromisoformat(base) + interval).isoformat()
+        out.append({
+            "application_id": row["id"],
+            "slug": row["slug"],
+            "company": row["company_name"],
+            "role": row["role"],
+            "status": row["status"],
+            "status_label": row["status_label"],
+            "due": due,
+            # Due today is not late. Off by one here paints every reminder red
+            # on the morning it appears.
+            "overdue": due < today_iso,
+            "silent": is_silent(row, cfg, when),
+            "last_event_date": base,
+            "updated_at": row["updated_at"],
+        })
+    out.sort(key=lambda f: (f["due"], (f["company"] or "").lower()))
+    return out
+
+
+def calendar_data(
+    conn: sqlite3.Connection, cfg: Config, *, today: date | None = None
+) -> dict:
+    """Every event, the follow-ups they imply, and the vocabularies to add more.
+
+    Used by tools/board.py for /calendar and by `tracker.py agenda`.
+
+    `today` is the local date, not the UTC one now() prints: events are stored
+    as naive local wall-clock strings, so a calendar that ran off UTC would put
+    an evening interview on the wrong day for anyone west of Greenwich.
+    """
+    when = today or date.today()
+    rows = list_applications(conn, cfg)
+
+    # No date range: this is one person's job hunt, the whole history is small,
+    # and the page needs any month the user pages back to.
+    events = []
+    for e in conn.execute(
+        """SELECT e.id, e.application_id, e.type, e.date, e.is_datetime,
+                  e.outcome, e.participants, e.notes,
+                  a.slug, a.company_name AS company, a.role, a.status
+           FROM events e
+           JOIN applications_view a ON a.id = e.application_id
+           ORDER BY e.date, e.id"""
+    ):
+        ev = dict(e)
+        ev["type_label"] = cfg.label("event_types", ev["type"])
+        ev["outcome_label"] = cfg.label("outcomes", ev["outcome"])
+        ev["status_label"] = cfg.label("statuses", ev["status"])
+        events.append(ev)
+
+    # Every application, not just the open ones: a late rejection or a note on
+    # a closed application is a legitimate thing to log. The flag lets the page
+    # sink them into a second group rather than hide them.
+    picks = [
+        {
+            "id": r["id"],
+            "slug": r["slug"],
+            "company": r["company_name"],
+            "role": r["role"],
+            "status": r["status"],
+            "status_label": r["status_label"],
+            "terminal": cfg.is_terminal(r["status"]) is not False,
+            "updated_at": r["updated_at"],
+        }
+        for r in rows
+    ]
+    picks.sort(key=lambda a: (a["terminal"], (a["company"] or "").lower(), a["role"]))
+
+    return {
+        "locale": cfg.locale,
+        "today": when.isoformat(),
+        "follow_up_after_days": cfg.follow_up_after_days(),
+        "stale_after_days": cfg.stale_after_days(),
+        "events": events,
+        "follow_ups": planned_follow_ups(rows, cfg, when),
+        "applications": picks,
+        "event_types": _option_list(cfg, "event_types"),
+        "outcomes": _option_list(cfg, "outcomes"),
+    }
+
+
+def agenda_slice(data: dict, days: int) -> dict:
+    """The calendar payload as four lists: late, silent, today, the days ahead.
+
+    Past events are not "overdue" -- they are history, and the grid is where
+    they belong. Only a follow-up can be late, because only it is a thing still
+    owed to somebody.
+
+    Silence gets a list of its own. A follow-up six weeks late on an
+    application nobody ever answered is not a reminder to write; it is a row
+    /triage exists to close. Left in with the rest it buries the handful worth
+    acting on today under every application that ever went quiet -- which on a
+    real database is most of them.
+    """
+    today_iso = data["today"]
+    horizon = (date.fromisoformat(today_iso) + timedelta(days=days)).isoformat()
+
+    def from_event(ev: dict) -> dict:
+        return {
+            "kind": "event",
+            "date": ev["date"][:10],
+            "time": ev["date"][11:16] if ev["is_datetime"] else "",
+            "company": ev["company"],
+            "role": ev["role"],
+            "slug": ev["slug"],
+            "label": ev["type_label"],
+            "outcome_label": ev["outcome_label"],
+        }
+
+    def from_follow_up(fu: dict) -> dict:
+        return {
+            "kind": "follow_up",
+            "date": fu["due"],
+            "time": "",
+            "company": fu["company"],
+            "role": fu["role"],
+            "slug": fu["slug"],
+            "label": "follow-up",
+            "silent": fu["silent"],
+            "last_event_date": fu["last_event_date"],
+        }
+
+    overdue, silent, todays, upcoming = [], [], [], []
+    for fu in data["follow_ups"]:
+        item = from_follow_up(fu)
+        if fu["silent"]:
+            silent.append(item)
+        elif fu["overdue"]:
+            overdue.append(item)
+        elif fu["due"] == today_iso:
+            todays.append(item)
+        elif fu["due"] <= horizon:
+            upcoming.append(item)
+    for ev in data["events"]:
+        day = ev["date"][:10]
+        if day == today_iso:
+            todays.append(from_event(ev))
+        elif today_iso < day <= horizon:
+            upcoming.append(from_event(ev))
+
+    key = lambda i: (i["date"], i["time"], (i["company"] or "").lower())  # noqa: E731
+    return {
+        "overdue": sorted(overdue, key=key),
+        "silent": sorted(silent, key=key),
+        "today": sorted(todays, key=key),
+        "upcoming": sorted(upcoming, key=key),
     }
 
 
@@ -2080,6 +2275,48 @@ def render_board(conn: sqlite3.Connection, cfg: Config) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
+def render_agenda(data: dict, sliced: dict, days: int) -> str:
+    """The calendar as text, for when a browser is more than the question needs."""
+    out = [
+        f"# Agenda {data['today']}"
+        f"  (follow-up after {data['follow_up_after_days']} days,"
+        f" silent after {data['stale_after_days']})",
+        "",
+    ]
+
+    def line(item: dict) -> str:
+        when = item["date"] if item["date"] != data["today"] else ""
+        stamp = " ".join(x for x in (when, item["time"]) if x)
+        head = f"- {stamp}  " if stamp else "- "
+        tail = ""
+        if item["kind"] == "follow_up":
+            tail = f"  _last activity {item['last_event_date']}_"
+            if item.get("silent"):
+                tail += "  **silent**"
+        elif item.get("outcome_label"):
+            tail = f"  ({item['outcome_label']})"
+        return f"{head}**{item['company']}** - {item['role']}  — {item['label']}{tail}"
+
+    for heading, key in (
+        ("Overdue follow-ups", "overdue"),
+        ("Today", "today"),
+        (f"Next {days} days", "upcoming"),
+    ):
+        out.append(f"## {heading}")
+        out.extend([line(i) for i in sliced[key]] or ["(nothing)"])
+        out.append("")
+    if sliced["silent"]:
+        out.append(
+            f"## Silent for over {data['stale_after_days']} days"
+            f"  ({len(sliced['silent'])})"
+        )
+        out.append("Past chasing. `/triage` is where these get closed.")
+        out.append("")
+        out.extend(line(i) for i in sliced["silent"])
+        out.append("")
+    return "\n".join(out).rstrip() + "\n"
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -2090,6 +2327,17 @@ def emit(args: argparse.Namespace, payload: Any, text: str) -> None:
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
     else:
         print(text)
+
+
+def positive_days(raw: str) -> int:
+    """An argparse type: a horizon has to reach forward to mean anything."""
+    try:
+        days = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not a number of days")
+    if days < 1:
+        raise argparse.ArgumentTypeError("--days must be 1 or more")
+    return days
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2214,6 +2462,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("report", help="print a summary")
     r.add_argument("--board", action="store_true", help="markdown kanban, not a table")
+
+    ag = with_json(sub.add_parser(
+        "agenda", help="overdue follow-ups, today, and the days ahead"
+    ))
+    ag.add_argument("--days", type=positive_days, default=7,
+                    help="how far ahead to look (default 7)")
 
     with_json(sub.add_parser("export", help="dump everything as JSON"))
     with_json(sub.add_parser("statuses", help="list configured statuses and stages"))
@@ -2440,6 +2694,19 @@ def main(argv: list[str] | None = None) -> int:
                 print(render_board(conn, cfg))
             else:
                 print(render_table(list_applications(conn, cfg)))
+
+        elif args.command == "agenda":
+            data = calendar_data(conn, cfg)
+            sliced = agenda_slice(data, args.days)
+            emit(
+                args,
+                # Not **sliced: its "today" bucket would land on the same key
+                # as the date and win, so --json lost the day it described.
+                {"today": data["today"], "days": args.days,
+                 "follow_up_after_days": data["follow_up_after_days"],
+                 "agenda": sliced},
+                render_agenda(data, sliced, args.days),
+            )
 
         elif args.command == "export":
             payload = {

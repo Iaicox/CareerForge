@@ -481,11 +481,12 @@ already uploaded to Notion stays there: an attachment is a property of the
 application's page, not a page of its own, so nothing on that side empties
 itself.
 
-### `/board` — the kanban, and the postings table
+### `/board` — the kanban, the postings table, and the calendar
 
 ```
 /board
 /board postings
+/board calendar
 ```
 
 Opens `http://127.0.0.1:8765` — columns by status, drag a card to change it.
@@ -514,6 +515,37 @@ column orders every row by the benchmark, including rows showing a stated
 figure: a stated salary is a sentence with a currency and a period in it, and
 turning that into one comparable number means guessing at both.
 
+`/board calendar` opens the third page: the month, with every event that
+happened and every one scheduled on it. Beside the grid, the same thing as a
+list — late, today, and the next seven days.
+
+**The dashed chips are the ones nobody has written yet.** A follow-up is not a
+record, it is arithmetic: `tracker.follow_up_after_days` after the last event,
+on applications that are still open, and only while nothing is scheduled ahead
+— an interview next week is the reply, and chasing it would be asking about an
+answer you have. Once the date passes the chip turns red, and after
+`stale_after_days` it also says `silent`, which is the same line `/triage`
+draws. Nothing about a follow-up is stored, so logging one moves the next one
+by itself.
+
+**Silence is kept out of the reminders.** Once an application passes
+`stale_after_days` its follow-up moves from the overdue list into a section of
+its own that points at `/triage`. A letter six weeks late to somebody who never
+answered is not a reminder to write; it is a row to close, and leaving it among
+the rest buries the handful worth acting on today.
+
+**Follow-up sent** on such a chip logs a `follow_up` event dated today.
+Clicking a day opens the same form the kanban has, plus the one field it has no
+room for: a time. Leave it empty for a whole-day event; fill it and the tracker
+stores a datetime, which is what an interview at 14:00 needs.
+
+If a browser is more than the question deserves:
+
+```bash
+python tools/tracker.py agenda            # late, today, the next seven days
+python tools/tracker.py agenda --days 14
+```
+
 Loopback only, and it refuses requests whose `Host` header is not loopback,
 because it writes to disk.
 
@@ -527,6 +559,10 @@ reloads rather than overwriting.
 /track acme             # one application in full
 /track acme screening   # change status, with confirmation
 /track stale            # gone quiet past your cutoff
+```
+
+```bash
+python tools/tracker.py agenda             # late, today, the next seven days
 ```
 
 ### `/mailsync` — find replies you missed
@@ -637,6 +673,7 @@ documents every key inline.
 | `documents.cv_max_pages`, `cover_max_pages` | both build scripts | One source of truth, so they cannot drift |
 | `documents.engine` | build scripts | `auto` prefers Word, falls back to LibreOffice |
 | `tracker.stale_after_days` | `/triage`, `list --stale` | When silence counts as dead |
+| `tracker.follow_up_after_days` | `/board calendar`, `agenda` | When it is time to write again. Default 7; absent from an older `config.toml`, and the default stands |
 | `[[statuses]]` | tracker, board, `/triage`, Notion provisioning | `id`, `stage`, per-locale `labels`, optional `terminal` |
 | `[[work_modes]]`, `[[event_types]]`, `[[outcomes]]` | tracker validation, board dropdowns, Notion provisioning | Same shape. Edit one after provisioning the mirror and run `notion_sync.py sync-options` |
 | `[mail]` | `/mailsync` | `host`, `port`, `user`, `mailbox`, `ssl`. Password never goes here |
@@ -866,7 +903,7 @@ Commands orchestrate; these do the work. Each runs standalone and each takes
 | Tool | What it does |
 |---|---|
 | `tracker.py` | The tracker: applications, companies, events, attachments. Also the shared data layer the board and the Notion adapter import |
-| `board.py` | The kanban server |
+| `board.py` | The board server: kanban, postings table, calendar |
 | `shortlist.py` | The shortlist: every posting seen, what `/rank` scored, what was decided and why |
 | `research.py` | Cached company research, with or without Gemini |
 | `atscheck.py` | Reads a built PDF's text layer back out and checks it survives |

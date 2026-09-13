@@ -1,6 +1,6 @@
 ---
-description: Open the application pipeline as a kanban board in the browser, or the postings table
-argument-hint: "[postings] [--port N]"
+description: Open the application pipeline as a kanban board in the browser, or the postings table, or the calendar
+argument-hint: "[postings | calendar] [--port N]"
 ---
 
 # /board
@@ -10,11 +10,13 @@ Start the local board over the tracker database:
 ```bash
 python tools/board.py                   # the applications kanban
 python tools/board.py --view postings   # the postings table
+python tools/board.py --view calendar   # the calendar
 ```
 
-`/board postings` means the second form; pass any other `$ARGUMENTS` through.
+`/board postings` and `/board calendar` mean the second and third form; pass
+any other `$ARGUMENTS` through.
 
-It serves `http://127.0.0.1:8765/` (loopback only) and opens a browser. Two
+It serves `http://127.0.0.1:8765/` (loopback only) and opens a browser. Three
 pages, linked from each other's header:
 
 - `/` — the kanban. Columns are the statuses from `data/config/config.toml`;
@@ -24,6 +26,16 @@ pages, linked from each other's header:
   as a select** (change it there), score and verdict from `/rank`, deadline,
   source, a note that edits in place, and the application it became, if any.
   Filters: status (open by default), minimum score, a search box.
+- `/calendar` — the month. Every event that happened and every one scheduled,
+  plus the follow-ups the tracker says are due: `tracker.follow_up_after_days`
+  after the last event, on open applications only, and never while something is
+  already scheduled ahead. Those chips are dashed because they are a proposal,
+  not a record, and red once the date has passed. Beside the grid, the same
+  three answers as a list: late, today, the next seven days. An application
+  past `stale_after_days` moves out of the late list into a silent one that
+  points at `/triage` — it is a row to close, not a letter to write.
+  **Follow-up sent** logs one dated today; clicking a day adds an event, with a
+  time if it has one.
 
 The server runs until stopped, so start it in the background and tell the user
 the URL rather than blocking the session on it.
@@ -33,4 +45,5 @@ If the user only wants a quick look, this is cheaper:
 ```bash
 python tools/tracker.py report --board     # the kanban, as text
 python tools/shortlist.py show             # the postings, best fit first
+python tools/tracker.py agenda             # late follow-ups, today, the week
 ```

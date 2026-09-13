@@ -140,6 +140,7 @@ Copy `data/config/config.example.toml` to `data/config/config.toml`, then adjust
 - `[[statuses]]` — the default funnel suits most people; ask only if they say
   they track things differently
 - `tracker.stale_after_days` — when silence counts as dead
+- `tracker.follow_up_after_days` — when the calendar says to write again
 
 Then create the database:
 

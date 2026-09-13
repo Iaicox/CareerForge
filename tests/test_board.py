@@ -15,6 +15,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from datetime import date, timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -79,13 +80,19 @@ class BoardServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         return json.loads(body)["rows"]
 
-    def test_both_pages_are_served(self):
-        status, html = self.request("/")
-        self.assertEqual(status, 200)
-        self.assertIn('href="/postings"', html)
-        status, html = self.request("/postings")
-        self.assertEqual(status, 200)
-        self.assertIn("/api/postings", html)
+    def test_every_page_is_served_and_links_to_the_others(self):
+        # A page nobody can reach from the others is a page nobody opens.
+        links = {"/": 'href="/"', "/postings": 'href="/postings"',
+                 "/calendar": 'href="/calendar"'}
+        for route in links:
+            with self.subTest(route=route):
+                status, html = self.request(route)
+                self.assertEqual(status, 200)
+                for other, link in links.items():
+                    if other != route:
+                        self.assertIn(link, html, f"{route} does not link {other}")
+        self.assertIn("/api/postings", self.request("/postings")[1])
+        self.assertIn("/api/calendar", self.request("/calendar")[1])
 
     def test_both_pages_gate_a_link_on_its_scheme(self):
         # The rendering is client-side, so this only guards the source: these
@@ -159,8 +166,8 @@ class BoardServerTest(unittest.TestCase):
         self.assertIn("&asymp;", panel)
         self.assertIn("state.salary_meta", html, "no legend for the marking")
 
-    def test_both_pages_render_dates_as_day_month_year(self):
-        for route in ("/postings", "/"):
+    def test_every_page_renders_dates_as_day_month_year(self):
+        for route in ("/postings", "/", "/calendar"):
             with self.subTest(route=route):
                 status, html = self.request(route)
                 self.assertEqual(status, 200)
@@ -218,6 +225,123 @@ class BoardServerTest(unittest.TestCase):
         status, body = self.request("/api/posting/note", {"id": row["id"], "text": "AEM in the stack"})
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["posting"]["note"], "AEM in the stack")
+
+    # -- the calendar ------------------------------------------------------
+
+    def application(self, company="Acme", role="Frontend Engineer"):
+        conn = tracker.connect()
+        with conn:
+            row = tracker.add_application(conn, self.cfg, company=company, role=role)
+        conn.close()
+        return dict(row)
+
+    def calendar(self) -> dict:
+        status, body = self.request("/api/calendar")
+        self.assertEqual(status, 200)
+        return json.loads(body)
+
+    @staticmethod
+    def days(n):
+        return (date.today() + timedelta(days=n)).isoformat()
+
+    def test_the_calendar_payload_has_its_shape(self):
+        data = self.calendar()
+        for key in ("today", "events", "follow_ups", "applications",
+                    "event_types", "outcomes", "follow_up_after_days",
+                    "stale_after_days"):
+            self.assertIn(key, data)
+        self.assertEqual(data["follow_up_after_days"], 7)
+        self.assertRegex(data["today"], r"^\d{4}-\d{2}-\d{2}$")
+        self.assertEqual(data["events"], [])
+
+    def test_an_event_with_a_time_round_trips_through_the_api(self):
+        row = self.application(company="Hooli")
+        status, _ = self.request("/api/event", {
+            "id": row["id"], "type": "tech_interview",
+            "date": f"{self.days(5)}T14:00", "outcome": "pending",
+        })
+        self.assertEqual(status, 200)
+        data = self.calendar()
+        self.assertEqual(len(data["events"]), 1)
+        event = data["events"][0]
+        self.assertEqual(event["is_datetime"], 1)
+        self.assertTrue(event["date"].endswith("T14:00"))
+        self.assertEqual(event["company"], "Hooli")
+        # An interview already booked is the answer; nothing to chase.
+        self.assertEqual(data["follow_ups"], [])
+
+    def test_a_follow_up_sent_from_the_calendar_restarts_the_clock(self):
+        row = self.application(company="Globex")
+        self.request("/api/event", {
+            "id": row["id"], "type": "applied",
+            "date": self.days(-20), "outcome": "passed",
+        })
+        self.assertTrue(self.calendar()["follow_ups"][0]["overdue"])
+
+        status, _ = self.request("/api/event", {
+            "id": row["id"], "type": "follow_up", "date": self.days(0),
+        })
+        self.assertEqual(status, 200)
+        due = self.calendar()["follow_ups"][0]
+        self.assertEqual(due["due"], self.days(7))
+        self.assertFalse(due["overdue"])
+
+    def test_the_view_flag_knows_the_calendar(self):
+        parsed = board.build_parser().parse_args(["--view", "calendar"])
+        self.assertEqual(parsed.view, "calendar")
+        self.assertIn("calendar", board.build_parser().format_help())
+
+    def test_no_page_builds_a_day_out_of_utc(self):
+        # Events are naive local wall-clock strings. new Date("2026-09-01") is
+        # UTC midnight -- the day before, west of Greenwich -- so a parsed date
+        # would land an interview on the wrong square, and toISOString() dates
+        # an evening entry tomorrow. A future date is not a harmless off-by-one
+        # here: the calendar reads it as something already scheduled and stops
+        # proposing a follow-up for that application at all.
+        #
+        # The kanban's event form had exactly that bug, which is why this runs
+        # over every page rather than the one that was written last. Only the
+        # (y, m - 1, d) form is allowed: the regex forbids a lone identifier,
+        # which is what parsing a stored string looks like.
+        for route in ("/", "/postings", "/calendar"):
+            with self.subTest(route=route):
+                status, html = self.request(route)
+                self.assertEqual(status, 200)
+                self.assertNotIn("toISOString", html)
+                self.assertNotIn("Date.parse", html)
+                self.assertNotRegex(html, r"new Date\(\s*[A-Za-z_$][\w.$]*\s*\)")
+        self.assertIn(".slice(11, 16)", self.request("/calendar")[1])
+
+    def test_the_calendar_keeps_silence_out_of_the_reminders(self):
+        # An application nobody answered in six weeks is /triage's to close.
+        # Left among the overdue it buries the few worth writing today -- on a
+        # real database it was 28 rows of 48.
+        row = self.application(company="Initech")
+        self.request("/api/event", {
+            "id": row["id"], "type": "applied",
+            "date": self.days(-40), "outcome": "passed",
+        })
+        loud = self.application(company="Hooli")
+        self.request("/api/event", {
+            "id": loud["id"], "type": "applied",
+            "date": self.days(-10), "outcome": "passed",
+        })
+        html = self.request("/calendar")[1]
+        self.assertIn("fu.silent", html)
+        self.assertIn("Silent over", html)
+
+        due = {f["company"]: f for f in self.calendar()["follow_ups"]}
+        self.assertTrue(due["Initech"]["silent"])
+        self.assertFalse(due["Hooli"]["silent"])
+
+    def test_the_calendar_reloads_rather_than_reading_the_post_back(self):
+        # /api/event answers with the kanban payload, which this page cannot
+        # render. It has to fetch its own after a write.
+        status, html = self.request("/calendar")
+        self.assertEqual(status, 200)
+        self.assertIn('"/api/event"', html)
+        self.assertNotIn("res.board", html)
+        self.assertIn("await load();", html)
 
     def test_only_loopback_hosts_are_served(self):
         status, _ = self.request("/api/postings", host="evil.example")

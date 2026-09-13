@@ -152,6 +152,7 @@
   <h1>CareerForge</h1>
   <span class="meta" id="meta"></span>
   <a class="nav" href="/postings">Postings</a>
+  <a class="nav" href="/calendar">Calendar</a>
   <button id="refresh">Refresh</button>
 </header>
 
@@ -190,6 +191,16 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
 function fmtDate(value) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? "").trim());
   return m ? `${m[3]}.${m[2]}.${m[1]}` : String(value ?? "");
+}
+
+// The local day, built from the local parts. The ISO string a Date prints is
+// UTC, so an evening entry west of Greenwich used to be dated tomorrow -- and
+// the calendar reads a future date as something already scheduled, and stops
+// proposing a follow-up for that application. A test guards all three pages.
+function today() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 function safeHref(url) {
@@ -360,7 +371,7 @@ function openPanel(id, focus) {
     <h3>Add event</h3>
     <div class="row">
       <select id="evType">${eventOptions}</select>
-      <input id="evDate" type="date" value="${new Date().toISOString().slice(0, 10)}">
+      <input id="evDate" type="date" value="${today()}">
     </div>
     <div class="row">
       <select id="evOutcome">${outcomeOptions}</select>

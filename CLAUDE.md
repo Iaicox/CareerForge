@@ -56,7 +56,7 @@ Everything you claim about the user must be traceable to one of these:
 | `/apply <url\|text>` | Full pipeline: evaluate, draft, review, build, check, track |
 | `/interview <company> [stage]` | Stage-specific prep; `--mock` to rehearse |
 | `/track` | Look at or update the tracker |
-| `/board` | Open the pipeline as a kanban in the browser; `/board postings` for the table of every posting seen |
+| `/board` | Open the pipeline as a kanban in the browser; `/board postings` for the table of every posting seen, `/board calendar` for events and the follow-ups that are due |
 | `/mailsync` | Match employer replies in the mailbox to open applications |
 | `/triage` | Find folders out of sync and applications gone silent |
 | `/expand` | Grow the profile from `data/documents/` and public sources |

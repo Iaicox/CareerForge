@@ -8,12 +8,15 @@ database or the real application folders.
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import re
 import shutil
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -852,6 +855,220 @@ class TrackerTestCase(unittest.TestCase):
                 (row["id"],),
             )
         self.assertEqual(self.stale_slugs(), [])
+
+    # -- the calendar ------------------------------------------------------
+
+    def event(self, row, type_, when, outcome=None):
+        with self.conn:
+            return tracker.add_event(
+                self.conn, self.cfg, row["slug"], type_, when, None, outcome
+            )
+
+    def follow_ups(self, when=None):
+        when = when or date.today()
+        rows = tracker.list_applications(self.conn, self.cfg)
+        return tracker.planned_follow_ups(rows, self.cfg, when)
+
+    @staticmethod
+    def days(n):
+        """An ISO date n days from today, past or future."""
+        return (date.today() + timedelta(days=n)).isoformat()
+
+    def test_a_follow_up_is_planned_after_the_configured_interval(self):
+        row = self.add(company="Acme")
+        self.event(row, "applied", self.days(-3), "passed")
+        due = self.follow_ups()
+        self.assertEqual(len(due), 1)
+        self.assertEqual(due[0]["slug"], row["slug"])
+        self.assertEqual(due[0]["company"], "Acme")
+        self.assertEqual(due[0]["due"], self.days(4))
+        self.assertFalse(due[0]["overdue"])
+        self.assertFalse(due[0]["silent"])
+
+    def test_a_follow_up_past_its_date_is_overdue(self):
+        row = self.add(company="Globex")
+        self.event(row, "applied", self.days(-10), "passed")
+        due = self.follow_ups()
+        self.assertEqual(due[0]["due"], self.days(-3))
+        self.assertTrue(due[0]["overdue"])
+        self.assertFalse(due[0]["silent"])
+
+    def test_a_follow_up_due_today_is_not_overdue(self):
+        # Due today means write today, not that the day was missed. Off by one
+        # here turns every fresh reminder red on the day it appears.
+        row = self.add(company="Initech")
+        self.event(row, "applied", self.days(-7), "passed")
+        due = self.follow_ups()
+        self.assertEqual(due[0]["due"], self.days(0))
+        self.assertFalse(due[0]["overdue"])
+
+    def test_an_event_scheduled_ahead_suppresses_the_follow_up(self):
+        # The whole point of the rule: an interview on the calendar next week
+        # is the answer. Chasing it would be writing to ask about the reply we
+        # already have.
+        row = self.add(company="Hooli")
+        self.event(row, "applied", self.days(-10), "passed")
+        self.event(row, "tech_interview", f"{self.days(5)}T14:00", "pending")
+        self.assertEqual(self.follow_ups(), [])
+
+    def test_a_closed_application_gets_no_follow_up(self):
+        row = self.add(company="Vandelay")
+        self.event(row, "applied", self.days(-30), "passed")
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, row["slug"], "rejected")
+        self.assertEqual(self.follow_ups(), [])
+
+    def test_an_application_whose_status_is_not_in_config_gets_no_follow_up(self):
+        # Same rule as staleness: an orphan is a row we cannot read, and
+        # proposing an action on it would be guessing.
+        row = self.add(company="Soylent")
+        self.event(row, "applied", self.days(-30), "passed")
+        with self.conn:
+            self.conn.execute(
+                "UPDATE applications SET status = 'gone_from_config' WHERE id = ?",
+                (row["id"],),
+            )
+        self.assertEqual(self.follow_ups(), [])
+
+    def test_an_application_with_no_events_gets_no_follow_up(self):
+        # A draft nobody has sent is not waiting for an answer. Falling back to
+        # created_at here would put a reminder on every unfinished draft.
+        self.add(company="Umbrella")
+        self.assertEqual(self.follow_ups(), [])
+
+    def test_logging_a_follow_up_restarts_the_clock(self):
+        row = self.add(company="Cyberdyne")
+        self.event(row, "applied", self.days(-20), "passed")
+        self.event(row, "follow_up", self.days(-2))
+        due = self.follow_ups()
+        self.assertEqual(due[0]["due"], self.days(5))
+        self.assertEqual(due[0]["last_event_date"], self.days(-2))
+        self.assertFalse(due[0]["overdue"])
+
+    def test_a_follow_up_long_overdue_is_also_silent(self):
+        row = self.add(company="Stark")
+        self.event(row, "applied", self.days(-40), "passed")
+        due = self.follow_ups()
+        self.assertTrue(due[0]["overdue"])
+        self.assertTrue(due[0]["silent"])
+
+    def test_the_follow_up_interval_falls_back_when_the_config_omits_it(self):
+        # The key landed after the template was already in people's hands, so
+        # an existing config.toml has neither the key nor, in the oldest ones,
+        # the table.
+        self.cfg.data["tracker"].pop("follow_up_after_days", None)
+        self.assertEqual(self.cfg.follow_up_after_days(), 7)
+        self.cfg.data.pop("tracker")
+        self.assertEqual(self.cfg.follow_up_after_days(), 7)
+        self.assertEqual(self.cfg.stale_after_days(), 30)
+
+    def test_the_calendar_carries_labels_and_the_time_flag(self):
+        row = self.add(company="Acme", role="Frontend Engineer")
+        self.event(row, "tech_interview", f"{self.days(3)}T14:00", "pending")
+        self.event(row, "applied", self.days(-3), "passed")
+        data = tracker.calendar_data(self.conn, self.cfg)
+        by_type = {e["type"]: e for e in data["events"]}
+        self.assertEqual(by_type["tech_interview"]["is_datetime"], 1)
+        self.assertTrue(by_type["tech_interview"]["date"].endswith("T14:00"))
+        self.assertEqual(by_type["tech_interview"]["company"], "Acme")
+        self.assertEqual(by_type["tech_interview"]["role"], "Frontend Engineer")
+        self.assertEqual(by_type["tech_interview"]["slug"], row["slug"])
+        self.assertTrue(by_type["tech_interview"]["type_label"])
+        self.assertTrue(by_type["tech_interview"]["outcome_label"])
+        self.assertEqual(by_type["applied"]["is_datetime"], 0)
+        self.assertEqual(data["follow_up_after_days"], 7)
+        self.assertEqual(data["today"], date.today().isoformat())
+        self.assertEqual([e["type"] for e in data["events"]],
+                         ["applied", "tech_interview"])
+
+    def test_the_calendar_offers_every_application_marking_the_closed_ones(self):
+        open_row = self.add(company="Acme")
+        closed = self.add(company="Globex")
+        with self.conn:
+            tracker.set_status(self.conn, self.cfg, closed["slug"], "rejected")
+        picks = {a["slug"]: a for a in tracker.calendar_data(self.conn, self.cfg)["applications"]}
+        self.assertFalse(picks[open_row["slug"]]["terminal"])
+        self.assertTrue(picks[closed["slug"]]["terminal"])
+
+    def test_the_agenda_splits_overdue_today_and_the_days_ahead(self):
+        late = self.add(company="Globex")
+        self.event(late, "applied", self.days(-20), "passed")
+        soon = self.add(company="Hooli")
+        self.event(soon, "tech_interview", f"{self.days(3)}T10:30", "pending")
+        now = self.add(company="Initech")
+        self.event(now, "screening", self.days(0), "passed")
+        far = self.add(company="Vandelay")
+        self.event(far, "tech_interview", f"{self.days(20)}T09:00", "pending")
+
+        sliced = tracker.agenda_slice(tracker.calendar_data(self.conn, self.cfg), 7)
+        self.assertEqual([i["company"] for i in sliced["overdue"]], ["Globex"])
+        self.assertEqual([i["company"] for i in sliced["today"]], ["Initech"])
+        # Hooli's interview in three days, and the follow-up Initech's event
+        # today earns exactly on the horizon -- both kinds share the list.
+        self.assertEqual([i["company"] for i in sliced["upcoming"]],
+                         ["Hooli", "Initech"])
+        self.assertEqual([i["kind"] for i in sliced["upcoming"]],
+                         ["event", "follow_up"])
+        self.assertEqual(sliced["upcoming"][0]["time"], "10:30")
+        self.assertEqual(sliced["today"][0]["time"], "")
+        self.assertEqual(sliced["overdue"][0]["kind"], "follow_up")
+
+    def test_the_agenda_keeps_silence_in_a_list_of_its_own(self):
+        loud = self.add(company="Hooli")
+        self.event(loud, "applied", self.days(-10), "passed")
+        quiet = self.add(company="Initech")
+        self.event(quiet, "applied", self.days(-40), "passed")
+
+        sliced = tracker.agenda_slice(tracker.calendar_data(self.conn, self.cfg), 7)
+        self.assertEqual([i["company"] for i in sliced["overdue"]], ["Hooli"])
+        self.assertEqual([i["company"] for i in sliced["silent"]], ["Initech"])
+
+        text = tracker.render_agenda(
+            tracker.calendar_data(self.conn, self.cfg), sliced, 7)
+        self.assertIn("Silent for over 30 days", text)
+        self.assertIn("/triage", text)
+        # and the silent row is not also printed among the overdue
+        overdue_section = text.split("## Overdue")[1].split("##")[0]
+        self.assertIn("Hooli", overdue_section)
+        self.assertNotIn("Initech", overdue_section)
+
+    def test_the_agenda_command_keeps_the_date_and_the_buckets_apart(self):
+        # --json is the contract an agent reads. Spreading the buckets into the
+        # top level put the "today" list on the same key as the date, and the
+        # list won -- the output no longer said which day it described.
+        row = self.add(company="Globex")
+        self.event(row, "applied", self.days(-3), "passed")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            tracker.main(["agenda", "--days", "5", "--json"])
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["today"], date.today().isoformat())
+        self.assertEqual(payload["days"], 5)
+        self.assertEqual(payload["follow_up_after_days"], 7)
+        self.assertEqual(
+            sorted(payload["agenda"]), ["overdue", "silent", "today", "upcoming"])
+
+    def test_the_agenda_refuses_a_horizon_that_points_backwards(self):
+        with self.assertRaises(SystemExit):
+            tracker.build_parser().parse_args(["agenda", "--days", "-1"])
+
+    def test_an_event_with_no_date_is_dated_the_local_day(self):
+        # datetime.now(timezone.utc).date() files an evening entry west of
+        # Greenwich under tomorrow, and a future date tells the calendar
+        # something is scheduled -- so it stops proposing a follow-up.
+        row = self.add(company="Acme")
+        event = self.event(row, "applied", None, "passed")
+        self.assertEqual(event["date"], date.today().isoformat())
+        self.assertEqual(event["is_datetime"], 0)
+
+    def test_the_agenda_text_names_every_bucket_and_its_rows(self):
+        row = self.add(company="Globex")
+        self.event(row, "applied", self.days(-20), "passed")
+        data = tracker.calendar_data(self.conn, self.cfg)
+        text = tracker.render_agenda(data, tracker.agenda_slice(data, 7), 7)
+        self.assertIn("Globex", text)
+        for heading in ("Overdue", "Today", "Next 7 days"):
+            self.assertIn(heading, text)
 
     # -- migrations --------------------------------------------------------
 
