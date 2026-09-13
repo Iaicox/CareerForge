@@ -53,7 +53,8 @@ lives, so the framework can stay neutral:
 | `[[statuses]]` — id, stage, labels | tracker, board, `/triage`, Notion provisioning |
 | `[[work_modes]]`, `[[event_types]]`, `[[outcomes]]` | tracker validation, board dropdowns |
 | `[documents]` — filenames, page limits, engine | `build.ps1`, `build.sh` |
-| `tracker.stale_after_days` | `tracker.py list --stale`, `/triage` |
+| `tracker.stale_after_days` | `tracker.py list --stale`, `/triage`, the calendar |
+| `tracker.follow_up_after_days` | `/board calendar`, `tracker.py agenda` |
 | `[salary]` — legal forms, regions | `tools/salary_lookup.py` normalisation |
 
 The status table is the important one. Before, the status-to-folder mapping was
@@ -149,8 +150,8 @@ instead of silently overwriting.
 
 ## The board
 
-`tools/board.py` serves two HTML pages — the kanban and the postings table —
-and a small JSON API on `127.0.0.1` only.
+`tools/board.py` serves three HTML pages — the kanban, the postings table and
+the calendar — and a small JSON API on `127.0.0.1` only.
 It writes to disk — a drag moves folders — so it also rejects any request whose
 `Host` header is not loopback, which is what stops a web page you happen to have
 open from driving it via DNS rebinding.

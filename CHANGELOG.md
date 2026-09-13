@@ -4,6 +4,24 @@
 
 ### Added
 
+- **A calendar, and follow-ups the tracker works out for itself.** `/board
+  calendar` is a third page on the same server: the month, every event that
+  happened and every one scheduled, and beside the grid the three answers worth
+  acting on — late, today, the next seven days. The dashed chips are the letters
+  nobody has written yet. A follow-up is arithmetic rather than a record —
+  `tracker.follow_up_after_days` (new, default 7, and an older `config.toml`
+  without the key gets that default) after the last event, on open applications
+  only, suppressed while anything is scheduled ahead, because an interview next
+  week is the reply. Nothing is stored, so logging one moves the next by itself;
+  past its date the chip turns red, and after `stale_after_days` it says
+  `silent`, the same line `/triage` draws. **Follow-up sent** logs a `follow_up`
+  event dated today, and clicking a day opens the kanban's event form plus the
+  field it has no room for: a time, so an interview at 14:00 is stored as one.
+  `tracker.py agenda [--days N]` prints the same three lists where a browser is
+  more than the question deserves. Dates are sliced, never parsed:
+  `new Date("2026-09-01")` is UTC midnight, which is the day before west of
+  Greenwich, and that is an interview on the wrong square.
+
 - **Attachments have a way out, and `attach` can replace instead of append.**
   `tracker.py detach <application> --kind cv` removes the row and never the
   file — the documents on disk are the ones the employer received, and the

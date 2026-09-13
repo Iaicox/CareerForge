@@ -93,6 +93,9 @@ python tools/tracker.py event add <slug> --type screening \
 Use `--outcome pending` for anything scheduled in the future. Add new names to
 the record with `note --append`, never overwriting what is there.
 
+Dating an event ahead also tells the calendar there is nothing to chase: it
+plans no follow-up while something is already booked.
+
 ## Correcting the record
 
 An event is a record of what happened, so it does not get rewritten. Two things
