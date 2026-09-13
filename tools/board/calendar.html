@@ -1,0 +1,626 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CareerForge calendar</title>
+<style>
+  /* The third page, and the third copy of these tokens. The two other pages
+     each carry their own; a shared stylesheet would need a static route, and
+     three copies is where the cost of one is still lower. A fourth page is the
+     moment to stop and extract them. */
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #16181d;
+    --muted: #6b7280;
+    --line: #e2e5ea;
+    --accent: #3b6ef5;
+    --danger: #c0392b;
+    --ok: #1e7f4f;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --panel: #1c1f25;
+      --ink: #e8eaed;
+      --muted: #9aa1ac;
+      --line: #2b2f37;
+      --accent: #6d93ff;
+      --danger: #ff6b5b;
+      --ok: #4cc38a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 14px;
+    padding: 14px 18px; border-bottom: 1px solid var(--line);
+    background: var(--panel); position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .01em; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  header a.nav { color: var(--muted); text-decoration: none; font-size: 13px; }
+  header a.nav:hover { color: var(--accent); }
+  header button {
+    margin-left: auto; font: inherit; padding: 5px 11px; cursor: pointer;
+    background: transparent; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 7px;
+  }
+  header button:hover { border-color: var(--accent); color: var(--accent); }
+
+  #toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 12px 18px 0;
+  }
+  #toolbar h2 {
+    margin: 0; font-size: 15px; font-weight: 620; min-width: 150px;
+  }
+  #toolbar button {
+    font: inherit; color: inherit; background: transparent; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 7px; padding: 4px 10px;
+  }
+  #toolbar button:hover { border-color: var(--accent); color: var(--accent); }
+  #toolbar .legend {
+    margin-left: auto; color: var(--muted); font-size: 11.5px;
+    display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
+  }
+  #toolbar .legend i { font-style: normal; display: inline-flex; gap: 5px; align-items: center; }
+  #toolbar .legend .swatch {
+    width: 22px; height: 0; border-top: 3px solid var(--muted); border-radius: 2px;
+  }
+  #toolbar .legend .swatch.stage { border-color: var(--accent); }
+  #toolbar .legend .swatch.good { border-color: var(--ok); }
+  #toolbar .legend .swatch.bad { border-color: var(--danger); }
+  #toolbar .legend .swatch.fu { border-top-style: dashed; }
+
+  #layout {
+    display: grid; grid-template-columns: minmax(0, 1fr) 330px;
+    gap: 14px; padding: 12px 18px 20px; align-items: start;
+  }
+  @media (max-width: 980px) { #layout { grid-template-columns: minmax(0, 1fr); } }
+
+  #grid {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); overflow: hidden;
+  }
+  .week-head, .weeks { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  .week-head div {
+    padding: 7px 8px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .05em; color: var(--muted);
+    border-bottom: 1px solid var(--line);
+  }
+  .day {
+    min-height: 96px; padding: 5px 6px 7px; border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line); cursor: pointer;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .day:nth-child(7n) { border-right: 0; }
+  .day:hover { background: var(--bg); }
+  .day.out { opacity: .45; }
+  .day.past .num { color: var(--muted); }
+  .day .num { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .day.today .num {
+    color: #fff; background: var(--accent); border-radius: 999px;
+    width: 21px; height: 21px; display: inline-flex;
+    align-items: center; justify-content: center; font-weight: 650;
+  }
+  .day .more { font-size: 11px; color: var(--muted); }
+
+  /* Ten event types would be ten colours nobody can hold in their head. The
+     chips say instead what the thing is: a stage of the funnel, a yes, a no,
+     or a note -- and a dashed outline for the ones the tracker is proposing
+     rather than recording. */
+  .chip {
+    font-size: 11.5px; line-height: 1.3; padding: 2px 6px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left;
+    cursor: pointer; width: 100%; font-family: inherit;
+  }
+  .chip:hover { border-color: var(--accent); }
+  .chip .t { font-variant-numeric: tabular-nums; color: var(--muted); }
+  .chip.stage { border-left: 3px solid var(--accent); }
+  .chip.good { border-left: 3px solid var(--ok); }
+  .chip.bad  { border-left: 3px solid var(--danger); }
+  .chip.fu {
+    background: transparent; border-style: dashed; color: var(--muted);
+  }
+  .chip.fu.overdue { border-color: var(--danger); color: var(--danger); }
+
+  #agenda {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 12px 14px;
+  }
+  #agenda h3 {
+    font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); margin: 14px 0 6px;
+  }
+  #agenda h3:first-child { margin-top: 0; }
+  #agenda h3.late { color: var(--danger); }
+  #agenda ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 5px; }
+  #agenda li {
+    font-size: 12.5px; cursor: pointer; padding: 4px 6px; border-radius: 6px;
+    border: 1px solid transparent;
+  }
+  #agenda li:hover { border-color: var(--line); background: var(--bg); }
+  #agenda li .when { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #agenda li .role { color: var(--muted); }
+  #agenda li.late { color: var(--danger); }
+  #agenda .none { color: var(--muted); font-size: 12.5px; }
+
+  #panel {
+    position: fixed; top: 0; right: 0; width: min(430px, 100%); height: 100%;
+    background: var(--panel); border-left: 1px solid var(--line);
+    padding: 18px 20px; overflow-y: auto; z-index: 10;
+    transform: translateX(100%); transition: transform .16s ease;
+  }
+  #panel.open { transform: none; }
+  #panel h2 { margin: 0 0 2px; font-size: 16px; }
+  #panel .sub { color: var(--muted); margin-bottom: 14px; }
+  #panel dl { display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px; margin: 0 0 16px; }
+  #panel dt { color: var(--muted); font-size: 12px; }
+  #panel dd { margin: 0; word-break: break-word; }
+  #panel h3 {
+    font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); margin: 16px 0 6px;
+  }
+  #panel .close { position: absolute; top: 14px; right: 16px; }
+  #panel ul { list-style: none; padding: 0; margin: 0 0 6px; display: grid; gap: 4px; }
+  #panel li { font-size: 13px; }
+  #panel li .when { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #panel .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  input, select, textarea, button { font: inherit; color: inherit; }
+  input, select, textarea {
+    width: 100%; padding: 6px 8px; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  .row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .row > * { flex: 1; }
+  button.go {
+    background: var(--accent); color: #fff; border: 0;
+    border-radius: 6px; padding: 7px 12px; cursor: pointer;
+  }
+  button.go[disabled] { opacity: .55; cursor: default; }
+  button.plain {
+    background: transparent; border: 1px solid var(--line);
+    border-radius: 6px; padding: 7px 12px; cursor: pointer;
+  }
+  #toast {
+    position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+    max-width: 620px; padding: 10px 14px; border-radius: 8px;
+    background: var(--panel); border: 1px solid var(--danger); color: var(--danger);
+    box-shadow: 0 6px 22px rgba(0,0,0,.18); z-index: 20; display: none;
+  }
+  #toast.ok { border-color: var(--ok); color: var(--ok); }
+  .empty { color: var(--muted); padding: 40px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>CareerForge</h1>
+  <a class="nav" href="/">Applications</a>
+  <a class="nav" href="/postings">Postings</a>
+  <span class="meta">Calendar</span>
+  <span class="meta" id="meta"></span>
+  <button id="refresh">Refresh</button>
+</header>
+
+<div id="toolbar">
+  <button id="prev" title="Previous month">&lsaquo;</button>
+  <h2 id="monthTitle"></h2>
+  <button id="next" title="Next month">&rsaquo;</button>
+  <button id="todayBtn">Today</button>
+  <span class="legend">
+    <i><span class="swatch stage"></span>interview stage</i>
+    <i><span class="swatch good"></span>offer</i>
+    <i><span class="swatch bad"></span>rejection</i>
+    <i><span class="swatch fu"></span>follow-up due</i>
+  </span>
+</div>
+
+<main id="layout">
+  <section id="grid"><p class="empty">Loading&hellip;</p></section>
+  <aside id="agenda"></aside>
+</main>
+
+<aside id="panel" hidden>
+  <button class="plain close" id="panelClose">Close</button>
+  <div id="panelBody"></div>
+</aside>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+const gridEl   = document.getElementById("grid");
+const agendaEl = document.getElementById("agenda");
+const metaEl   = document.getElementById("meta");
+const titleEl  = document.getElementById("monthTitle");
+const panel    = document.getElementById("panel");
+const panelBody = document.getElementById("panelBody");
+const toastEl  = document.getElementById("toast");
+
+const MONTHS = ["January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December"];
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const CHIPS_PER_DAY = 4;
+const STAGE_TYPES = ["screening", "assignment", "tech_interview", "manager", "final"];
+const AGENDA_DAYS = 7;   // the same horizon `tracker.py agenda` prints by default
+
+let state = null;
+let view = null;        // {y, m} -- the month on screen, 1-based month
+let panelCtx = null;    // {day} | {event} | {followUp}, re-opened after a render
+let agendaRows = [];    // the three agenda lists, flat, in the order they render
+let toastTimer = null;
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// The board reads DD.MM.YYYY; the database stores ISO. Anything that is not a
+// plain ISO date passes through untouched.
+function fmtDate(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? "").trim());
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : String(value ?? "");
+}
+
+// Events are stored as naive local wall-clock strings -- "2026-09-01T14:00",
+// and from Notion sometimes with an offset. Both are read by slicing, never by
+// parsing: new Date("2026-09-01") is UTC midnight, which is the previous day
+// west of Greenwich, and that would put an interview on the wrong square.
+const dayKey = (iso) => String(iso ?? "").slice(0, 10);
+const timeOf = (ev) => (ev.is_datetime ? String(ev.date).slice(11, 16) : "");
+const pad = (n) => String(n).padStart(2, "0");
+
+function toast(message, ok = false) {
+  toastEl.textContent = message;
+  toastEl.classList.toggle("ok", ok);
+  toastEl.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastEl.style.display = "none"; }, ok ? 3200 : 8000);
+}
+
+async function api(path, body) {
+  const res = await fetch(path, body ? {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  } : undefined);
+  const data = await res.json().catch(() => ({ error: res.statusText }));
+  if (!res.ok) throw new Error(data.error || "request failed");
+  return data;
+}
+
+async function load() {
+  try {
+    state = await api("/api/calendar");
+    if (!view) {
+      const [y, m] = state.today.split("-");
+      view = { y: Number(y), m: Number(m) };
+    }
+    render();
+  } catch (err) {
+    gridEl.innerHTML = `<p class="empty">${esc(err.message)}</p>`;
+  }
+}
+
+// Days are built from local date parts only, so the grid is the month the user
+// is living in rather than the one UTC is having.
+function monthCells(y, m) {
+  const lead = (new Date(y, m - 1, 1).getDay() + 6) % 7;   // Monday first
+  const span = Math.ceil((lead + new Date(y, m, 0).getDate()) / 7) * 7;
+  const cells = [];
+  for (let i = 0; i < span; i++) {
+    const d = new Date(y, m - 1, 1 - lead + i);
+    cells.push({
+      key: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+      num: d.getDate(),
+      inMonth: d.getMonth() === m - 1,
+    });
+  }
+  return cells;
+}
+
+function byDay() {
+  const map = new Map();
+  const bucket = (key) => {
+    if (!map.has(key)) map.set(key, { events: [], followUps: [] });
+    return map.get(key);
+  };
+  for (const ev of state.events) bucket(dayKey(ev.date)).events.push(ev);
+  for (const fu of state.follow_ups) bucket(fu.due).followUps.push(fu);
+  return map;
+}
+
+function chipClass(type) {
+  if (STAGE_TYPES.includes(type)) return "stage";
+  if (type === "offer") return "good";
+  if (type === "rejection") return "bad";
+  return "";
+}
+
+function eventChip(ev) {
+  const el = document.createElement("button");
+  el.className = `chip ${chipClass(ev.type)}`;
+  el.title = [`${ev.company} — ${ev.role}`, ev.type_label,
+              ev.outcome_label, ev.notes].filter(Boolean).join("\n");
+  const time = timeOf(ev);
+  el.innerHTML = (time ? `<span class="t">${esc(time)}</span> ` : "")
+    + `${esc(ev.company)} · ${esc(ev.type_label)}`;
+  el.addEventListener("click", (e) => { e.stopPropagation(); openPanel({ event: ev }); });
+  return el;
+}
+
+function followUpChip(fu) {
+  const el = document.createElement("button");
+  el.className = "chip fu" + (fu.overdue ? " overdue" : "");
+  el.title = `${fu.company} — ${fu.role}\nNothing since ${fu.last_event_date}`
+    + (fu.silent ? `\nSilent for over ${state.stale_after_days} days` : "");
+  el.innerHTML = `${esc(fu.company)} · follow-up${fu.silent ? " ·&nbsp;silent" : ""}`;
+  el.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openPanel({ followUp: fu });
+  });
+  return el;
+}
+
+function render() {
+  metaEl.textContent = `${state.events.length} event`
+    + `${state.events.length === 1 ? "" : "s"} · ${state.follow_ups.length} follow-up`
+    + `${state.follow_ups.length === 1 ? "" : "s"} due`;
+  titleEl.textContent = `${MONTHS[view.m - 1]} ${view.y}`;
+  renderGrid();
+  renderAgenda();
+  if (panelCtx) openPanel(panelCtx, false);
+}
+
+function renderGrid() {
+  const days = byDay();
+  gridEl.innerHTML =
+    `<div class="week-head">${WEEKDAYS.map((d) => `<div>${d}</div>`).join("")}</div>`
+    + `<div class="weeks"></div>`;
+  const weeks = gridEl.querySelector(".weeks");
+  for (const cell of monthCells(view.y, view.m)) {
+    const el = document.createElement("div");
+    el.className = "day"
+      + (cell.inMonth ? "" : " out")
+      + (cell.key === state.today ? " today" : "")
+      + (cell.key < state.today ? " past" : "");
+    el.innerHTML = `<span class="num">${cell.num}</span>`;
+    const bag = days.get(cell.key);
+    if (bag) {
+      const chips = bag.events.map(eventChip).concat(bag.followUps.map(followUpChip));
+      for (const chip of chips.slice(0, CHIPS_PER_DAY)) el.appendChild(chip);
+      if (chips.length > CHIPS_PER_DAY) {
+        const more = document.createElement("span");
+        more.className = "more";
+        more.textContent = `+${chips.length - CHIPS_PER_DAY} more`;
+        el.appendChild(more);
+      }
+    }
+    el.addEventListener("click", () => openPanel({ day: cell.key }));
+    weeks.appendChild(el);
+  }
+}
+
+function renderAgenda() {
+  const limit = addDays(state.today, AGENDA_DAYS);
+  const overdue = [], todays = [], upcoming = [];
+  for (const fu of state.follow_ups) {
+    const row = { kind: "follow_up", date: fu.due, time: "", fu,
+                  company: fu.company, role: fu.role, label: "follow-up" };
+    if (fu.overdue) overdue.push(row);
+    else if (fu.due === state.today) todays.push(row);
+    else if (fu.due <= limit) upcoming.push(row);
+  }
+  for (const ev of state.events) {
+    const day = dayKey(ev.date);
+    const row = { kind: "event", date: day, time: timeOf(ev), ev,
+                  company: ev.company, role: ev.role, label: ev.type_label };
+    if (day === state.today) todays.push(row);
+    else if (day > state.today && day <= limit) upcoming.push(row);
+  }
+  const order = (a, b) => (a.date + a.time).localeCompare(b.date + b.time);
+  overdue.sort(order); todays.sort(order); upcoming.sort(order);
+
+  // One flat array behind three lists: every row carries its index into it, so
+  // a click needs no arithmetic about which list it came from.
+  agendaRows = overdue.concat(todays, upcoming);
+  let n = 0;
+  const list = (rows, late) => rows.length
+    ? `<ul>${rows.map((r) => {
+        const when = r.date === state.today && !r.time
+          ? "today" : [fmtDate(r.date), r.time].filter(Boolean).join(" ");
+        return `<li data-i="${n++}"${late ? ' class="late"' : ""}>`
+          + `<span class="when">${esc(when)}</span> `
+          + `${esc(r.company)} · ${esc(r.label)}`
+          + `<div class="role">${esc(r.role)}</div></li>`;
+      }).join("")}</ul>`
+    : `<p class="none">Nothing.</p>`;
+
+  agendaEl.innerHTML =
+    `<h3 class="late">Overdue follow-ups</h3>${list(overdue, true)}`
+    + `<h3>Today</h3>${list(todays, false)}`
+    + `<h3>Next ${AGENDA_DAYS} days</h3>${list(upcoming, false)}`;
+
+  agendaEl.querySelectorAll("li").forEach((li) => {
+    li.addEventListener("click", () => {
+      const row = agendaRows[Number(li.dataset.i)];
+      if (row) openPanel(row.kind === "event" ? { event: row.ev } : { followUp: row.fu });
+    });
+  });
+}
+
+function addDays(key, n) {
+  const [y, m, d] = key.split("-").map(Number);
+  const out = new Date(y, m - 1, d + n);
+  return `${out.getFullYear()}-${pad(out.getMonth() + 1)}-${pad(out.getDate())}`;
+}
+
+function appOptions(selected) {
+  const group = (label, rows) => rows.length
+    ? `<optgroup label="${label}">${rows.map((a) =>
+        `<option value="${a.id}"${a.id === selected ? " selected" : ""}>`
+        + `${esc(a.company)} — ${esc(a.role)}</option>`).join("")}</optgroup>`
+    : "";
+  const apps = state.applications;
+  return group("Open", apps.filter((a) => !a.terminal))
+       + group("Closed", apps.filter((a) => a.terminal));
+}
+
+function openPanel(ctx, focus = true) {
+  panelCtx = ctx;
+  panel.hidden = false;
+  requestAnimationFrame(() => panel.classList.add("open"));
+
+  const ev = ctx.event || null;
+  const fu = ctx.followUp || null;
+  const day = ctx.day || (ev ? dayKey(ev.date) : null) || state.today;
+  const appId = ev ? ev.application_id : (fu ? fu.application_id : null);
+
+  const heading = ev ? `${esc(ev.company)}`
+    : fu ? `${esc(fu.company)}`
+    : fmtDate(day);
+  const sub = ev ? esc(ev.role) : fu ? esc(fu.role) : "";
+
+  const detail = ev ? `
+    <dl>
+      <dt>What</dt><dd>${esc(ev.type_label)}</dd>
+      <dt>When</dt><dd>${esc(fmtDate(dayKey(ev.date)))}${
+        timeOf(ev) ? ` ${esc(timeOf(ev))}` : ""}</dd>
+      <dt>Outcome</dt><dd>${esc(ev.outcome_label) || "&mdash;"}</dd>
+      <dt>With</dt><dd>${esc(ev.participants) || "&mdash;"}</dd>
+      <dt>Status</dt><dd>${esc(ev.status_label)}</dd>
+      <dt>Notes</dt><dd>${esc(ev.notes) || "&mdash;"}</dd>
+    </dl>` : "";
+
+  const followUpBlock = fu ? `
+    <dl>
+      <dt>Due</dt><dd>${esc(fmtDate(fu.due))}${fu.overdue ? " &mdash; overdue" : ""}</dd>
+      <dt>Status</dt><dd>${esc(fu.status_label)}</dd>
+      <dt>Quiet since</dt><dd>${esc(fmtDate(fu.last_event_date))}${
+        fu.silent ? ` — over ${state.stale_after_days} days` : ""}</dd>
+    </dl>
+    <div class="row"><button class="go" id="fuSent">Follow-up sent</button></div>
+    <p class="hint">Logs a follow-up event dated today. The next one moves to
+      ${esc(fmtDate(addDays(state.today, state.follow_up_after_days)))}.</p>` : "";
+
+  const onThisDay = state.events.filter((e) => dayKey(e.date) === day);
+  const dayList = onThisDay.length ? `
+    <h3>On ${esc(fmtDate(day))}</h3>
+    <ul>${onThisDay.map((e) => `<li><span class="when">${
+      esc(timeOf(e)) || "—"}</span> ${esc(e.company)} · ${esc(e.type_label)}${
+      e.outcome_label ? ` (${esc(e.outcome_label)})` : ""}</li>`).join("")}</ul>` : "";
+
+  panelBody.innerHTML = `
+    <h2>${heading}</h2>
+    <div class="sub">${sub}</div>
+    ${detail}${followUpBlock}${dayList}
+
+    <h3>Add event</h3>
+    <div class="row"><select id="evApp">${appOptions(appId)}</select></div>
+    <div class="row">
+      <select id="evType">${state.event_types.map((t) =>
+        `<option value="${esc(t.id)}"${
+          fu && t.id === "follow_up" ? " selected" : ""
+        }${ev && t.id === ev.type ? " selected" : ""}>${esc(t.label)}</option>`).join("")}</select>
+    </div>
+    <div class="row">
+      <input id="evDate" type="date" value="${esc(day)}">
+      <input id="evTime" type="time" value="${ev ? esc(timeOf(ev)) : ""}"
+             title="optional — leave empty for a whole-day event">
+    </div>
+    <div class="row">
+      <select id="evOutcome">${['<option value="">outcome…</option>'].concat(
+        state.outcomes.map((o) =>
+          `<option value="${esc(o.id)}">${esc(o.label)}</option>`)).join("")}</select>
+    </div>
+    <div class="row"><textarea id="evNotes" rows="3" placeholder="notes (optional)"></textarea></div>
+    <div class="row"><button class="go" id="evAdd">Add event</button></div>
+  `;
+
+  const fuBtn = panelBody.querySelector("#fuSent");
+  if (fuBtn) fuBtn.addEventListener("click", () => markFollowUpSent(fu, fuBtn));
+  panelBody.querySelector("#evAdd").addEventListener("click", submitEvent);
+  if (focus) panel.scrollTop = 0;
+}
+
+async function submitEvent() {
+  const btn = panelBody.querySelector("#evAdd");
+  const id = Number(panelBody.querySelector("#evApp").value);
+  const date = panelBody.querySelector("#evDate").value;
+  const time = panelBody.querySelector("#evTime").value;
+  if (!id || !date) { toast("pick an application and a date"); return; }
+  btn.disabled = true;
+  try {
+    // A time turns the stored value into a datetime; without one it stays a
+    // whole-day event. The string is assembled here rather than by a Date, so
+    // what the user typed is what the tracker stores.
+    await api("/api/event", {
+      id,
+      type: panelBody.querySelector("#evType").value,
+      date: time ? `${date}T${time}` : date,
+      outcome: panelBody.querySelector("#evOutcome").value,
+      notes: panelBody.querySelector("#evNotes").value,
+    });
+    panelCtx = null;
+    closePanel();
+    await load();
+    toast("Event added", true);
+  } catch (err) {
+    toast(err.message);
+    btn.disabled = false;
+  }
+}
+
+async function markFollowUpSent(fu, btn) {
+  btn.disabled = true;
+  try {
+    await api("/api/event", {
+      id: fu.application_id, type: "follow_up", date: state.today,
+    });
+    panelCtx = null;
+    closePanel();
+    await load();
+    toast(`Follow-up logged for ${fu.company}`, true);
+  } catch (err) {
+    toast(err.message);
+    btn.disabled = false;
+  }
+}
+
+function closePanel() {
+  panelCtx = null;
+  panel.classList.remove("open");
+  setTimeout(() => { panel.hidden = true; }, 160);
+}
+
+function shiftMonth(delta) {
+  const m = view.m + delta;
+  view = { y: view.y + Math.floor((m - 1) / 12), m: ((m - 1 + 12) % 12) + 1 };
+  render();
+}
+
+document.getElementById("prev").addEventListener("click", () => shiftMonth(-1));
+document.getElementById("next").addEventListener("click", () => shiftMonth(1));
+document.getElementById("todayBtn").addEventListener("click", () => {
+  const [y, m] = state.today.split("-");
+  view = { y: Number(y), m: Number(m) };
+  render();
+});
+document.getElementById("refresh").addEventListener("click", load);
+document.getElementById("panelClose").addEventListener("click", closePanel);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePanel(); });
+// The agent may change the tracker while this tab sits in the background.
+window.addEventListener("focus", load);
+
+load();
+</script>
+</body>
+</html>

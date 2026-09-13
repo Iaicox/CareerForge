@@ -3,10 +3,13 @@
 
     python tools/board.py                  # serve on 127.0.0.1:8765 and open a browser
     python tools/board.py --view postings  # open on the postings table instead
+    python tools/board.py --view calendar  # open on the calendar
     python tools/board.py --port 9000 --no-browser
 
-Two pages on one server: `/` is the applications kanban, `/postings` is a table
-of every posting seen, with its status as a select.
+Three pages on one server: `/` is the applications kanban, `/postings` is a
+table of every posting seen, with its status as a select, and `/calendar` is
+the month, with the events that happened, the ones scheduled, and the
+follow-ups the tracker says are due.
 
 Standard library only. All data access goes through tools/tracker.py, so the
 board and the agent share one set of rules -- including the one that moves an
@@ -31,8 +34,16 @@ import paths
 import tracker
 from tracker import TrackerError
 
-INDEX = Path(__file__).resolve().parent / "board" / "index.html"
-POSTINGS = Path(__file__).resolve().parent / "board" / "postings.html"
+_PAGE_DIR = Path(__file__).resolve().parent / "board"
+INDEX = _PAGE_DIR / "index.html"
+POSTINGS = _PAGE_DIR / "postings.html"
+CALENDAR = _PAGE_DIR / "calendar.html"
+PAGES = {
+    "/": INDEX,
+    "/index.html": INDEX,
+    "/postings": POSTINGS,
+    "/calendar": CALENDAR,
+}
 MAX_BODY = 1 << 20  # 1 MiB is far more than any card edit needs
 
 
@@ -81,22 +92,17 @@ class BoardHandler(BaseHTTPRequestHandler):
         if not self._host_ok():
             return self._error("this board only serves loopback requests", 403)
         path = urlparse(self.path).path
-        if path in ("/", "/index.html"):
-            if not INDEX.exists():
-                return self._error(f"missing {INDEX}", 500)
-            return self._send(
-                200, INDEX.read_bytes(), "text/html; charset=utf-8"
-            )
-        if path == "/postings":
-            if not POSTINGS.exists():
-                return self._error(f"missing {POSTINGS}", 500)
-            return self._send(
-                200, POSTINGS.read_bytes(), "text/html; charset=utf-8"
-            )
+        page = PAGES.get(path)
+        if page is not None:
+            if not page.exists():
+                return self._error(f"missing {page}", 500)
+            return self._send(200, page.read_bytes(), "text/html; charset=utf-8")
         if path == "/api/board":
             return self._with_db(lambda conn, cfg: tracker.board_data(conn, cfg))
         if path == "/api/postings":
             return self._with_db(lambda conn, cfg: tracker.postings_table_data(conn, cfg))
+        if path == "/api/calendar":
+            return self._with_db(lambda conn, cfg: tracker.calendar_data(conn, cfg))
         self._error("not found", 404)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -221,15 +227,20 @@ class BoardHandler(BaseHTTPRequestHandler):
         }
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="CareerForge kanban board")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument(
-        "--view", choices=["board", "postings"], default="board",
-        help="which page to open: the applications kanban or the postings table",
+        "--view", choices=["board", "postings", "calendar"], default="board",
+        help="which page to open: the applications kanban, the postings table "
+             "or the calendar",
     )
-    args = ap.parse_args()
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
 
     # Fail before binding a port if the tracker is not set up yet.
     tracker.load_config()
@@ -237,9 +248,12 @@ def main() -> int:
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), BoardHandler)
     url = f"http://127.0.0.1:{args.port}/"
-    if args.view == "postings":
-        url += "postings"
-    print(f"CareerForge board: http://127.0.0.1:{args.port}/  (postings: /postings)")
+    if args.view != "board":
+        url += args.view
+    print(
+        f"CareerForge board: http://127.0.0.1:{args.port}/"
+        "  (postings: /postings, calendar: /calendar)"
+    )
     print(f"database: {tracker.rel(paths.DB)}")
     print("Ctrl+C to stop.")
     if not args.no_browser:
