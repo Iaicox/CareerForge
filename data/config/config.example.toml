@@ -30,6 +30,11 @@ engine = "auto"
 # Days of silence after which /triage proposes freezing an application.
 stale_after_days = 30
 
+# Days after the last event before the calendar plans a follow-up. Nothing is
+# planned while an event is scheduled ahead -- an interview next week is the
+# answer -- and logging a follow_up event restarts the count.
+follow_up_after_days = 7
+
 
 [mail]
 # Optional. Reads the mailbox you actually apply from -- which is often not the
