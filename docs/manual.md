@@ -528,6 +528,12 @@ answer you have. Once the date passes the chip turns red, and after
 draws. Nothing about a follow-up is stored, so logging one moves the next one
 by itself.
 
+**Silence is kept out of the reminders.** Once an application passes
+`stale_after_days` its follow-up moves from the overdue list into a section of
+its own that points at `/triage`. A letter six weeks late to somebody who never
+answered is not a reminder to write; it is a row to close, and leaving it among
+the rest buries the handful worth acting on today.
+
 **Follow-up sent** on such a chip logs a `follow_up` event dated today.
 Clicking a day opens the same form the kanban has, plus the one field it has no
 room for: a time. Leave it empty for a whole-day event; fill it and the tracker
@@ -553,6 +559,10 @@ reloads rather than overwriting.
 /track acme             # one application in full
 /track acme screening   # change status, with confirmation
 /track stale            # gone quiet past your cutoff
+```
+
+```bash
+python tools/tracker.py agenda             # late, today, the next seven days
 ```
 
 ### `/mailsync` — find replies you missed

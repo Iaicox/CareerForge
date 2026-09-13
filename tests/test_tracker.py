@@ -8,6 +8,9 @@ database or the real application folders.
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import re
 import shutil
 import sys
@@ -1009,6 +1012,54 @@ class TrackerTestCase(unittest.TestCase):
         self.assertEqual(sliced["upcoming"][0]["time"], "10:30")
         self.assertEqual(sliced["today"][0]["time"], "")
         self.assertEqual(sliced["overdue"][0]["kind"], "follow_up")
+
+    def test_the_agenda_keeps_silence_in_a_list_of_its_own(self):
+        loud = self.add(company="Hooli")
+        self.event(loud, "applied", self.days(-10), "passed")
+        quiet = self.add(company="Initech")
+        self.event(quiet, "applied", self.days(-40), "passed")
+
+        sliced = tracker.agenda_slice(tracker.calendar_data(self.conn, self.cfg), 7)
+        self.assertEqual([i["company"] for i in sliced["overdue"]], ["Hooli"])
+        self.assertEqual([i["company"] for i in sliced["silent"]], ["Initech"])
+
+        text = tracker.render_agenda(
+            tracker.calendar_data(self.conn, self.cfg), sliced, 7)
+        self.assertIn("Silent for over 30 days", text)
+        self.assertIn("/triage", text)
+        # and the silent row is not also printed among the overdue
+        overdue_section = text.split("## Overdue")[1].split("##")[0]
+        self.assertIn("Hooli", overdue_section)
+        self.assertNotIn("Initech", overdue_section)
+
+    def test_the_agenda_command_keeps_the_date_and_the_buckets_apart(self):
+        # --json is the contract an agent reads. Spreading the buckets into the
+        # top level put the "today" list on the same key as the date, and the
+        # list won -- the output no longer said which day it described.
+        row = self.add(company="Globex")
+        self.event(row, "applied", self.days(-3), "passed")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            tracker.main(["agenda", "--days", "5", "--json"])
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["today"], date.today().isoformat())
+        self.assertEqual(payload["days"], 5)
+        self.assertEqual(payload["follow_up_after_days"], 7)
+        self.assertEqual(
+            sorted(payload["agenda"]), ["overdue", "silent", "today", "upcoming"])
+
+    def test_the_agenda_refuses_a_horizon_that_points_backwards(self):
+        with self.assertRaises(SystemExit):
+            tracker.build_parser().parse_args(["agenda", "--days", "-1"])
+
+    def test_an_event_with_no_date_is_dated_the_local_day(self):
+        # datetime.now(timezone.utc).date() files an evening entry west of
+        # Greenwich under tomorrow, and a future date tells the calendar
+        # something is scheduled -- so it stops proposing a follow-up.
+        row = self.add(company="Acme")
+        event = self.event(row, "applied", None, "passed")
+        self.assertEqual(event["date"], date.today().isoformat())
+        self.assertEqual(event["is_datetime"], 0)
 
     def test_the_agenda_text_names_every_bucket_and_its_rows(self):
         row = self.add(company="Globex")

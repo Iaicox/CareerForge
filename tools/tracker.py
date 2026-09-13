@@ -1091,7 +1091,11 @@ def add_event(
     row = resolve(conn, ident)
     cfg.validate(type_, "event_types")
     cfg.validate(outcome, "outcomes")
-    when = (when or datetime.now(timezone.utc).date().isoformat()).strip()
+    # The local day, not the UTC one: events are wall-clock, and an entry made
+    # in the evening west of Greenwich would otherwise be filed tomorrow --
+    # which the calendar then reads as something scheduled ahead and stops
+    # proposing a follow-up for.
+    when = (when or date.today().isoformat()).strip()
     is_dt = 1 if ("T" in when or " " in when) else 0
     cur = conn.execute(
         """INSERT INTO events
@@ -1943,8 +1947,7 @@ def list_applications(
         # reach /triage's "Silent" section, which reads only from here. That is
         # the silence worth chasing, and the one case the sweep structurally
         # could not see.
-        when = datetime.now(timezone.utc).date()
-        rows = [r for r in rows if is_silent(r, cfg, when)]
+        rows = [r for r in rows if is_silent(r, cfg, date.today())]
     if expired:
         # Only worth surfacing while the application is still open; a deadline
         # that passed after a rejection is not news.
@@ -2154,11 +2157,17 @@ def calendar_data(
 
 
 def agenda_slice(data: dict, days: int) -> dict:
-    """The calendar payload as three lists: late, today, and the days ahead.
+    """The calendar payload as four lists: late, silent, today, the days ahead.
 
     Past events are not "overdue" -- they are history, and the grid is where
     they belong. Only a follow-up can be late, because only it is a thing still
     owed to somebody.
+
+    Silence gets a list of its own. A follow-up six weeks late on an
+    application nobody ever answered is not a reminder to write; it is a row
+    /triage exists to close. Left in with the rest it buries the handful worth
+    acting on today under every application that ever went quiet -- which on a
+    real database is most of them.
     """
     today_iso = data["today"]
     horizon = (date.fromisoformat(today_iso) + timedelta(days=days)).isoformat()
@@ -2188,10 +2197,12 @@ def agenda_slice(data: dict, days: int) -> dict:
             "last_event_date": fu["last_event_date"],
         }
 
-    overdue, todays, upcoming = [], [], []
+    overdue, silent, todays, upcoming = [], [], [], []
     for fu in data["follow_ups"]:
         item = from_follow_up(fu)
-        if fu["overdue"]:
+        if fu["silent"]:
+            silent.append(item)
+        elif fu["overdue"]:
             overdue.append(item)
         elif fu["due"] == today_iso:
             todays.append(item)
@@ -2207,6 +2218,7 @@ def agenda_slice(data: dict, days: int) -> dict:
     key = lambda i: (i["date"], i["time"], (i["company"] or "").lower())  # noqa: E731
     return {
         "overdue": sorted(overdue, key=key),
+        "silent": sorted(silent, key=key),
         "today": sorted(todays, key=key),
         "upcoming": sorted(upcoming, key=key),
     }
@@ -2293,6 +2305,15 @@ def render_agenda(data: dict, sliced: dict, days: int) -> str:
         out.append(f"## {heading}")
         out.extend([line(i) for i in sliced[key]] or ["(nothing)"])
         out.append("")
+    if sliced["silent"]:
+        out.append(
+            f"## Silent for over {data['stale_after_days']} days"
+            f"  ({len(sliced['silent'])})"
+        )
+        out.append("Past chasing. `/triage` is where these get closed.")
+        out.append("")
+        out.extend(line(i) for i in sliced["silent"])
+        out.append("")
     return "\n".join(out).rstrip() + "\n"
 
 
@@ -2306,6 +2327,17 @@ def emit(args: argparse.Namespace, payload: Any, text: str) -> None:
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
     else:
         print(text)
+
+
+def positive_days(raw: str) -> int:
+    """An argparse type: a horizon has to reach forward to mean anything."""
+    try:
+        days = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not a number of days")
+    if days < 1:
+        raise argparse.ArgumentTypeError("--days must be 1 or more")
+    return days
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2434,7 +2466,7 @@ def build_parser() -> argparse.ArgumentParser:
     ag = with_json(sub.add_parser(
         "agenda", help="overdue follow-ups, today, and the days ahead"
     ))
-    ag.add_argument("--days", type=int, default=7,
+    ag.add_argument("--days", type=positive_days, default=7,
                     help="how far ahead to look (default 7)")
 
     with_json(sub.add_parser("export", help="dump everything as JSON"))
@@ -2668,8 +2700,11 @@ def main(argv: list[str] | None = None) -> int:
             sliced = agenda_slice(data, args.days)
             emit(
                 args,
+                # Not **sliced: its "today" bucket would land on the same key
+                # as the date and win, so --json lost the day it described.
                 {"today": data["today"], "days": args.days,
-                 "follow_up_after_days": data["follow_up_after_days"], **sliced},
+                 "follow_up_after_days": data["follow_up_after_days"],
+                 "agenda": sliced},
                 render_agenda(data, sliced, args.days),
             )
 

@@ -152,6 +152,11 @@
   #agenda li .role { color: var(--muted); }
   #agenda li.late { color: var(--danger); }
   #agenda .none { color: var(--muted); font-size: 12.5px; }
+  #agenda h3 .n { color: var(--muted); font-weight: 400; }
+  #agenda li .badge {
+    font-size: 10px; padding: 0 5px; border-radius: 999px;
+    border: 1px solid currentColor; color: var(--muted);
+  }
 
   #panel {
     position: fixed; top: 0; right: 0; width: min(430px, 100%); height: 100%;
@@ -252,13 +257,16 @@ const MONTHS = ["January", "February", "March", "April", "May", "June",
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const CHIPS_PER_DAY = 4;
 const STAGE_TYPES = ["screening", "assignment", "tech_interview", "manager", "final"];
-const AGENDA_DAYS = 7;   // the same horizon `tracker.py agenda` prints by default
+// The horizon `tracker.py agenda` prints by default -- but never shorter than
+// the interval, or a longer follow_up_after_days would put every planned
+// follow-up past the edge of the list meant to show them.
 
 let state = null;
 let view = null;        // {y, m} -- the month on screen, 1-based month
 let panelCtx = null;    // {day} | {event} | {followUp}, re-opened after a render
-let agendaRows = [];    // the three agenda lists, flat, in the order they render
+let agendaRows = [];    // the agenda lists, flat, in the order they render
 let toastTimer = null;
+let hideTimer = null;   // closePanel's, cleared when a panel opens inside it
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -377,7 +385,22 @@ function render() {
   titleEl.textContent = `${MONTHS[view.m - 1]} ${view.y}`;
   renderGrid();
   renderAgenda();
-  if (panelCtx) openPanel(panelCtx, false);
+  if (panelCtx) openPanel(rebind(panelCtx), false);
+}
+
+// Re-resolve a panel context against the state that just arrived: the objects
+// in it came from the previous payload, and the row may be gone.
+function rebind(ctx) {
+  if (ctx.event) {
+    const fresh = state.events.find((e) => e.id === ctx.event.id);
+    return fresh ? { event: fresh } : { day: dayKey(ctx.event.date) };
+  }
+  if (ctx.followUp) {
+    const fresh = state.follow_ups.find(
+      (f) => f.application_id === ctx.followUp.application_id);
+    return fresh ? { followUp: fresh } : { day: state.today };
+  }
+  return ctx;
 }
 
 function renderGrid() {
@@ -395,7 +418,9 @@ function renderGrid() {
     el.innerHTML = `<span class="num">${cell.num}</span>`;
     const bag = days.get(cell.key);
     if (bag) {
-      const chips = bag.events.map(eventChip).concat(bag.followUps.map(followUpChip));
+      // Follow-ups first: they are the chips that ask for something, and
+      // behind a "+N more" they are the ones nobody sees.
+      const chips = bag.followUps.map(followUpChip).concat(bag.events.map(eventChip));
       for (const chip of chips.slice(0, CHIPS_PER_DAY)) el.appendChild(chip);
       if (chips.length > CHIPS_PER_DAY) {
         const more = document.createElement("span");
@@ -410,12 +435,18 @@ function renderGrid() {
 }
 
 function renderAgenda() {
-  const limit = addDays(state.today, AGENDA_DAYS);
-  const overdue = [], todays = [], upcoming = [];
+  const horizon = Math.max(7, state.follow_up_after_days || 7);
+  const limit = addDays(state.today, horizon);
+  const overdue = [], silent = [], todays = [], upcoming = [];
   for (const fu of state.follow_ups) {
     const row = { kind: "follow_up", date: fu.due, time: "", fu,
-                  company: fu.company, role: fu.role, label: "follow-up" };
-    if (fu.overdue) overdue.push(row);
+                  company: fu.company, role: fu.role, label: "follow-up",
+                  silent: fu.silent };
+    // Silence is /triage's business, not a reminder: a follow-up six weeks
+    // late on an application nobody answered would otherwise bury the few
+    // worth writing today.
+    if (fu.silent) silent.push(row);
+    else if (fu.overdue) overdue.push(row);
     else if (fu.due === state.today) todays.push(row);
     else if (fu.due <= limit) upcoming.push(row);
   }
@@ -426,12 +457,14 @@ function renderAgenda() {
     if (day === state.today) todays.push(row);
     else if (day > state.today && day <= limit) upcoming.push(row);
   }
-  const order = (a, b) => (a.date + a.time).localeCompare(b.date + b.time);
-  overdue.sort(order); todays.sort(order); upcoming.sort(order);
+  const order = (a, b) =>
+    (a.date + a.time).localeCompare(b.date + b.time)
+    || String(a.company || "").localeCompare(String(b.company || ""));
+  overdue.sort(order); silent.sort(order); todays.sort(order); upcoming.sort(order);
 
-  // One flat array behind three lists: every row carries its index into it, so
+  // One flat array behind every list: each row carries its index into it, so
   // a click needs no arithmetic about which list it came from.
-  agendaRows = overdue.concat(todays, upcoming);
+  agendaRows = overdue.concat(todays, upcoming, silent);
   let n = 0;
   const list = (rows, late) => rows.length
     ? `<ul>${rows.map((r) => {
@@ -440,6 +473,7 @@ function renderAgenda() {
         return `<li data-i="${n++}"${late ? ' class="late"' : ""}>`
           + `<span class="when">${esc(when)}</span> `
           + `${esc(r.company)} · ${esc(r.label)}`
+          + (r.silent ? ` <span class="badge">silent</span>` : "")
           + `<div class="role">${esc(r.role)}</div></li>`;
       }).join("")}</ul>`
     : `<p class="none">Nothing.</p>`;
@@ -447,7 +481,13 @@ function renderAgenda() {
   agendaEl.innerHTML =
     `<h3 class="late">Overdue follow-ups</h3>${list(overdue, true)}`
     + `<h3>Today</h3>${list(todays, false)}`
-    + `<h3>Next ${AGENDA_DAYS} days</h3>${list(upcoming, false)}`;
+    + `<h3>Next ${horizon} days</h3>${list(upcoming, false)}`
+    + (silent.length
+        ? `<h3>Silent over ${state.stale_after_days} days`
+          + ` <span class="n">${silent.length}</span></h3>`
+          + `<p class="none">Past chasing; /triage closes these.</p>`
+          + list(silent, false)
+        : "");
 
   agendaEl.querySelectorAll("li").forEach((li) => {
     li.addEventListener("click", () => {
@@ -466,7 +506,7 @@ function addDays(key, n) {
 function appOptions(selected) {
   const group = (label, rows) => rows.length
     ? `<optgroup label="${label}">${rows.map((a) =>
-        `<option value="${a.id}"${a.id === selected ? " selected" : ""}>`
+        `<option value="${esc(a.id)}"${a.id === selected ? " selected" : ""}>`
         + `${esc(a.company)} — ${esc(a.role)}</option>`).join("")}</optgroup>`
     : "";
   const apps = state.applications;
@@ -476,6 +516,7 @@ function appOptions(selected) {
 
 function openPanel(ctx, focus = true) {
   panelCtx = ctx;
+  clearTimeout(hideTimer);   // a close still in flight would hide this one
   panel.hidden = false;
   requestAnimationFrame(() => panel.classList.add("open"));
 
@@ -511,12 +552,18 @@ function openPanel(ctx, focus = true) {
     <p class="hint">Logs a follow-up event dated today. The next one moves to
       ${esc(fmtDate(addDays(state.today, state.follow_up_after_days)))}.</p>` : "";
 
+  // Everything on that square, follow-ups included -- they are what a "+N more"
+  // hides first, and this panel is where the day is read in full.
   const onThisDay = state.events.filter((e) => dayKey(e.date) === day);
-  const dayList = onThisDay.length ? `
+  const dueThisDay = state.follow_ups.filter((f) => f.due === day);
+  const dayList = (onThisDay.length || dueThisDay.length) ? `
     <h3>On ${esc(fmtDate(day))}</h3>
     <ul>${onThisDay.map((e) => `<li><span class="when">${
       esc(timeOf(e)) || "—"}</span> ${esc(e.company)} · ${esc(e.type_label)}${
-      e.outcome_label ? ` (${esc(e.outcome_label)})` : ""}</li>`).join("")}</ul>` : "";
+      e.outcome_label ? ` (${esc(e.outcome_label)})` : ""}</li>`).join("")
+      + dueThisDay.map((f) => `<li><span class="when">—</span> ${
+        esc(f.company)} · follow-up due${f.silent ? " (silent)" : ""}</li>`).join("")
+      }</ul>` : "";
 
   panelBody.innerHTML = `
     <h2>${heading}</h2>
@@ -598,7 +645,7 @@ async function markFollowUpSent(fu, btn) {
 function closePanel() {
   panelCtx = null;
   panel.classList.remove("open");
-  setTimeout(() => { panel.hidden = true; }, 160);
+  hideTimer = setTimeout(() => { panel.hidden = true; }, 160);
 }
 
 function shiftMonth(delta) {

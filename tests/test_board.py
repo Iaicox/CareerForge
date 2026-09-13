@@ -291,17 +291,48 @@ class BoardServerTest(unittest.TestCase):
         self.assertEqual(parsed.view, "calendar")
         self.assertIn("calendar", board.build_parser().format_help())
 
-    def test_the_calendar_never_builds_a_day_out_of_utc(self):
+    def test_no_page_builds_a_day_out_of_utc(self):
         # Events are naive local wall-clock strings. new Date("2026-09-01") is
         # UTC midnight -- the day before, west of Greenwich -- so a parsed date
-        # would land an interview on the wrong square. Both the day and the
-        # time are read by slicing the string.
-        status, html = self.request("/calendar")
-        self.assertEqual(status, 200)
-        self.assertNotIn("toISOString", html)
-        self.assertNotIn("new Date(ev.", html)
-        self.assertNotIn("Date.parse", html)
-        self.assertIn(".slice(11, 16)", html)
+        # would land an interview on the wrong square, and toISOString() dates
+        # an evening entry tomorrow. A future date is not a harmless off-by-one
+        # here: the calendar reads it as something already scheduled and stops
+        # proposing a follow-up for that application at all.
+        #
+        # The kanban's event form had exactly that bug, which is why this runs
+        # over every page rather than the one that was written last. Only the
+        # (y, m - 1, d) form is allowed: the regex forbids a lone identifier,
+        # which is what parsing a stored string looks like.
+        for route in ("/", "/postings", "/calendar"):
+            with self.subTest(route=route):
+                status, html = self.request(route)
+                self.assertEqual(status, 200)
+                self.assertNotIn("toISOString", html)
+                self.assertNotIn("Date.parse", html)
+                self.assertNotRegex(html, r"new Date\(\s*[A-Za-z_$][\w.$]*\s*\)")
+        self.assertIn(".slice(11, 16)", self.request("/calendar")[1])
+
+    def test_the_calendar_keeps_silence_out_of_the_reminders(self):
+        # An application nobody answered in six weeks is /triage's to close.
+        # Left among the overdue it buries the few worth writing today -- on a
+        # real database it was 28 rows of 48.
+        row = self.application(company="Initech")
+        self.request("/api/event", {
+            "id": row["id"], "type": "applied",
+            "date": self.days(-40), "outcome": "passed",
+        })
+        loud = self.application(company="Hooli")
+        self.request("/api/event", {
+            "id": loud["id"], "type": "applied",
+            "date": self.days(-10), "outcome": "passed",
+        })
+        html = self.request("/calendar")[1]
+        self.assertIn("fu.silent", html)
+        self.assertIn("Silent over", html)
+
+        due = {f["company"]: f for f in self.calendar()["follow_ups"]}
+        self.assertTrue(due["Initech"]["silent"])
+        self.assertFalse(due["Hooli"]["silent"])
 
     def test_the_calendar_reloads_rather_than_reading_the_post_back(self):
         # /api/event answers with the kanban payload, which this page cannot

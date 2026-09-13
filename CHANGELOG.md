@@ -17,8 +17,11 @@
   `silent`, the same line `/triage` draws. **Follow-up sent** logs a `follow_up`
   event dated today, and clicking a day opens the kanban's event form plus the
   field it has no room for: a time, so an interview at 14:00 is stored as one.
-  `tracker.py agenda [--days N]` prints the same three lists where a browser is
-  more than the question deserves. Dates are sliced, never parsed:
+  An application past `stale_after_days` leaves the late list for a silent one
+  that points at `/triage`: six weeks of no answer is a row to close, not a
+  letter to write, and on a real pipeline those were 28 of 48 rows.
+  `tracker.py agenda [--days N]` prints the same lists where a browser is more
+  than the question deserves. Dates are sliced, never parsed:
   `new Date("2026-09-01")` is UTC midnight, which is the day before west of
   Greenwich, and that is an interview on the wrong square.
 

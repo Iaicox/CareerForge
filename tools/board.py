@@ -228,7 +228,9 @@ class BoardHandler(BaseHTTPRequestHandler):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(description="CareerForge kanban board")
+    ap = argparse.ArgumentParser(
+        description="CareerForge board: kanban, postings table, calendar"
+    )
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument(

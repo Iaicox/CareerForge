@@ -31,8 +31,11 @@ pages, linked from each other's header:
   after the last event, on open applications only, and never while something is
   already scheduled ahead. Those chips are dashed because they are a proposal,
   not a record, and red once the date has passed. Beside the grid, the same
-  three answers as a list: late, today, the next seven days. **Follow-up sent**
-  logs one dated today; clicking a day adds an event, with a time if it has one.
+  three answers as a list: late, today, the next seven days. An application
+  past `stale_after_days` moves out of the late list into a silent one that
+  points at `/triage` — it is a row to close, not a letter to write.
+  **Follow-up sent** logs one dated today; clicking a day adds an event, with a
+  time if it has one.
 
 The server runs until stopped, so start it in the background and tell the user
 the URL rather than blocking the session on it.
