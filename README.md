@@ -47,6 +47,7 @@ have to defend in an interview. CareerForge is built against that:
 
 | | |
 |---|---|
+| **git, Node.js and npm** | Claude Code installs through npm; the repository arrives through git |
 | **Claude Code** | the CLI — this is a workspace for it |
 | **Python 3.11+** | tracker, board and tooling; standard library only, no pip install |
 | **pandoc** | Markdown to DOCX |

@@ -83,13 +83,17 @@ it. This section is the long version.
 
 | | Why | How |
 |---|---|---|
+| **git, Node.js and npm** | Claude Code installs through npm; the repository arrives through git | Windows `winget install Git.Git OpenJS.NodeJS.LTS` · macOS `brew install git node` · Debian `sudo apt install git nodejs npm` |
 | **Claude Code** | This is a workspace for it | `npm install -g @anthropic-ai/claude-code` |
 | **Python 3.11+** | The tooling; standard library only, no `pip install` needed | [python.org](https://www.python.org/downloads/) |
 | **pandoc** | Markdown → DOCX | Windows `winget install JohnMacFarlane.Pandoc` · macOS `brew install pandoc` · Debian `sudo apt install pandoc` |
 | **MS Word _or_ LibreOffice** | DOCX → PDF | Word: any Office 2016+ desktop install. LibreOffice: `winget install TheDocumentFoundation.LibreOffice` · `brew install --cask libreoffice` · `sudo apt install libreoffice` |
 
 3.11 is the floor because the tooling reads its configuration with `tomllib`,
-which entered the standard library there.
+which entered the standard library there. On macOS the system Python is usually
+older than that, so install one rather than trusting what is already on the
+machine — and every `brew` command above assumes [Homebrew](https://brew.sh) is
+there first.
 
 Word is preferred where it exists: it renders exactly and reports exact page
 counts. LibreOffice works everywhere and is the only path on macOS and Linux.

@@ -12,6 +12,31 @@ configuration — see **[docs/manual.md](docs/manual.md)**.
 Run `/doctor` (or `python tools/doctor.py`) at any point to see which of these
 are missing and what to do about it.
 
+### Base tools: git, Node.js and npm
+
+Claude Code installs through npm and the repository arrives through git, so both
+have to be in place before anything below will run.
+
+| Platform | Command |
+|---|---|
+| Windows | `winget install Git.Git OpenJS.NodeJS.LTS` |
+| macOS | `brew install git node` |
+| Debian/Ubuntu | `sudo apt install git nodejs npm` |
+
+On macOS every `brew` command on this page assumes [Homebrew](https://brew.sh)
+is already installed:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+Check both arrived, then restart your terminal so `PATH` picks them up:
+
+```bash
+git --version
+node --version      # 18 or newer
+```
+
 ### Claude Code
 
 ```bash
@@ -26,6 +51,18 @@ You need an Anthropic API key or a Claude subscription. See the
 ```bash
 python --version
 ```
+
+If that reports nothing, or a version below 3.11:
+
+| Platform | Command |
+|---|---|
+| Windows | `winget install Python.Python.3.12` |
+| macOS | `brew install python@3.12` |
+| Debian/Ubuntu | `sudo apt install python3.12` |
+
+macOS ships a Python that is usually too old, and on Windows a bare `python`
+can resolve to the Microsoft Store stub rather than a real interpreter — in both
+cases install one explicitly rather than trusting what is already there.
 
 3.11 is the floor because the tooling reads its configuration with `tomllib`,
 which entered the standard library in that release. Nothing here needs `pip
