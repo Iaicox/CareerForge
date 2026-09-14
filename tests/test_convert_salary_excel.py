@@ -168,5 +168,72 @@ class PairingTest(unittest.TestCase):
         self.assertIn("Omsætning", err.getvalue())
 
 
+class LanguageCoverageTest(unittest.TestCase):
+    """The header languages these surveys are actually published in.
+
+    A survey read in Lisbon is written in Portuguese, and the column that says
+    what a company pays is called "Salário" rather than "Løn". An unrecognised
+    header is not an error -- the column is stored as an index, which is how a
+    headcount becomes a benchmark.
+    """
+
+    def test_a_salary_column_is_an_index_in_every_language(self):
+        for header in (
+            "Salário", "Salario", "Mediana", "Média", "Promedio",
+            "Remuneração", "Remuneración", "Índice", "Indice", "Vencimento",
+            "Зарплата", "Оклад", "Медиана", "Индекс",
+        ):
+            self.assertEqual(convert.detect_column_type(header), "index", header)
+
+    def test_a_headcount_column_is_a_count_in_every_language(self):
+        for header in (
+            "Quantidade", "Cantidad", "Empregados", "Empleados",
+            "Trabalhadores", "Respondentes", "Headcount",
+            "Количество", "Число", "Сотрудников",
+        ):
+            self.assertEqual(convert.detect_column_type(header), "count", header)
+
+    def test_a_category_in_those_languages_is_still_neither(self):
+        for header in ("Engineering", "Departamento", "Sector", "Отдел"):
+            self.assertIsNone(convert.detect_column_type(header), header)
+
+    def test_no_marker_of_one_kind_hides_inside_the_other(self):
+        # detect_column_type falls back to substring matching for markers of
+        # MIN_SUBSTRING_MARKER letters or more, and the marker ending last
+        # wins. A count word living inside an index word (or the reverse) would
+        # therefore decide columns by spelling accident. This guards the lists
+        # against the next language somebody adds.
+        for count in convert.COUNT_PATTERNS:
+            for index in convert.INDEX_PATTERNS:
+                if len(count) >= convert.MIN_SUBSTRING_MARKER:
+                    self.assertNotIn(count, index, f"{count!r} hides inside {index!r}")
+                if len(index) >= convert.MIN_SUBSTRING_MARKER:
+                    self.assertNotIn(index, count, f"{index!r} hides inside {count!r}")
+
+    def test_a_portuguese_sheet_parses_end_to_end(self):
+        sheet = FakeSheet([
+            ["Empresa", "Cidade", "Quantidade Engineering", "Salário Engineering"],
+            ["Acme", "Lisboa", 12, 104.5],
+        ])
+        entries = convert.parse_sheet(sheet)
+        self.assertEqual(entries[0]["company"], "Acme")
+        self.assertEqual(entries[0]["city"], "Lisboa")
+        self.assertEqual(
+            entries[0]["categories"], {"engineering": {"count": 12, "index": 104.5}}
+        )
+
+    def test_a_russian_sheet_parses_end_to_end(self):
+        sheet = FakeSheet([
+            ["Компания", "Город", "Количество", "Зарплата"],
+            ["Акме", "Москва", 8, 97.0],
+        ])
+        entries = convert.parse_sheet(sheet)
+        self.assertEqual(entries[0]["company"], "Акме")
+        self.assertEqual(entries[0]["city"], "Москва")
+        self.assertEqual(
+            list(entries[0]["categories"].values()), [{"count": 8, "index": 97.0}]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,29 +1,24 @@
 #!/usr/bin/env python3
-"""
-Convert salary data from Excel to JSON format.
+"""Turn a salary spreadsheet into the JSON that salary_lookup.py reads.
 
-This script converts an Excel file containing company salary data
-into the JSON format expected by tools/salary_lookup.py.
+Pay surveys arrive as spreadsheets, one per publisher, and no two of them agree
+on anything: the header row is rarely the first row, the company column is
+called whatever the publishing body calls a company in its own language, and
+the figures come either as one column per category or as a count column paired
+with an index column. This script reads that shape rather than requiring one,
+and writes data/profile/salary_data.json beside the rest of your own data.
 
-Prerequisites:
-    pip install openpyxl
+    python tools/convert_salary_excel.py survey.xlsx
+    python tools/convert_salary_excel.py survey.xlsx --source "Union survey 2026"
+    python tools/convert_salary_excel.py survey.xlsx --baseline 100 \
+        --baseline-desc "100 = the median across all respondents"
 
-Usage:
-    python tools/convert_salary_excel.py <path-to-excel-file>
-    python tools/convert_salary_excel.py <path-to-excel-file> --source "My Union Stats 2025"
-    python tools/convert_salary_excel.py <path-to-excel-file> --baseline 100 --baseline-desc "Index 100 = median salary"
+What the sheet has to have: a header row somewhere in the first ten, a column
+naming the company, and some numeric columns. A city column is used when it is
+there. Everything else is inferred.
 
-The output file is written to data/profile/salary_data.json, alongside the rest of
-your own data.
-
-Expected Excel format:
-    - A header row with column names
-    - A "Company" or "Firma" column (required)
-    - An optional "City" or "By" column
-    - Any number of numeric data columns (salary index, count, etc.)
-
-The script auto-detects the header row and column layout. For Excel files
-with paired count/index columns per category, it groups them automatically.
+The one dependency in this repository lives here: openpyxl, imported inside
+main() so that --help still answers on a machine that never installed it.
 """
 
 import json
@@ -37,32 +32,72 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import paths  # noqa: E402
 
 
-# Column name patterns for auto-detection
-COMPANY_PATTERNS = {"firma", "company", "virksomhed", "employer", "arbejdsgiver"}
-CITY_PATTERNS = {"by", "city", "kommune", "location", "lokation", "sted"}
-COUNT_PATTERNS = {"antal", "count", "number", "n", "employees", "medarbejdere"}
-INDEX_PATTERNS = {"indeks", "index", "idx", "salary", "løn", "median", "average", "gennemsnit"}
+# What a header can call each thing, across the languages these surveys are
+# published in. Add to these freely -- an unrecognised header costs you a
+# column, and a wrong guess costs you a wrong benchmark.
+COMPANY_PATTERNS = {
+    # English
+    "company", "employer", "organisation", "organization",
+    # Danish and Norwegian
+    "firma", "virksomhed", "arbejdsgiver",
+    # Portuguese and Spanish
+    "empresa", "empregador", "empleador", "companhia", "entidade",
+    # Russian
+    "компания", "работодатель", "организация",
+}
+CITY_PATTERNS = {
+    # English
+    "city", "location", "site",
+    # Danish and Norwegian
+    "by", "kommune", "lokation", "sted",
+    # Portuguese and Spanish
+    "cidade", "ciudad", "localidade", "localidad", "municipio", "concelho",
+    # Russian
+    "город", "местоположение",
+}
+COUNT_PATTERNS = {
+    # English
+    "count", "number", "n", "employees", "headcount", "respondents",
+    # Danish and Norwegian
+    "antal", "medarbejdere",
+    # Portuguese and Spanish
+    "quantidade", "cantidad", "empregados", "empleados", "trabalhadores",
+    "respondentes",
+    # Russian
+    "количество", "число", "сотрудников",
+}
+INDEX_PATTERNS = {
+    # English
+    "index", "idx", "salary", "median", "average", "pay",
+    # Danish and Norwegian
+    "indeks", "løn", "gennemsnit",
+    # Portuguese and Spanish
+    "índice", "indice", "salário", "salario", "mediana", "média", "promedio",
+    "remuneração", "remuneración", "vencimento",
+    # Russian
+    "зарплата", "оклад", "медиана", "индекс",
+}
 
 
-# A marker this short is only trusted as a whole word: "n" is a real count
-# header on its own, but as a substring it is in "Indeks", "Median" and
-# "Engineering" alike, which classified every column as a count and left the
-# count/index pairing below unreachable.
+# Below this length a marker is trusted only as a whole word. "n" is a real
+# header for a count on its own, and a substring of "Indeks", "Median" and
+# "Engineering" alike -- matched as a substring it made every column a count,
+# and the count/index pairing below then had nothing left to pair.
 MIN_SUBSTRING_MARKER = 3
 
 
 def header_words(header):
-    """The header split into lowercase words, keeping Danish letters intact."""
+    """The header as lowercase words, with non-ASCII letters left alone."""
     return re.findall(r"[^\W_]+", (header or "").lower(), flags=re.UNICODE)
 
 
 def marker_in(word):
-    """Where a count/index marker sits inside one word, if it does at all.
+    """Where a count or index marker ends inside one word, if it is in there.
 
-    Returns (end position, kind) for the marker ending last, or None. Danish and
-    German weld these into one word -- "Lønindeks", "Medarbejderantal" -- and
-    those compounds are head-final, so the last marker is the one that says what
-    the column holds.
+    Returns (end offset, kind) for whichever marker ends last, or None. Danish
+    and German weld these onto the category -- "Lønindeks",
+    "Medarbejderantal" -- and such compounds are head-final, so the marker that
+    ends last is the one saying what the column actually holds.
     """
     hits = [
         (word.rindex(p) + len(p), kind)
@@ -74,13 +109,13 @@ def marker_in(word):
 
 
 def detect_column_type(header):
-    """Detect whether a column header refers to count or index data.
+    """Whether a header names a headcount, a salary index, or neither.
 
-    A whole word decides outright; only then are substrings considered, and only
-    for the longer markers. Whole words alone read "Lønindeks" and
-    "Medarbejderantal" as neither, and an unclassified column is stored below as
-    a salary index -- so a headcount came out the far end of salary_lookup as a
-    benchmark figure.
+    A whole word settles it outright; substrings are consulted only afterwards,
+    and only for markers long enough to be trusted that way. Whole words alone
+    call "Lønindeks" and "Medarbejderantal" neither -- and an unclassified
+    column is filed below as an index, which is how a headcount once came out
+    of salary_lookup dressed as a benchmark figure.
     """
     words = header_words(header)
     if set(words) & COUNT_PATTERNS:
@@ -92,13 +127,13 @@ def detect_column_type(header):
 
 
 def category_name(header, patterns):
-    """The header with its count/index marker words removed.
+    """The header with its marker words taken out, as a snake_case name.
 
-    Only the words that actually matched are dropped, so "Antal Engineering"
-    becomes "engineering". Removing the patterns as substrings instead took the
-    letters with them -- "atal egieerig" -- and did it in set-iteration order,
-    so the result was not even stable between runs. A word that merely contains
-    a marker goes too, or the compound keeps it: "lønindeks_engineering".
+    Only words that actually matched are dropped, so "Antal Engineering" comes
+    back as "engineering". Stripping the patterns as substrings instead took
+    their letters out of the remaining words -- "atal egieerig" -- and did it in
+    set-iteration order, so two runs disagreed. A word that merely contains a
+    marker goes as well, or a compound keeps it: "lønindeks_engineering".
     """
     return "_".join(
         w for w in header_words(header)
@@ -107,185 +142,208 @@ def category_name(header, patterns):
     )
 
 
-def parse_sheet(ws):
-    """Parse a single worksheet into a list of company entries and detected categories."""
-    # Find header row
-    header_row = None
+def find_header_row(ws):
+    """The first row in the top ten holding a cell that names the company."""
     for row_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=10, values_only=False), start=1):
         for cell in row:
             if cell.value and str(cell.value).strip().lower() in COMPANY_PATTERNS:
-                header_row = row_idx
-                break
-        if header_row:
-            break
+                return row_idx
+    return None
 
-    if header_row is None:
-        print(f"Warning: Could not find header row in sheet '{ws.title}'. Skipping.", file=sys.stderr)
-        return []
 
-    # Read headers
-    headers = []
-    for cell in ws[header_row]:
-        headers.append(str(cell.value).strip() if cell.value else "")
+def read_headers(ws, header_row):
+    """The header row as a list of stripped strings, blanks included."""
+    return [str(cell.value).strip() if cell.value else "" for cell in ws[header_row]]
 
-    # Find company and city columns
+
+def locate_key_columns(headers):
+    """Indices of the company and city columns, either of which may be absent.
+
+    Matched on the whole header only. A substring match here would claim
+    "Company car" as the company column.
+    """
     company_col = None
     city_col = None
-    for i, h in enumerate(headers):
-        h_lower = h.lower()
-        if h_lower in COMPANY_PATTERNS:
+    for i, header in enumerate(headers):
+        lowered = header.lower()
+        if lowered in COMPANY_PATTERNS:
             company_col = i
-        elif h_lower in CITY_PATTERNS:
+        elif lowered in CITY_PATTERNS:
             city_col = i
+    return company_col, city_col
 
-    if company_col is None:
-        print(f"Warning: Could not find company column in sheet '{ws.title}'.", file=sys.stderr)
-        return []
 
-    # Identify data columns (everything that's not company/city)
-    data_cols = []
-    for i, h in enumerate(headers):
-        if i == company_col or i == city_col or not h:
-            continue
-        data_cols.append((i, h))
+def group_categories(data_cols):
+    """Fold the data columns into categories, pairing counts with indices.
 
-    # Try to detect paired count/index columns per category
-    # Heuristic: if columns come in pairs and alternate count/index, group them
+    A count column followed by an index column (or the reverse) describes one
+    category between them, and the category's name is whatever is left of the
+    header once the marker is removed. Anything unpaired stands alone under its
+    own header.
+
+    Returns (categories, unclassified) -- the second being the headers that
+    could not be read as either kind, which the caller reports. They are still
+    stored as an index, because there is nowhere else to put them, and that is
+    exactly why they are worth naming out loud.
+    """
     categories = []
     unclassified = []
+
     i = 0
     while i < len(data_cols):
-        col_idx, col_header = data_cols[i]
-        col_type = detect_column_type(col_header)
+        col_idx, header = data_cols[i]
+        kind = detect_column_type(header)
 
         if i + 1 < len(data_cols):
-            next_col_idx, next_col_header = data_cols[i + 1]
-            next_col_type = detect_column_type(next_col_header)
+            next_idx, next_header = data_cols[i + 1]
+            next_kind = detect_column_type(next_header)
 
-            # If we have a count/index pair, group them
-            if col_type == "count" and next_col_type == "index":
-                # Use the header minus the count/index suffix as category name
-                cat_name = category_name(col_header, COUNT_PATTERNS)
-                if not cat_name:
-                    cat_name = f"category_{len(categories)+1}"
-                categories.append({
-                    "name": cat_name,
-                    "count_col": col_idx,
-                    "index_col": next_col_idx,
-                })
-                i += 2
-                continue
-            elif col_type == "index" and next_col_type == "count":
-                cat_name = category_name(col_header, INDEX_PATTERNS)
-                if not cat_name:
-                    cat_name = f"category_{len(categories)+1}"
-                categories.append({
-                    "name": cat_name,
-                    "index_col": col_idx,
-                    "count_col": next_col_idx,
-                })
+            pairing = None
+            if kind == "count" and next_kind == "index":
+                pairing = {"count_col": col_idx, "index_col": next_idx}
+                strip = COUNT_PATTERNS
+            elif kind == "index" and next_kind == "count":
+                pairing = {"index_col": col_idx, "count_col": next_idx}
+                strip = INDEX_PATTERNS
+
+            if pairing is not None:
+                name = category_name(header, strip) or f"category_{len(categories) + 1}"
+                categories.append({"name": name, **pairing})
                 i += 2
                 continue
 
-        # Single column - treat as a standalone value, under the field its own
-        # header names. Filing everything as "index" put headcounts where
-        # salary_lookup reads a salary and compared them to the baseline.
-        if col_type is None:
-            unclassified.append(col_header)
+        if kind is None:
+            unclassified.append(header)
         categories.append({
-            "name": col_header.lower().replace(" ", "_"),
+            "name": header.lower().replace(" ", "_"),
             "value_col": col_idx,
-            "value_type": col_type or "index",
+            "value_type": kind or "index",
         })
         i += 1
 
-    if unclassified:
-        print(
-            f"Warning: in sheet '{ws.title}', could not tell whether these "
-            "columns hold a headcount or a salary index; stored as index: "
-            + ", ".join(unclassified),
-            file=sys.stderr,
-        )
+    return categories, unclassified
 
-    # Parse data rows
-    companies = []
+
+def cell_number(row, col, cast):
+    """One cell read as a number, or None when it is empty or is not one."""
+    if col is None or col >= len(row) or row[col] is None:
+        return None
+    try:
+        return cast(row[col])
+    except (ValueError, TypeError):
+        return None
+
+
+def read_company_rows(ws, header_row, company_col, city_col, categories):
+    """Every row below the header, as one entry per named company."""
+    entries = []
     for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
         if not row[company_col]:
             continue
 
-        company_name = str(row[company_col]).strip()
-        city_name = str(row[city_col]).strip() if city_col is not None and row[city_col] else ""
-
         entry = {
-            "company": company_name,
-            "city": city_name,
+            "company": str(row[company_col]).strip(),
+            "city": str(row[city_col]).strip() if city_col is not None and row[city_col] else "",
             "categories": {},
         }
 
         for cat in categories:
-            cat_name = cat["name"]
             if "count_col" in cat and "index_col" in cat:
-                count_val = None
-                index_val = None
-                if cat["count_col"] < len(row) and row[cat["count_col"]] is not None:
-                    try:
-                        count_val = int(row[cat["count_col"]])
-                    except (ValueError, TypeError):
-                        pass
-                if cat["index_col"] < len(row) and row[cat["index_col"]] is not None:
-                    try:
-                        index_val = float(row[cat["index_col"]])
-                    except (ValueError, TypeError):
-                        pass
-                entry["categories"][cat_name] = {"count": count_val, "index": index_val}
+                entry["categories"][cat["name"]] = {
+                    "count": cell_number(row, cat["count_col"], int),
+                    "index": cell_number(row, cat["index_col"], float),
+                }
             elif "value_col" in cat:
-                if cat["value_col"] < len(row) and row[cat["value_col"]] is not None:
-                    val = row[cat["value_col"]]
+                col = cat["value_col"]
+                if col < len(row) and row[col] is not None:
+                    value = row[col]
                     try:
-                        val = float(val)
+                        value = float(value)
                     except (ValueError, TypeError):
-                        val = str(val)
-                    entry["categories"][cat_name] = {cat["value_type"]: val}
+                        value = str(value)
+                    entry["categories"][cat["name"]] = {cat["value_type"]: value}
 
-        companies.append(entry)
+        entries.append(entry)
+    return entries
 
-    return companies
+
+def parse_sheet(ws):
+    """One worksheet as a list of company entries. Empty when it is unreadable."""
+    header_row = find_header_row(ws)
+    if header_row is None:
+        print(
+            f"Warning: no header row found in the first ten rows of sheet "
+            f"'{ws.title}'. Skipping it.",
+            file=sys.stderr,
+        )
+        return []
+
+    headers = read_headers(ws, header_row)
+    company_col, city_col = locate_key_columns(headers)
+    if company_col is None:
+        print(
+            f"Warning: sheet '{ws.title}' has a header row but no column naming "
+            "the company. Skipping it.",
+            file=sys.stderr,
+        )
+        return []
+
+    data_cols = [
+        (i, header) for i, header in enumerate(headers)
+        if header and i != company_col and i != city_col
+    ]
+    categories, unclassified = group_categories(data_cols)
+
+    if unclassified:
+        print(
+            f"Warning: in sheet '{ws.title}', these columns could be a headcount "
+            "or a salary figure and the header does not say which. Stored as a "
+            "salary index: " + ", ".join(unclassified),
+            file=sys.stderr,
+        )
+
+    return read_company_rows(ws, header_row, company_col, city_col, categories)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert salary Excel data to JSON"
+        description="Convert a salary spreadsheet into salary_lookup's JSON",
     )
-    parser.add_argument("excel_file", help="Path to the Excel file with salary data")
+    parser.add_argument("excel_file", help="The spreadsheet to read")
     parser.add_argument(
         "--output", default=None,
-        help="Output JSON file path (default: data/profile/salary_data.json)",
+        help="Where to write it (default: data/profile/salary_data.json)",
     )
     parser.add_argument(
         "--source", default=None,
-        help="Name of the data source (e.g., 'Union Statistics 2025')",
+        help="Who published the figures, recorded so a benchmark can cite them "
+             "(default: the file's own name)",
     )
     parser.add_argument(
         "--baseline", type=float, default=100,
-        help="Baseline value for index comparison (default: 100)",
+        help="What the index is measured against (default: 100)",
     )
     parser.add_argument(
         "--baseline-desc", default=None,
-        help="Description of what the baseline means (e.g., 'Index 100 = median salary')",
+        help="What that baseline means in words, e.g. '100 = the median'",
     )
     args = parser.parse_args()
 
-    # Imported here rather than at module level so --help still works on a
-    # machine that has never installed the one optional dependency.
+    # Imported here, not at module level, so --help answers on a machine that
+    # never installed the one optional dependency in this repository.
     try:
         import openpyxl
     except ImportError:
-        print("Error: openpyxl is required. Install it with: pip install openpyxl", file=sys.stderr)
+        print(
+            "Error: this is the one script here that needs a package. "
+            "Install it with: pip install openpyxl",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     excel_path = Path(args.excel_file)
     if not excel_path.exists():
-        print(f"Error: File not found: {excel_path}", file=sys.stderr)
+        print(f"Error: no such file: {excel_path}", file=sys.stderr)
         sys.exit(1)
 
     output_path = Path(args.output) if args.output else paths.PROFILE / "salary_data.json"
@@ -293,22 +351,24 @@ def main():
 
     print(f"Reading: {excel_path}")
     wb = openpyxl.load_workbook(excel_path, read_only=True, data_only=True)
+    try:
+        companies = []
+        for sheet_name in wb.sheetnames:
+            print(f"  sheet: {sheet_name}")
+            companies.extend(parse_sheet(wb[sheet_name]))
+    finally:
+        wb.close()
 
-    all_companies = []
-    for sheet_name in wb.sheetnames:
-        print(f"  Parsing sheet: {sheet_name}")
-        ws = wb[sheet_name]
-        companies = parse_sheet(ws)
-        all_companies.extend(companies)
-
-    wb.close()
-
-    if not all_companies:
-        print("Error: No data could be parsed from the Excel file.", file=sys.stderr)
-        print("Make sure the Excel file has a header row with a 'Company'/'Firma' column.", file=sys.stderr)
+    if not companies:
+        print("Error: nothing could be read out of that file.", file=sys.stderr)
+        print(
+            "It needs a header row in the first ten rows, with a column naming "
+            "the company -- 'Company', 'Empresa', 'Firma' and the rest of "
+            "COMPANY_PATTERNS at the top of this script.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    # Build output
     output = {
         "metadata": {
             "source": args.source or excel_path.stem,
@@ -316,13 +376,13 @@ def main():
             "index_label": "Index",
             "baseline_description": args.baseline_desc or f"Index {args.baseline} = baseline",
         },
-        "companies": all_companies,
+        "companies": companies,
     }
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 
-    print(f"\nDone! Wrote {len(all_companies)} company entries to {output_path}")
+    print(f"\nDone. {len(companies)} companies written to {output_path}")
 
 
 if __name__ == "__main__":
