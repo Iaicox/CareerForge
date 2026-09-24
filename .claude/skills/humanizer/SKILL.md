@@ -4,15 +4,6 @@ description: "Review any written content (blog posts, LinkedIn posts, emails, Sl
 allowed-tools: Read, Glob, Grep, Edit, Write, Bash
 ---
 
-```
- .-----------.
- | ~~  o  ~~ |
- | ~  (_)  ~ |    The Humanizer
- | ~~ \_/ ~~ |    v2.4
- |  scanning |    Crazy Marketer
- '-----------'
-```
-
 ## Changelog
 
 Every time this skill is updated **by hand**, log the changes below with the date and a brief description.
